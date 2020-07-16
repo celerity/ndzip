@@ -114,7 +114,7 @@ class fast_profile {
 
         size_t encode_block(const bits_type *bits, void *stream) const;
 
-        void decode_block(const void *stream, bits_type *bits) const;
+        size_t decode_block(const void *stream, bits_type *bits) const;
 
         bits_type load_value(const data_type *data) const;
 
@@ -133,7 +133,8 @@ struct singlethread_cpu_encoder {
 
     size_t compress(const slice<data_type, dimensions> &data, void *stream) const;
 
-    void decompress(const void *stream, size_t bytes, const extent<dimensions> &size) const;
+    size_t decompress(const void *stream, size_t bytes,
+            const slice<data_type, dimensions> &data) const;
 };
 
 } // namespace hcde
