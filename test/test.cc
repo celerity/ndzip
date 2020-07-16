@@ -17,13 +17,66 @@ const float float_data_2d[16] = {
 };
 
 
+TEST_CASE("load_bits") {
+    SECTION("for 8-bit integers") {
+        alignas(uint8_t) const uint8_t bits[2] = {0b1010'0100, 0b1000'0000};
+        CHECK(load_bits<uint8_t>(bits, 0, 2) == 0b10);
+        CHECK(load_bits<uint8_t>(bits, 2, 3) == 0b100);
+        CHECK(load_bits<uint8_t>(bits, 5, 4) == 0b1001);
+    }
+    SECTION("for 16-bit integers") {
+        alignas(uint16_t) const uint8_t bits[4] = {0b1010'0100, 0b1000'0000};
+        CHECK(load_bits<uint16_t>(bits, 0, 2) == 0b10);
+        CHECK(load_bits<uint16_t>(bits, 2, 3) == 0b100);
+        CHECK(load_bits<uint16_t>(bits, 5, 4) == 0b1001);
+    }
+    SECTION("for 32-bit integers") {
+        alignas(uint32_t) const uint8_t bits[8] = {0b1010'0100, 0b1000'0000};
+        CHECK(load_bits<uint32_t>(bits, 0, 2) == 0b10);
+        CHECK(load_bits<uint32_t>(bits, 2, 3) == 0b100);
+        CHECK(load_bits<uint32_t>(bits, 5, 4) == 0b1001);
+    }
+    SECTION("for 64-bit integers") {
+        alignas(uint64_t) const uint8_t bits[16] = {0b1010'0100, 0b1000'0000};
+        CHECK(load_bits<uint64_t>(bits, 0, 2) == 0b10);
+        CHECK(load_bits<uint64_t>(bits, 2, 3) == 0b100);
+        CHECK(load_bits<uint64_t>(bits, 5, 4) == 0b1001);
+    }
+}
+
 TEST_CASE("store_bits_linear") {
-    alignas(uint32_t) uint8_t bits[8] = {0};
-    store_bits_linear<uint32_t>(bits, 0, 2, 0b10);
-    store_bits_linear<uint32_t>(bits, 2, 3, 0b100);
-    store_bits_linear<uint32_t>(bits, 5, 3, 0b100);
-    alignas(uint32_t) const uint8_t expected_bits[8] = {0b1010'0100};
-    CHECK(memcmp(bits, expected_bits, 8) == 0);
+    SECTION("for 8-bit integers") {
+        alignas(uint8_t) const uint8_t expected_bits[2] = {0b1010'0100, 0b1000'0000};
+        alignas(uint8_t) uint8_t bits[2] = {0};
+        store_bits_linear<uint8_t>(bits, 0, 2, 0b10);
+        store_bits_linear<uint8_t>(bits, 2, 3, 0b100);
+        store_bits_linear<uint8_t>(bits, 5, 4, 0b1001);
+        CHECK(memcmp(bits, expected_bits, sizeof bits) == 0);
+    }
+    SECTION("for 32-bit integers") {
+        alignas(uint16_t) const uint8_t expected_bits[4] = {0b1010'0100, 0b1000'0000};
+        alignas(uint16_t) uint8_t bits[4] = {0};
+        store_bits_linear<uint16_t>(bits, 0, 2, 0b10);
+        store_bits_linear<uint16_t>(bits, 2, 3, 0b100);
+        store_bits_linear<uint16_t>(bits, 5, 4, 0b1001);
+        CHECK(memcmp(bits, expected_bits, sizeof bits) == 0);
+    }
+    SECTION("for 32-bit integers") {
+        alignas(uint32_t) const uint8_t expected_bits[8] = {0b1010'0100, 0b1000'0000};
+        alignas(uint32_t) uint8_t bits[8] = {0};
+        store_bits_linear<uint32_t>(bits, 0, 2, 0b10);
+        store_bits_linear<uint32_t>(bits, 2, 3, 0b100);
+        store_bits_linear<uint32_t>(bits, 5, 4, 0b1001);
+        CHECK(memcmp(bits, expected_bits, sizeof bits) == 0);
+    }
+    SECTION("for 32-bit integers") {
+        alignas(uint64_t) const uint8_t expected_bits[16] = {0b1010'0100, 0b1000'0000};
+        alignas(uint64_t) uint8_t bits[16] = {0};
+        store_bits_linear<uint64_t>(bits, 0, 2, 0b10);
+        store_bits_linear<uint64_t>(bits, 2, 3, 0b100);
+        store_bits_linear<uint64_t>(bits, 5, 4, 0b1001);
+        CHECK(memcmp(bits, expected_bits, sizeof bits) == 0);
+    }
 }
 
 

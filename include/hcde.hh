@@ -67,13 +67,13 @@ class extent {
 template<typename T, unsigned Dims>
 class slice {
     public:
-        explicit slice(T *data, class extent<Dims> e)
+        explicit slice(T *data, hcde::extent<Dims> e)
             : _data(data)
             , _extent(e)
         {
         }
 
-        const class extent<Dims> &extent() const {
+        const hcde::extent<Dims> &extent() const {
             return _extent;
         }
 
@@ -81,7 +81,7 @@ class slice {
             return _data;
         }
 
-        size_t linear_index(const class extent<Dims> &e) const {
+        size_t linear_index(const hcde::extent<Dims> &e) const {
             assert(e[0] < _extent[0]);
             size_t l = e[0];
             for (unsigned d = 1; d < Dims; ++d) {
@@ -91,13 +91,13 @@ class slice {
             return l;
         }
 
-        T &operator[](const class extent<Dims> &e) const {
+        T &operator[](const hcde::extent<Dims> &e) const {
             return _data[linear_index(e)];
         }
 
     private:
         T *_data;
-        class extent<Dims> _extent;
+        hcde::extent<Dims> _extent;
 };
 
 template<typename T, unsigned Dims>
