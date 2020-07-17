@@ -36,11 +36,15 @@ class extent {
     public:
         constexpr extent() noexcept = default;
 
-        template<typename ...Tail>
-        constexpr explicit extent(size_t head, Tail ...tail) noexcept
-            : _components{head, tail...}
+        template<typename ...Init, std::enable_if_t<((sizeof...(Init) == Dims)
+            && ... && std::is_convertible_v<Init, size_t>), int> = 0>
+        constexpr explicit extent(const Init &...components) noexcept
+            : _components{static_cast<size_t>(components)...}
         {
-            static_assert(1 + sizeof...(Tail) == Dims);
+        }
+
+        size_t &operator[](unsigned d) {
+            return _components[d];
         }
 
         size_t operator[](unsigned d) const {
@@ -60,9 +64,36 @@ class extent {
             return result;
         }
 
+        size_t linear_offset() const {
+            size_t offset = 1;
+            for (unsigned d = 0; d < Dims; ++d) {
+                offset *= _components[d];
+            }
+            return offset;
+        }
+
     private:
         size_t _components[Dims] = {};
 };
+
+} // namespace extent
+
+namespace hcde::detail {
+
+    template<unsigned Dims>
+    size_t linear_index(const hcde::extent<Dims> &size, const hcde::extent<Dims> &pos) {
+        // assert(pos[0] < size[0]);
+        size_t l = pos[0];
+        for (unsigned d = 1; d < Dims; ++d) {
+            // assert(pos[d] < size[d]);
+            l = l * size[d] + pos[d];
+        }
+        return l;
+    }
+
+} // namespace hcde::detail
+
+namespace hcde {
 
 template<typename T, unsigned Dims>
 class slice {
@@ -70,6 +101,14 @@ class slice {
         explicit slice(T *data, hcde::extent<Dims> e)
             : _data(data)
             , _extent(e)
+        {
+        }
+
+        template<typename U, std::enable_if_t<std::is_const_v<T>
+            && std::is_same_v<std::remove_const_t<T>, U>, int> = 0>
+        slice(slice<U, Dims> other)
+            : _data(other.data)
+            , _extent(other._extent)
         {
         }
 
@@ -81,18 +120,12 @@ class slice {
             return _data;
         }
 
-        size_t linear_index(const hcde::extent<Dims> &e) const {
-            assert(e[0] < _extent[0]);
-            size_t l = e[0];
-            for (unsigned d = 1; d < Dims; ++d) {
-                assert(e[d] < _extent[d]);
-                l = l * _extent[d] + e[d];
-            }
-            return l;
+        size_t linear_index(const hcde::extent<Dims> &pos) const {
+            return detail::linear_index(_extent, pos);
         }
 
-        T &operator[](const hcde::extent<Dims> &e) const {
-            return _data[linear_index(e)];
+        T &operator[](const hcde::extent<Dims> &pos) const {
+            return _data[linear_index(pos)];
         }
 
     private:
@@ -110,7 +143,7 @@ class fast_profile {
         constexpr static unsigned hypercube_side_length = 4;
         constexpr static unsigned superblock_size = 64;
         constexpr static size_t compressed_block_size_bound
-            = sizeof(data_type) * detail::ipow(hypercube_side_length, Dims);
+            = 1 + sizeof(data_type) * detail::ipow(hypercube_side_length, Dims);
 
         size_t encode_block(const bits_type *bits, void *stream) const;
 
@@ -131,7 +164,7 @@ struct singlethread_cpu_encoder {
 
     size_t compressed_size_bound(const extent<dimensions> &e) const;
 
-    size_t compress(const slice<data_type, dimensions> &data, void *stream) const;
+    size_t compress(const slice<const data_type, dimensions> &data, void *stream) const;
 
     size_t decompress(const void *stream, size_t bytes,
             const slice<data_type, dimensions> &data) const;

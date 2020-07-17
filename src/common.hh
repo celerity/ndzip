@@ -5,6 +5,7 @@
 #include <climits>
 #include <cstring>
 #include <limits>
+#include <optional>
 
 #define HCDE_BIG_ENDIAN 0
 #define HCDE_LITTLE_ENDIAN 1
@@ -229,7 +230,6 @@ template<size_t Align, typename POD>
 POD load_aligned(const void *src, size_t byte_offset) {
     static_assert(std::is_trivially_copyable_v<POD>);
     assert(reinterpret_cast<uintptr_t>(src) % Align == 0);
-    assert(byte_offset % Align == 0);
     POD a;
     memcpy(&a, static_cast<const char*>(__builtin_assume_aligned(src, Align)) + byte_offset,
             sizeof(POD));
@@ -275,6 +275,85 @@ void store_bits_linear(void *dest, size_t dest_bit_offset, size_t n_bits, Intege
     store_aligned<sizeof(Integer)>(dest, dest_offset, a);
 }
 
+template<unsigned Dims, typename Fn>
+void for_each_border_slice_recursive(const extent<Dims> &size, extent<Dims> pos,
+        unsigned side_length, unsigned d, unsigned smallest_dim_with_border, const Fn &fn)
+{
+    auto border_begin = size[d] / side_length * side_length;
+    auto border_end = size[d];
+
+    if (d < smallest_dim_with_border) {
+        for (pos[d] = 0; pos[d] < border_begin; ++pos[d]) {
+            for_each_border_slice_recursive(size, pos, side_length, d + 1,
+                    smallest_dim_with_border, fn);
+        }
+    }
+
+    if (border_begin < border_end) {
+        auto begin_pos = pos;
+        begin_pos[d] = border_begin;
+        auto end_pos = pos;
+        end_pos[d] = border_end;
+        auto offset = linear_index(size, begin_pos);
+        auto count = linear_index(size, end_pos) - offset;
+        fn(offset, count);
+    }
+}
+
+template<unsigned Dims, typename Fn>
+void for_each_border_slice(const extent<Dims> &size, unsigned side_length, const Fn &fn) {
+    std::optional<unsigned> smallest_dim_with_border;
+    for (int d = 0; d < Dims; ++d) {
+        if (size[d] / side_length == 0) {
+            // special case: the whole array is a border
+            fn(0, size.linear_offset());
+            return;
+        }
+        if (size[d] % side_length != 0) {
+            smallest_dim_with_border = static_cast<int>(d);
+        }
+    }
+    if (smallest_dim_with_border) {
+        for_each_border_slice_recursive(size, extent<Dims>{}, side_length, 0,
+                *smallest_dim_with_border, fn);
+    }
+}
+
+template<typename DataType, unsigned Dims>
+size_t pack_border(void *dest, const slice<DataType, Dims> &src, unsigned side_length) {
+    static_assert(std::is_trivially_copyable_v<DataType>);
+    size_t dest_offset = 0;
+    for_each_border_slice(src.extent(), side_length, [&](size_t src_offset, size_t count) {
+        memcpy(static_cast<char*>(dest) + dest_offset, src.data() + src_offset,
+                count * sizeof(DataType));
+        dest_offset += count * sizeof(DataType);
+    });
+    return dest_offset;
+}
+
+template<typename DataType, unsigned Dims>
+size_t unpack_border(const slice<DataType, Dims> &dest, const void *src, unsigned side_length) {
+    static_assert(std::is_trivially_copyable_v<DataType>);
+    size_t src_offset = 0;
+    for_each_border_slice(dest.extent(), side_length, [&](size_t dest_offset, size_t count) {
+        memcpy(dest.data() + dest_offset, static_cast<const char*>(src) + src_offset,
+                count * sizeof(DataType));
+        src_offset += count * sizeof(DataType);
+    });
+    return src_offset;
+}
+
+template<unsigned Dims>
+size_t border_element_count(const extent<Dims> &e, unsigned side_length) {
+    size_t n_cube_elems = 1;
+    size_t n_all_elems = 1;
+    for (unsigned d = 0; d < Dims; ++d) {
+        n_cube_elems *= e[d] / side_length * side_length;
+        n_all_elems *= e[d];
+    }
+    return n_all_elems - n_cube_elems;
+}
+
 } // namespace hcde::detail
 
 namespace hcde {
@@ -316,9 +395,12 @@ size_t fast_profile<T, Dims>::encode_block(const bits_type *bits, void *stream) 
     size_t bit_offset = detail::bitsof<T>;
     detail::store_bits_linear<bits_type>(stream, bit_offset, width_width, remainder_width);
     bit_offset += width_width;
-    for (size_t i = 1; i < detail::ipow(hypercube_side_length, Dims); ++i) {
-        detail::store_bits_linear<bits_type>(stream, bit_offset, remainder_width, bits[i] ^ ref);
-        bit_offset += remainder_width;
+    if (remainder_width > 0) { // store_bits_linear does not allow n_bits == 0
+        for (size_t i = 1; i < detail::ipow(hypercube_side_length, Dims); ++i) {
+            detail::store_bits_linear<bits_type>(stream, bit_offset, remainder_width,
+                    bits[i] ^ ref);
+            bit_offset += remainder_width;
+        }
     }
     return (bit_offset + CHAR_BIT-1) / CHAR_BIT;
 }
@@ -332,10 +414,12 @@ size_t fast_profile<T, Dims>::decode_block(const void *stream, bits_type *bits) 
     auto width_width = sizeof(T) == 1 ? 4 : sizeof(T) == 2 ? 5 : sizeof(T) == 4 ? 6 : 7;
     auto remainder_width = detail::load_bits<bits_type>(stream, bit_offset, width_width);
     bit_offset += width_width;
-    bits[0] = ref;
-    for (size_t i = 1; i < detail::ipow(hypercube_side_length, Dims); ++i) {
-        bits[i] = detail::load_bits<bits_type>(stream, bit_offset, remainder_width) ^ ref;
-        bit_offset += remainder_width;
+    if (remainder_width > 0) { // load_bits does not allow n_bits == 0
+        bits[0] = ref;
+        for (size_t i = 1; i < detail::ipow(hypercube_side_length, Dims); ++i) {
+            bits[i] = detail::load_bits<bits_type>(stream, bit_offset, remainder_width) ^ ref;
+            bit_offset += remainder_width;
+        }
     }
     return (bit_offset + CHAR_BIT-1) / CHAR_BIT;
 }
