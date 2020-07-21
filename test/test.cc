@@ -16,15 +16,23 @@ const float float_data_2d[16] = {
     -0.1f, 1.1f, 0.3f, 0.0f,
 };
 
-const float float_data_2d_with_border[40] = {
-    0.1f, 1.1f, 2.3f, 4.9f, 1.f,
-    -0.1f, 1.1f, 2.3f, 4.9f, 2.f,
-    0.1f, 2.3f, 9.3f, 0.9f, 3.f,
-    -0.1f, 1.1f, 0.3f, 0.0f, 4.f,
-    -0.1f, 1.1f, 2.3f, 4.9f, 2.f,
-    0.1f, 1.1f, 2.3f, 4.9f, 1.f,
-    -0.1f, 1.1f, 0.3f, 0.0f, 4.f,
-    0.1f, 2.3f, 9.3f, 0.9f, 3.f,
+const float float_data_2d_identical[16] = {
+    1.0f, 1.0f, 1.0f, 1.0f,
+    1.0f, 1.0f, 1.0f, 1.0f,
+    1.0f, 1.0f, 1.0f, 1.0f,
+    1.0f, 1.0f, 1.0f, 1.0f,
+};
+
+const float float_data_2d_with_border[90] = {
+    0.1f, 1.1f, 2.3f, 4.9f, 1.f, -0.1f, 1.1f, 2.3f, 4.9f, 2.f,
+    0.1f, 2.3f, 9.3f, 0.9f, 3.f, -0.1f, 1.1f, 0.3f, 0.0f, 4.f,
+    -0.1f, 1.1f, 2.3f, 4.9f, 2.f, 0.1f, 1.1f, 2.3f, 4.9f, 1.f,
+    -0.1f, 1.1f, 0.3f, 0.0f, 4.f, 0.1f, 2.3f, 9.3f, 0.9f, 3.f,
+    0.1f, 0.1f, 0.1f, 0.1f, 1.f, -0.1f, 1.1f, 2.3f, 4.9f, 2.f,
+    0.1f, 0.1f, 0.1f, 0.1f, 3.f, -0.1f, 1.1f, 0.3f, 0.0f, 4.f,
+    0.1f, 0.1f, 0.1f, 0.1f, 2.f, 0.1f, 1.1f, 2.3f, 4.9f, 1.f,
+    0.1f, 0.1f, 0.1f, 0.1f, 4.f, 0.1f, 2.3f, 9.3f, 0.9f, 3.f,
+    0.1f, 2.3f, 9.3f, 0.9f, 3.f, -0.1f, 1.1f, 0.3f, 0.0f, 4.f,
 };
 
 
@@ -42,16 +50,18 @@ TEST_CASE("load_bits") {
         CHECK(load_bits<uint16_t>(const_bit_ptr<2>(bits, 5), 4) == 0b1001);
     }
     SECTION("for 32-bit integers") {
-        alignas(uint32_t) const uint8_t bits[8] = {0b1010'0100, 0b1000'0000};
+        alignas(uint32_t) const uint8_t bits[8] = {0b1010'0100, 0b1100'0000};
         CHECK(load_bits<uint32_t>(const_bit_ptr<4>(bits, 0), 2) == 0b10);
         CHECK(load_bits<uint32_t>(const_bit_ptr<4>(bits, 2), 3) == 0b100);
         CHECK(load_bits<uint32_t>(const_bit_ptr<4>(bits, 5), 4) == 0b1001);
+        CHECK(load_bits<uint32_t>(const_bit_ptr<4>(bits, 9), 27) == 0b100000000000000000000000000);
     }
     SECTION("for 64-bit integers") {
-        alignas(uint64_t) const uint8_t bits[16] = {0b1010'0100, 0b1000'0000};
+        alignas(uint64_t) const uint8_t bits[16] = {0b1010'0100, 0b1100'0000};
         CHECK(load_bits<uint64_t>(const_bit_ptr<8>(bits, 0), 2) == 0b10);
         CHECK(load_bits<uint64_t>(const_bit_ptr<8>(bits, 2), 3) == 0b100);
         CHECK(load_bits<uint64_t>(const_bit_ptr<8>(bits, 5), 4) == 0b1001);
+        CHECK(load_bits<uint64_t>(const_bit_ptr<8>(bits, 9), 27) == 0b100000000000000000000000000);
     }
 }
 
@@ -73,19 +83,21 @@ TEST_CASE("store_bits_linear") {
         CHECK(memcmp(bits, expected_bits, sizeof bits) == 0);
     }
     SECTION("for 32-bit integers") {
-        alignas(uint32_t) const uint8_t expected_bits[8] = {0b1010'0100, 0b1000'0000};
+        alignas(uint32_t) const uint8_t expected_bits[8] = {0b1010'0100, 0b1100'0000};
         alignas(uint32_t) uint8_t bits[8] = {0};
         store_bits_linear<uint32_t>(bit_ptr<4>(bits, 0), 2, 0b10);
         store_bits_linear<uint32_t>(bit_ptr<4>(bits, 2), 3, 0b100);
         store_bits_linear<uint32_t>(bit_ptr<4>(bits, 5), 4, 0b1001);
+        store_bits_linear<uint32_t>(bit_ptr<4>(bits, 9), 27, 0b100000000000000000000000000);
         CHECK(memcmp(bits, expected_bits, sizeof bits) == 0);
     }
     SECTION("for 32-bit integers") {
-        alignas(uint64_t) const uint8_t expected_bits[16] = {0b1010'0100, 0b1000'0000};
+        alignas(uint64_t) const uint8_t expected_bits[16] = {0b1010'0100, 0b1100'0000};
         alignas(uint64_t) uint8_t bits[16] = {0};
         store_bits_linear<uint64_t>(bit_ptr<8>(bits, 0), 2, 0b10);
         store_bits_linear<uint64_t>(bit_ptr<8>(bits, 2), 3, 0b100);
         store_bits_linear<uint64_t>(bit_ptr<8>(bits, 5), 4, 0b1001);
+        store_bits_linear<uint64_t>(bit_ptr<8>(bits, 9), 27, 0b100000000000000000000000000);
         CHECK(memcmp(bits, expected_bits, sizeof bits) == 0);
     }
 }
@@ -107,14 +119,21 @@ TEST_CASE("fast_profile value en-/decode") {
 
 TEST_CASE("fast_profile block en-/decode") {
     uint32_t bits[16];
-    fast_profile<float, 2> p;
-    for (unsigned i = 0; i < 16; ++i) {
-        bits[i] = p.load_value(&float_data_2d[i]);
-    }
-    char stream[100]={0};
-    p.encode_block(bits, stream);
     uint32_t bits2[16]={0};
-    p.decode_block(stream, bits2);
+
+    auto en_decode = [&](auto &data) {
+        fast_profile<float, 2> p;
+        for (unsigned i = 0; i < 16; ++i) {
+            bits[i] = p.load_value(&data[i]);
+        }
+        char stream[100] = {0};
+        p.encode_block(bits, stream);
+        p.decode_block(stream, bits2);
+    };
+
+    en_decode(float_data_2d);
+    CHECK(memcmp(bits, bits2, sizeof bits) == 0);
+    en_decode(float_data_2d_identical);
     CHECK(memcmp(bits, bits2, sizeof bits) == 0);
 }
 
@@ -153,13 +172,13 @@ TEST_CASE("for_each_border_slice") {
 TEMPLATE_TEST_CASE("singlethread_cpu_encoder", "", (fast_profile<float, 2>)) {
     std::string stream;
     singlethread_cpu_encoder<TestType> p;
-    slice<const float, 2> data(float_data_2d_with_border, extent<2>{8, 5});
+    slice<const float, 2> data(float_data_2d_with_border, extent<2>{9, 10});
     stream.resize(p.compressed_size_bound(data.extent()));
     auto cursor = p.compress(data, stream.data());
     CHECK(cursor <= stream.size());
 
     float restore_data[sizeof(float_data_2d_with_border) / sizeof(float)];
-    slice<float, 2> restore(restore_data, extent<2>{8, 5});
+    slice<float, 2> restore(restore_data, extent<2>{9, 10});
     auto de_cursor = p.decompress(stream.data(), cursor, restore);
     CHECK(de_cursor == cursor);
     CHECK(memcmp(float_data_2d_with_border, restore_data, sizeof restore_data) == 0);

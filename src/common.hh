@@ -3,6 +3,7 @@
 #include <hcde.hh>
 
 #include <climits>
+#include <iostream>
 #include <cstring>
 #include <limits>
 #include <optional>
@@ -258,7 +259,7 @@ class basic_bit_ptr {
         constexpr static size_t byte_alignment = Align;
         constexpr static size_t bit_alignment = Align * CHAR_BIT;
 
-        constexpr basic_bit_ptr(nullptr_t) noexcept {}
+        constexpr basic_bit_ptr(std::nullptr_t) noexcept {}
 
         constexpr basic_bit_ptr() noexcept = default;
 
@@ -294,8 +295,11 @@ class basic_bit_ptr {
 
         void advance(size_t n_bits) {
             _aligned_address = reinterpret_cast<byte_address_type>(_aligned_address)
-                + n_bits / bit_alignment * byte_alignment;
-            _bit_offset += n_bits % bit_alignment;
+                + (_bit_offset + n_bits) / bit_alignment * byte_alignment;
+            _bit_offset = (_bit_offset + n_bits) % bit_alignment;
+
+            assert(reinterpret_cast<uintptr_t>(_aligned_address) % byte_alignment == 0);
+            assert(_bit_offset < bit_alignment);
         }
 
         friend bool operator==(basic_bit_ptr lhs, basic_bit_ptr rhs) {
@@ -343,6 +347,7 @@ void store_bits_linear(bit_ptr<sizeof(Integer)> dest, size_t n_bits, Integer val
     static_assert(std::is_integral_v<Integer> && std::is_unsigned_v<Integer>);
     using window = next_larger_uint<Integer>;
     assert(n_bits > 0 && n_bits <= bitsof<Integer>);
+    assert((window{value} >> n_bits) == 0);
     assert(load_bits<Integer>(dest, n_bits) == 0);
     auto a = load_aligned<sizeof(Integer), window>(dest.aligned_address());
     auto shift = bitsof<window> - dest.bit_offset() - n_bits;
@@ -462,9 +467,9 @@ size_t fast_profile<T, Dims>::encode_block(const bits_type *bits, void *stream) 
     auto ref = bits[0];
     bits_type domain = 0;
     for (size_t i = 1; i < detail::ipow(hypercube_side_length, Dims); ++i) {
-        domain |= bits[i];
+        domain |= bits[i] ^ ref;
     }
-    auto remainder_width = detail::significant_bits(domain ^ ref);
+    auto remainder_width = detail::significant_bits(domain);
     auto width_width = sizeof(T) == 1 ? 4 : sizeof(T) == 2 ? 5 : sizeof(T) == 4 ? 6 : 7;
     memcpy(stream, &ref, sizeof ref);
     auto dest = detail::bit_ptr<sizeof(bits_type)>::from_unaligned_pointer(stream);
@@ -495,6 +500,10 @@ size_t fast_profile<T, Dims>::decode_block(const void *stream, bits_type *bits) 
         for (size_t i = 1; i < detail::ipow(hypercube_side_length, Dims); ++i) {
             bits[i] = detail::load_bits<bits_type>(src, remainder_width) ^ ref;
             src.advance(remainder_width);
+        }
+    } else {
+        for (size_t i = 0; i < detail::ipow(hypercube_side_length, Dims); ++i) {
+            bits[i] = ref;
         }
     }
     return ceil_byte_offset(stream, src);

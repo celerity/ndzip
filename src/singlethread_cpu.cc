@@ -1,4 +1,5 @@
 #include "common.hh"
+#include <iostream>
 
 
 template<typename Profile>

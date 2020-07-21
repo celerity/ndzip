@@ -107,7 +107,7 @@ class slice {
         template<typename U, std::enable_if_t<std::is_const_v<T>
             && std::is_same_v<std::remove_const_t<T>, U>, int> = 0>
         slice(slice<U, Dims> other)
-            : _data(other.data)
+            : _data(other._data)
             , _extent(other._extent)
         {
         }
@@ -131,6 +131,8 @@ class slice {
     private:
         T *_data;
         hcde::extent<Dims> _extent;
+
+        friend class slice<const T, Dims>;
 };
 
 template<typename T, unsigned Dims>
@@ -158,6 +160,7 @@ class fast_profile {
 
 template<typename Profile>
 struct singlethread_cpu_encoder {
+    using profile = Profile;
     using data_type = typename Profile::data_type;
 
     constexpr static unsigned dimensions = Profile::dimensions;
