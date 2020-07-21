@@ -227,22 +227,19 @@ using uint128_t = emulated_uint128;
 #endif
 
 template<size_t Align, typename POD>
-POD load_aligned(const void *src, size_t byte_offset) {
+POD load_aligned(const void *src) {
     static_assert(std::is_trivially_copyable_v<POD>);
     assert(reinterpret_cast<uintptr_t>(src) % Align == 0);
     POD a;
-    memcpy(&a, static_cast<const char*>(__builtin_assume_aligned(src, Align)) + byte_offset,
-            sizeof(POD));
+    memcpy(&a, static_cast<const char*>(__builtin_assume_aligned(src, Align)), sizeof(POD));
     return a;
 }
 
 template<size_t Align, typename POD>
-void store_aligned(void *dest, size_t byte_offset, POD a) {
+void store_aligned(void *dest, POD a) {
     static_assert(std::is_trivially_copyable_v<POD>);
     assert(reinterpret_cast<uintptr_t>(dest) % Align == 0);
-    assert(byte_offset % Align == 0);
-    memcpy(static_cast<char*>(__builtin_assume_aligned(dest, Align)) + byte_offset, &a,
-            sizeof(POD));
+    memcpy(static_cast<char*>(__builtin_assume_aligned(dest, Align)), &a, sizeof(POD));
 }
 
 template<typename Integer>
@@ -251,28 +248,106 @@ using next_larger_uint = std::conditional_t<std::is_same_v<Integer, uint8_t>, ui
       std::conditional_t<std::is_same_v<Integer, uint32_t>, uint64_t,
       std::conditional_t<std::is_same_v<Integer, uint64_t>, uint128_t, void>>>>;
 
+template<typename Void, size_t Align>
+class basic_bit_ptr {
+    static_assert(std::is_void_v<Void>);
+
+    public:
+        using address_type = Void*;
+        using bit_offset_type = size_t;
+        constexpr static size_t byte_alignment = Align;
+        constexpr static size_t bit_alignment = Align * CHAR_BIT;
+
+        constexpr basic_bit_ptr(nullptr_t) noexcept {}
+
+        constexpr basic_bit_ptr() noexcept = default;
+
+        basic_bit_ptr(address_type aligned_address, size_t bit_offset)
+            : _aligned_address(aligned_address)
+            , _bit_offset(bit_offset)
+        {
+            assert(reinterpret_cast<uintptr_t>(aligned_address) % byte_alignment == 0);
+            assert(bit_offset < bit_alignment);
+        }
+
+        template<typename OtherVoid,
+            std::enable_if_t<std::is_const_v<Void> && !std::is_const_v<OtherVoid>, int> = 0>
+        basic_bit_ptr(const basic_bit_ptr<OtherVoid, Align> &other)
+            : _aligned_address(other._aligned_address)
+            , _bit_offset(other._bit_offset)
+        {
+        }
+
+        static basic_bit_ptr from_unaligned_pointer(address_type unaligned) {
+            auto misalign = reinterpret_cast<uintptr_t>(unaligned) % byte_alignment;
+            return basic_bit_ptr(reinterpret_cast<byte_address_type>(unaligned) - misalign,
+                    misalign * CHAR_BIT);
+        }
+
+        address_type aligned_address() const {
+            return _aligned_address;
+        }
+
+        size_t bit_offset() const {
+            return _bit_offset;
+        }
+
+        void advance(size_t n_bits) {
+            _aligned_address = reinterpret_cast<byte_address_type>(_aligned_address)
+                + n_bits / bit_alignment * byte_alignment;
+            _bit_offset += n_bits % bit_alignment;
+        }
+
+        friend bool operator==(basic_bit_ptr lhs, basic_bit_ptr rhs) {
+            return lhs._aligned_address == rhs._aligned_address && lhs._bit_offset == rhs._bit_offset;
+        }
+
+        friend bool operator!=(basic_bit_ptr lhs, basic_bit_ptr rhs) {
+            return !operator==(lhs, rhs);
+        }
+
+    private:
+        using byte_address_type = std::conditional_t<std::is_const_v<Void>, const char, char>*;
+
+        Void *_aligned_address = nullptr;
+        size_t _bit_offset = 0;
+
+        friend class basic_bit_ptr<std::add_const_t<Void>, Align>;
+};
+
+template<size_t Align>
+using bit_ptr = basic_bit_ptr<void, Align>;
+
+template<size_t Align>
+using const_bit_ptr = basic_bit_ptr<const void, Align>;
+
+template<typename Void, size_t Align>
+size_t ceil_byte_offset(const void *from, basic_bit_ptr<Void, Align> to) {
+    return reinterpret_cast<const char*>(to.aligned_address())
+        - reinterpret_cast<const char*>(from) + (to.bit_offset() + (CHAR_BIT - 1)) / CHAR_BIT;
+}
+
 template<typename Integer>
-Integer load_bits(const void *src, size_t src_bit_offset, size_t n_bits) {
+Integer load_bits(const_bit_ptr<sizeof(Integer)> src, size_t n_bits) {
     static_assert(std::is_integral_v<Integer> && std::is_unsigned_v<Integer>);
     using window = next_larger_uint<Integer>;
     assert(n_bits > 0 && n_bits <= bitsof<Integer>);
-    auto src_offset = (src_bit_offset / bitsof<Integer>) * sizeof(Integer);
-    auto a = endian_transform<window>(load_aligned<sizeof(Integer), window>(src, src_offset));
-    auto shift = bitsof<window> - (src_bit_offset % bitsof<Integer>) - n_bits;
+    auto a = endian_transform<window>(
+            load_aligned<sizeof(Integer), window>(src.aligned_address()));
+    auto shift = bitsof<window> - src.bit_offset() - n_bits;
     return static_cast<Integer>((a >> shift) & ~(~window{} << n_bits));
 }
 
 template<typename Integer>
-void store_bits_linear(void *dest, size_t dest_bit_offset, size_t n_bits, Integer value) {
+void store_bits_linear(bit_ptr<sizeof(Integer)> dest, size_t n_bits, Integer value) {
     static_assert(std::is_integral_v<Integer> && std::is_unsigned_v<Integer>);
     using window = next_larger_uint<Integer>;
     assert(n_bits > 0 && n_bits <= bitsof<Integer>);
-    assert(load_bits<Integer>(dest, dest_bit_offset, n_bits) == 0);
-    auto dest_offset = (dest_bit_offset / bitsof<Integer>) * sizeof(Integer);
-    auto a = load_aligned<sizeof(Integer), window>(dest, dest_offset);
-    auto shift = bitsof<window> - (dest_bit_offset % bitsof<Integer>) - n_bits;
+    assert(load_bits<Integer>(dest, n_bits) == 0);
+    auto a = load_aligned<sizeof(Integer), window>(dest.aligned_address());
+    auto shift = bitsof<window> - dest.bit_offset() - n_bits;
     a = a | endian_transform(static_cast<window>(static_cast<window>(value) << shift));
-    store_aligned<sizeof(Integer)>(dest, dest_offset, a);
+    store_aligned<sizeof(Integer)>(dest.aligned_address(), a);
 }
 
 template<unsigned Dims, typename Fn>
@@ -392,17 +467,17 @@ size_t fast_profile<T, Dims>::encode_block(const bits_type *bits, void *stream) 
     auto remainder_width = detail::significant_bits(domain ^ ref);
     auto width_width = sizeof(T) == 1 ? 4 : sizeof(T) == 2 ? 5 : sizeof(T) == 4 ? 6 : 7;
     memcpy(stream, &ref, sizeof ref);
-    size_t bit_offset = detail::bitsof<T>;
-    detail::store_bits_linear<bits_type>(stream, bit_offset, width_width, remainder_width);
-    bit_offset += width_width;
+    auto dest = detail::bit_ptr<sizeof(bits_type)>::from_unaligned_pointer(stream);
+    dest.advance(detail::bitsof<T>);
+    detail::store_bits_linear<bits_type>(dest, width_width, remainder_width);
+    dest.advance(width_width);
     if (remainder_width > 0) { // store_bits_linear does not allow n_bits == 0
         for (size_t i = 1; i < detail::ipow(hypercube_side_length, Dims); ++i) {
-            detail::store_bits_linear<bits_type>(stream, bit_offset, remainder_width,
-                    bits[i] ^ ref);
-            bit_offset += remainder_width;
+            detail::store_bits_linear<bits_type>(dest, remainder_width, bits[i] ^ ref);
+            dest.advance(remainder_width);
         }
     }
-    return (bit_offset + CHAR_BIT-1) / CHAR_BIT;
+    return ceil_byte_offset(stream, dest);
 }
 
 
@@ -410,18 +485,19 @@ template<typename T, unsigned Dims>
 size_t fast_profile<T, Dims>::decode_block(const void *stream, bits_type *bits) const {
     bits_type ref;
     memcpy(&ref, stream, sizeof ref);
-    size_t bit_offset = detail::bitsof<T>;
+    auto src = detail::const_bit_ptr<sizeof(bits_type)>::from_unaligned_pointer(stream);
+    src.advance(detail::bitsof<T>);
     auto width_width = sizeof(T) == 1 ? 4 : sizeof(T) == 2 ? 5 : sizeof(T) == 4 ? 6 : 7;
-    auto remainder_width = detail::load_bits<bits_type>(stream, bit_offset, width_width);
-    bit_offset += width_width;
+    auto remainder_width = detail::load_bits<bits_type>(src, width_width);
+    src.advance(width_width);
     if (remainder_width > 0) { // load_bits does not allow n_bits == 0
         bits[0] = ref;
         for (size_t i = 1; i < detail::ipow(hypercube_side_length, Dims); ++i) {
-            bits[i] = detail::load_bits<bits_type>(stream, bit_offset, remainder_width) ^ ref;
-            bit_offset += remainder_width;
+            bits[i] = detail::load_bits<bits_type>(src, remainder_width) ^ ref;
+            src.advance(remainder_width);
         }
     }
-    return (bit_offset + CHAR_BIT-1) / CHAR_BIT;
+    return ceil_byte_offset(stream, src);
 }
 
 } // namespace hcde
