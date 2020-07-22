@@ -1,17 +1,27 @@
-.PHONY: test
+CXX = /usr/bin/clang++
+CXXFLAGS += -Iinclude -std=c++17 -Wall -Wextra -Werror=return-type -Werror=init-self
+OPTFLAGS += -O3 -DNDEBUG=1
+DEBUGFLAGS += -ggdb
+
+HEADERS = include/hcde.hh src/common.hh src/fast_profile.hh src/strong_profile.hh
+
+.PHONY: test clean
 
 singlethread_cpu.s: singlethread_cpu.o Makefile
 	objdump -dC -M intel singlethread_cpu.o > singlethread_cpu.s
 
-singlethread_cpu.o: include/hcde.hh src/common.hh src/singlethread_cpu.cc Makefile
-	clang++ src/singlethread_cpu.cc -Iinclude -O3 -march=native -mtune=native -DNDEBUG=1 -c -std=c++17 -osinglethread_cpu.o -ggdb
+singlethread_cpu.o: $(HEADERS) src/singlethread_cpu.cc Makefile
+	$(CXX) -osinglethread_cpu.o -c $(CXXFLAGS) $(OPTFLAGS) $(DEBUGFLAGS) src/singlethread_cpu.cc 
 
-test_bin: src/singlethread_cpu.cc test/test.cc include/hcde.hh src/common.hh Makefile
-	clang++ -otest_bin src/singlethread_cpu.cc test/test.cc -Iinclude -std=c++17 -ggdb -Wall -Wextra
+test_bin: $(HEADERS) src/singlethread_cpu.cc test/test.cc Makefile
+	$(CXX) -otest_bin $(CXXFLAGS) $(DEBUGFLAGS) src/singlethread_cpu.cc test/test.cc
 
-compress: src/singlethread_cpu.cc src/compress.cc include/hcde.hh src/common.hh Makefile
-	clang++ src/singlethread_cpu.cc src/compress.cc -Iinclude -O3 -march=native -mtune=native -std=c++17 -ocompress -lboost_program_options -DNDEBUG=1
+compress: $(HEADERS) src/singlethread_cpu.cc src/compress.cc Makefile
+	$(CXX) -ocompress $(CXXFLAGS) $(OPTFLAGS) src/singlethread_cpu.cc src/compress.cc -lboost_program_options
 
 test: test_bin Makefile
 	./test_bin
+
+clean:
+	rm -f *.s *.o test_bin compress
 

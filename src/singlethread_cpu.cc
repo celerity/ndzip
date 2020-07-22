@@ -1,5 +1,6 @@
 #include "common.hh"
-#include <iostream>
+#include "fast_profile.hh"
+#include "strong_profile.hh"
 
 
 template<typename Profile>
@@ -61,5 +62,10 @@ namespace hcde {
 template class singlethread_cpu_encoder<fast_profile<float, 1>>;
 template class singlethread_cpu_encoder<fast_profile<float, 2>>;
 template class singlethread_cpu_encoder<fast_profile<float, 3>>;
+template class singlethread_cpu_encoder<fast_profile<float, 4>>;
+template class singlethread_cpu_encoder<strong_profile<float, 1>>;
+template class singlethread_cpu_encoder<strong_profile<float, 2>>;
+template class singlethread_cpu_encoder<strong_profile<float, 3>>;
+template class singlethread_cpu_encoder<strong_profile<float, 4>>;
 
 }

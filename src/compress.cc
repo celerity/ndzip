@@ -1,4 +1,3 @@
-
 #include <hcde.hh>
 
 #include <cstdlib>
@@ -109,7 +108,9 @@ int main(int argc, char **argv) {
     namespace opts = boost::program_options;
     using namespace std::string_literals;
 
-    bool decompress;
+    bool decompress = false;
+    bool fast = false;
+    bool strong = false;
     std::vector<size_t> size_components{};
     std::string input = "-";
     std::string output = "-";
@@ -119,6 +120,8 @@ int main(int argc, char **argv) {
 	opts::options_description desc("Options");
 	desc.add_options()
 			("help", "show this help")
+            ("fast,1", opts::bool_switch(&fast), "fast profile")
+            ("strong,9", opts::bool_switch(&strong), "strong profile")
 			("decompress,d", opts::bool_switch(&decompress), "decompress (default compress)")
 			("array-size,n", opts::value(&size_components)->required()->multitoken(),
                 "array size (one value per dimension, first-major)")
@@ -144,6 +147,9 @@ int main(int argc, char **argv) {
         auto dim = size_components.size();
         if (dim < 1 || dim > 4) {
             throw opts::error("Invalid number of dimensions " + std::to_string(dim) + " for -d");
+        }
+        if (fast && strong) {
+            throw opts::error("Conflicting options --fast/-1 and --strong/-9");
         }
 	}
 	catch (opts::error &e)
@@ -177,21 +183,41 @@ int main(int argc, char **argv) {
     }
 
     bool ok = false;
-    if (size_components.size() == 2) {
-        hcde::singlethread_cpu_encoder<hcde::fast_profile<float, 2>> encoder;
-        auto size = hcde::extent<2>{size_components[0], size_components[1]};
-        if (decompress) {
-            ok = decompress_stream(in_stream.get(), out_stream.get(), size, encoder);
-        } else {
-            ok = compress_stream(in_stream.get(), out_stream.get(), size, encoder);
+    if (strong || (!fast && !strong)) {
+        if (size_components.size() == 2) {
+            hcde::singlethread_cpu_encoder<hcde::strong_profile<float, 2>> encoder;
+            auto size = hcde::extent<2>{size_components[0], size_components[1]};
+            if (decompress) {
+                ok = decompress_stream(in_stream.get(), out_stream.get(), size, encoder);
+            } else {
+                ok = compress_stream(in_stream.get(), out_stream.get(), size, encoder);
+            }
+        } else if (size_components.size() == 3) {
+            hcde::singlethread_cpu_encoder<hcde::strong_profile<float, 3>> encoder;
+            auto size = hcde::extent<3>{size_components[0], size_components[1], size_components[2]};
+            if (decompress) {
+                ok = decompress_stream(in_stream.get(), out_stream.get(), size, encoder);
+            } else {
+                ok = compress_stream(in_stream.get(), out_stream.get(), size, encoder);
+            }
         }
-    } else if (size_components.size() == 3) {
-        hcde::singlethread_cpu_encoder<hcde::fast_profile<float, 3>> encoder;
-        auto size = hcde::extent<3>{size_components[0], size_components[1], size_components[2]};
-        if (decompress) {
-            ok = decompress_stream(in_stream.get(), out_stream.get(), size, encoder);
-        } else {
-            ok = compress_stream(in_stream.get(), out_stream.get(), size, encoder);
+    } else {
+        if (size_components.size() == 2) {
+            hcde::singlethread_cpu_encoder<hcde::fast_profile<float, 2>> encoder;
+            auto size = hcde::extent<2>{size_components[0], size_components[1]};
+            if (decompress) {
+                ok = decompress_stream(in_stream.get(), out_stream.get(), size, encoder);
+            } else {
+                ok = compress_stream(in_stream.get(), out_stream.get(), size, encoder);
+            }
+        } else if (size_components.size() == 3) {
+            hcde::singlethread_cpu_encoder<hcde::fast_profile<float, 3>> encoder;
+            auto size = hcde::extent<3>{size_components[0], size_components[1], size_components[2]};
+            if (decompress) {
+                ok = decompress_stream(in_stream.get(), out_stream.get(), size, encoder);
+            } else {
+                ok = compress_stream(in_stream.get(), out_stream.get(), size, encoder);
+            }
         }
     }
 

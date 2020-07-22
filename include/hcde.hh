@@ -143,7 +143,7 @@ class fast_profile {
 
         constexpr static unsigned dimensions = Dims;
         constexpr static unsigned hypercube_side_length = 4;
-        constexpr static unsigned superblock_size = 64;
+        constexpr static unsigned superblock_size = 16;
         constexpr static size_t compressed_block_size_bound
             = 1 + sizeof(data_type) * detail::ipow(hypercube_side_length, Dims);
 
@@ -154,8 +154,27 @@ class fast_profile {
         bits_type load_value(const data_type *data) const;
 
         void store_value(data_type *data, bits_type bits) const;
+};
 
-        size_t store_superblock(const bits_type *superblock, T *data, const extent<Dims> offset) const;
+template<typename T, unsigned Dims>
+class strong_profile {
+    public:
+        using data_type = T;
+        using bits_type = detail::bits_type<T>;
+
+        constexpr static unsigned dimensions = Dims;
+        constexpr static unsigned hypercube_side_length = 4;
+        constexpr static unsigned superblock_size = 4;
+        constexpr static size_t compressed_block_size_bound
+            = 1 + sizeof(data_type) * detail::ipow(hypercube_side_length, Dims);
+
+        size_t encode_block(const bits_type *bits, void *stream) const;
+
+        size_t decode_block(const void *stream, bits_type *bits) const;
+
+        bits_type load_value(const data_type *data) const;
+
+        void store_value(data_type *data, bits_type bits) const;
 };
 
 template<typename Profile>

@@ -3,7 +3,6 @@
 #include <hcde.hh>
 
 #include <climits>
-#include <iostream>
 #include <cstring>
 #include <limits>
 #include <optional>
@@ -365,13 +364,15 @@ Integer load_bits(const_bit_ptr<sizeof(Integer)> src, size_t n_bits) {
 template<typename Integer>
 void store_bits_linear(bit_ptr<sizeof(Integer)> dest, size_t n_bits, Integer value) {
     static_assert(std::is_integral_v<Integer> && std::is_unsigned_v<Integer>);
-    using window = next_larger_uint<Integer>;
+    using word = next_larger_uint<Integer>;
     assert(n_bits > 0 && n_bits <= bitsof<Integer>);
-    assert((window{value} >> n_bits) == 0);
+    assert((word{value} >> n_bits) == 0);
     assert(load_bits<Integer>(dest, n_bits) == 0);
-    auto a = load_aligned<sizeof(Integer), window>(dest.aligned_address());
-    auto shift = bitsof<window> - dest.bit_offset() - n_bits;
-    a = a | endian_transform(static_cast<window>(static_cast<window>(value) << shift));
+    auto a = load_aligned<sizeof(Integer), word>(dest.aligned_address());
+    auto shift = bitsof<word> - dest.bit_offset() - n_bits;
+    // TODO This is a read-modify-write op. We can probably eliminate the entire transfer
+    // from memory by keeping the last word in a register. This might incur a branch.
+    a = a | endian_transform(static_cast<word>(static_cast<word>(value) << shift));
     store_aligned<sizeof(Integer)>(dest.aligned_address(), a);
 }
 
@@ -455,78 +456,3 @@ size_t border_element_count(const extent<Dims> &e, unsigned side_length) {
 }
 
 } // namespace hcde::detail
-
-namespace hcde {
-
-template<typename T, unsigned Dims>
-auto fast_profile<T, Dims>::load_value(const data_type *data) const -> bits_type {
-    bits_type bits;
-    memcpy(&bits, data, sizeof bits);
-    if constexpr (std::is_floating_point_v<data_type>) {
-        bits = (bits << 1u) | (bits >> (detail::bitsof<bits_type> - 1));
-    } else if constexpr (std::is_signed_v<data_type>) {
-        bits += static_cast<bits_type>(std::numeric_limits<data_type>::min());
-    }
-    return bits;
-}
-
-
-template<typename T, unsigned Dims>
-void fast_profile<T, Dims>::store_value(data_type *data, bits_type bits) const {
-    if constexpr (std::is_floating_point_v<data_type>) {
-        bits = (bits >> 1u) | (bits << (detail::bitsof<bits_type> - 1));
-    } else if constexpr (std::is_signed_v<data_type>) {
-        bits -= static_cast<bits_type>(std::numeric_limits<data_type>::min());
-    }
-    memcpy(data, &bits, sizeof bits);
-}
-
-
-template<typename T, unsigned Dims>
-size_t fast_profile<T, Dims>::encode_block(const bits_type *bits, void *stream) const {
-    auto ref = bits[0];
-    bits_type domain = 0;
-    for (size_t i = 1; i < detail::ipow(hypercube_side_length, Dims); ++i) {
-        domain |= bits[i] ^ ref;
-    }
-    auto remainder_width = detail::significant_bits(domain);
-    auto width_width = sizeof(T) == 1 ? 4 : sizeof(T) == 2 ? 5 : sizeof(T) == 4 ? 6 : 7;
-    memcpy(stream, &ref, sizeof ref);
-    auto dest = detail::bit_ptr<sizeof(bits_type)>::from_unaligned_pointer(stream);
-    dest.advance(detail::bitsof<T>);
-    detail::store_bits_linear<bits_type>(dest, width_width, remainder_width);
-    dest.advance(width_width);
-    if (remainder_width > 0) { // store_bits_linear does not allow n_bits == 0
-        for (size_t i = 1; i < detail::ipow(hypercube_side_length, Dims); ++i) {
-            detail::store_bits_linear<bits_type>(dest, remainder_width, bits[i] ^ ref);
-            dest.advance(remainder_width);
-        }
-    }
-    return ceil_byte_offset(stream, dest);
-}
-
-
-template<typename T, unsigned Dims>
-size_t fast_profile<T, Dims>::decode_block(const void *stream, bits_type *bits) const {
-    bits_type ref;
-    memcpy(&ref, stream, sizeof ref);
-    auto src = detail::const_bit_ptr<sizeof(bits_type)>::from_unaligned_pointer(stream);
-    src.advance(detail::bitsof<T>);
-    auto width_width = sizeof(T) == 1 ? 4 : sizeof(T) == 2 ? 5 : sizeof(T) == 4 ? 6 : 7;
-    auto remainder_width = detail::load_bits<bits_type>(src, width_width);
-    src.advance(width_width);
-    if (remainder_width > 0) { // load_bits does not allow n_bits == 0
-        bits[0] = ref;
-        for (size_t i = 1; i < detail::ipow(hypercube_side_length, Dims); ++i) {
-            bits[i] = detail::load_bits<bits_type>(src, remainder_width) ^ ref;
-            src.advance(remainder_width);
-        }
-    } else {
-        for (size_t i = 0; i < detail::ipow(hypercube_side_length, Dims); ++i) {
-            bits[i] = ref;
-        }
-    }
-    return ceil_byte_offset(stream, src);
-}
-
-} // namespace hcde

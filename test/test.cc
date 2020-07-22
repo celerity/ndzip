@@ -1,5 +1,7 @@
 #include <hcde.hh>
 #include "../src/common.hh"
+#include "../src/fast_profile.hh"
+#include "../src/strong_profile.hh"
 
 #define CATCH_CONFIG_MAIN
 #include <catch2/catch.hpp>
@@ -201,7 +203,9 @@ TEST_CASE("for_each_border_slice") {
 }
 
 
-TEMPLATE_TEST_CASE("singlethread_cpu_encoder", "", (fast_profile<float, 2>)) {
+TEMPLATE_TEST_CASE("singlethread_cpu_encoder", "", (fast_profile<float, 2>),
+        (strong_profile<float, 2>))
+{
     std::string stream;
     singlethread_cpu_encoder<TestType> p;
     slice<const float, 2> data(float_data_2d_with_border, extent<2>{9, 10});
