@@ -7,6 +7,8 @@ HEADERS = include/hcde.hh src/common.hh src/fast_profile.hh src/strong_profile.h
 
 .PHONY: test clean
 
+all: singlethread_cpu.s test_bin compress
+
 singlethread_cpu.s: singlethread_cpu.o Makefile
 	objdump -dC -M intel singlethread_cpu.o > singlethread_cpu.s
 

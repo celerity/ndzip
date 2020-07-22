@@ -97,13 +97,13 @@ struct positional_bits_repr<T, std::enable_if_t<std::is_floating_point_v<T>>> {
 
 
 template<typename Bits, unsigned Dims>
-[[gnu::always_inline]]
+[[gnu::noinline]]
 void xor_neighborhood(unsigned side_length, const Bits *neighborhood, const Bits *in, Bits *out) {
     unsigned dim3_stride = 1;
     unsigned dim2_stride = Dims > 3 ? side_length : 1;
     unsigned dim1_stride = Dims > 2 ? dim2_stride * side_length : 1;
     unsigned dim0_stride = Dims > 1 ? dim1_stride * side_length : 1;
-    unsigned strides[] = {dim0_stride, dim1_stride, dim2_stride, dim3_stride    };
+    unsigned strides[] = {dim0_stride, dim1_stride, dim2_stride, dim3_stride};
 
     if constexpr (Dims >= 1) {
         for (unsigned d = 0; d < Dims; ++d) {
