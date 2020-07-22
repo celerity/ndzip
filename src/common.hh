@@ -421,6 +421,7 @@ void for_each_border_slice(const extent<Dims> &size, unsigned side_length, const
 }
 
 template<typename DataType, unsigned Dims>
+[[gnu::noinline]]
 size_t pack_border(void *dest, const slice<DataType, Dims> &src, unsigned side_length) {
     static_assert(std::is_trivially_copyable_v<DataType>);
     size_t dest_offset = 0;
@@ -433,6 +434,7 @@ size_t pack_border(void *dest, const slice<DataType, Dims> &src, unsigned side_l
 }
 
 template<typename DataType, unsigned Dims>
+[[gnu::noinline]]
 size_t unpack_border(const slice<DataType, Dims> &dest, const void *src, unsigned side_length) {
     static_assert(std::is_trivially_copyable_v<DataType>);
     size_t src_offset = 0;

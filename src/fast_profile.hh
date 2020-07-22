@@ -30,6 +30,7 @@ void fast_profile<T, Dims>::store_value(data_type *data, bits_type bits) const {
 
 
 template<typename T, unsigned Dims>
+[[gnu::noinline]]
 size_t fast_profile<T, Dims>::encode_block(const bits_type *bits, void *stream) const {
     auto ref = bits[0];
     bits_type domain = 0;
@@ -54,6 +55,7 @@ size_t fast_profile<T, Dims>::encode_block(const bits_type *bits, void *stream) 
 
 
 template<typename T, unsigned Dims>
+[[gnu::noinline]]
 size_t fast_profile<T, Dims>::decode_block(const void *stream, bits_type *bits) const {
     bits_type ref;
     memcpy(&ref, stream, sizeof ref);

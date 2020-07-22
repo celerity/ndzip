@@ -97,6 +97,7 @@ struct positional_bits_repr<T, std::enable_if_t<std::is_floating_point_v<T>>> {
 
 
 template<typename Bits, unsigned Dims>
+[[gnu::always_inline]]
 void xor_neighborhood(unsigned side_length, const Bits *neighborhood, const Bits *in, Bits *out) {
     unsigned dim3_stride = 1;
     unsigned dim2_stride = Dims > 3 ? side_length : 1;
@@ -182,6 +183,7 @@ void strong_profile<T, Dims>::store_value(data_type *data, bits_type bits) const
 
 
 template<typename T, unsigned Dims>
+[[gnu::noinline]]
 size_t strong_profile<T, Dims>::encode_block(const bits_type *bits, void *stream) const {
     assert((std::is_same_v<T, float>)); // TODO substitute generic constants below
 
@@ -216,6 +218,7 @@ size_t strong_profile<T, Dims>::encode_block(const bits_type *bits, void *stream
 
 
 template<typename T, unsigned Dims>
+[[gnu::noinline]]
 size_t strong_profile<T, Dims>::decode_block(const void *stream, bits_type *bits) const {
     assert((std::is_same_v<T, float>)); // TODO substitute generic constants below
 
