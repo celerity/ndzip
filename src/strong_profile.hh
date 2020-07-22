@@ -147,13 +147,13 @@ void xor_neighborhood(unsigned side_length, const Bits *neighborhood, const Bits
                             auto offset2 = offset1;
                             for (unsigned k = 1; k < side_length; ++k) {
                                 offset2 += strides[d2];
-                                auto n000 = offset1 - strides[d2] - strides[d1] - strides[d0];
-                                auto n001 = offset1 - strides[d1] - strides[d0];
-                                auto n010 = offset1 - strides[d2] - strides[d0];
-                                auto n100 = offset1 - strides[d2] - strides[d1];
-                                auto n011 = offset1 - strides[d0];
-                                auto n101 = offset1 - strides[d1];
-                                auto n110 = offset1 - strides[d2];
+                                auto n000 = offset2 - strides[d2] - strides[d1] - strides[d0];
+                                auto n001 = offset2 - strides[d1] - strides[d0];
+                                auto n010 = offset2 - strides[d2] - strides[d0];
+                                auto n100 = offset2 - strides[d2] - strides[d1];
+                                auto n011 = offset2 - strides[d0];
+                                auto n101 = offset2 - strides[d1];
+                                auto n110 = offset2 - strides[d2];
                                 out[offset2] = in[offset2] ^ neighborhood[n000]
                                     ^ neighborhood[n001] ^ neighborhood[n010] ^ neighborhood[n100]
                                     ^ neighborhood[n011] ^ neighborhood[n101] ^ neighborhood[n110];
