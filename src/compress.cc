@@ -13,14 +13,17 @@ static bool compress_stream(FILE *in, FILE *out, const hcde::extent<Encoder::dim
         const Encoder &encoder)
 {
     using data_type = typename Encoder::data_type;
-    std::vector<data_type> array(size.linear_offset());
-    std::vector<char> compressed(encoder.compressed_size_bound(size));
+    const auto compressed_buffer_size = encoder.compressed_size_bound(size);
+    const auto raw_bytes_per_chunk = static_cast<size_t>(size.linear_offset() * sizeof(data_type));
+    std::unique_ptr<data_type, decltype((free))> array(
+            static_cast<data_type*>(malloc(raw_bytes_per_chunk)), free);
+    std::unique_ptr<char, decltype((free))> compressed(
+            static_cast<char*>(calloc(1, compressed_buffer_size)), free);
 
-    const auto raw_bytes_per_chunk = static_cast<size_t>(array.size() * sizeof(data_type));
     size_t compressed_size = 0;
     unsigned n_chunks = 0;
     for (;; ++n_chunks) {
-        auto bytes_read = fread(array.data(), 1, raw_bytes_per_chunk, in);
+        auto bytes_read = fread(array.get(), 1, raw_bytes_per_chunk, in);
         if (bytes_read < raw_bytes_per_chunk) {
             if (ferror(in)) {
                 perror("fread");
@@ -33,13 +36,15 @@ static bool compress_stream(FILE *in, FILE *out, const hcde::extent<Encoder::dim
             return false;
         }
 
-        memset(compressed.data(), 0, compressed.size());
+        if (n_chunks > 0) {
+            memset(compressed.get(), 0, compressed_buffer_size);
+        }
         auto compressed_chunk_size = encoder.compress(
-                hcde::slice<data_type, Encoder::dimensions>(array.data(), size),
-                compressed.data());
-        assert(compressed_chunk_size <= compressed.size());
+                hcde::slice<data_type, Encoder::dimensions>(array.get(), size),
+                compressed.get());
+        assert(compressed_chunk_size <= compressed_buffer_size);
 
-        if (fwrite(compressed.data(), compressed_chunk_size, 1, out) < 1) {
+        if (fwrite(compressed.get(), compressed_chunk_size, 1, out) < 1) {
             perror("fwrite");
             return false;
         }
@@ -62,14 +67,17 @@ static bool decompress_stream(FILE *in, FILE *out, const hcde::extent<Encoder::d
         const Encoder &encoder)
 {
     using data_type = typename Encoder::data_type;
-    std::vector<data_type> array(size.linear_offset());
-    std::vector<char> compressed(encoder.compressed_size_bound(size));
+    const auto compressed_buffer_size = encoder.compressed_size_bound(size);
+    const auto raw_bytes_per_chunk = static_cast<size_t>(size.linear_offset() * sizeof(data_type));
+    std::unique_ptr<data_type, decltype((free))> array(
+            static_cast<data_type*>(malloc(raw_bytes_per_chunk)), free);
+    std::unique_ptr<char, decltype((free))> compressed(
+            static_cast<char*>(calloc(1, compressed_buffer_size)), free);
 
-    const auto raw_bytes_per_chunk = static_cast<size_t>(array.size() * sizeof(data_type));
     size_t compressed_bytes_left = 0;
     for (;;) {
-        auto bytes_to_read = compressed.size() - compressed_bytes_left;
-        auto bytes_read = fread(compressed.data() + compressed_bytes_left, 1, bytes_to_read, in);
+        auto bytes_to_read = compressed_buffer_size - compressed_bytes_left;
+        auto bytes_read = fread(compressed.get() + compressed_bytes_left, 1, bytes_to_read, in);
         if (bytes_read < bytes_to_read && ferror(in)) {
             perror("fread");
             return false;
@@ -80,18 +88,18 @@ static bool decompress_stream(FILE *in, FILE *out, const hcde::extent<Encoder::d
             return true;
         }
 
-        auto compressed_chunk_size = encoder.decompress(compressed.data(),
+        auto compressed_chunk_size = encoder.decompress(compressed.get(),
                 compressed_bytes_in_buffer,
-                hcde::slice<data_type, Encoder::dimensions>(array.data(), size));
+                hcde::slice<data_type, Encoder::dimensions>(array.get(), size));
         assert(compressed_chunk_size <= compressed_bytes_in_buffer);
 
-        if (fwrite(array.data(), raw_bytes_per_chunk, 1, out) < 1) {
+        if (fwrite(array.get(), raw_bytes_per_chunk, 1, out) < 1) {
             perror("fwrite");
             return false;
         }
 
         compressed_bytes_left = compressed_bytes_in_buffer - compressed_chunk_size;
-        memmove(compressed.data(), compressed.data() + compressed_chunk_size,
+        memmove(compressed.get(), compressed.get() + compressed_chunk_size,
                 compressed_bytes_left);
     }
 }

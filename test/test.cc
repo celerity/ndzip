@@ -36,6 +36,38 @@ const float float_data_2d_with_border[90] = {
 };
 
 
+TEST_CASE("for_each_in_hypercube") {
+    int data[10000];
+    std::iota(std::begin(data), std::end(data), 0);
+
+    SECTION("1d") {
+        std::vector<int> indices;
+        for_each_in_hypercube(slice<int, 1>(data, extent<1>(100)), extent<1>(5), 4,
+                [&](int x) { indices.push_back(x); });
+        CHECK(indices == std::vector{5, 6, 7, 8});
+    }
+    SECTION("2d") {
+        std::vector<int> indices;
+        for_each_in_hypercube(slice<int, 2>(data, extent<2>(10, 10)), extent<2>(1, 2), 3,
+                [&](int x) { indices.push_back(x); });
+        CHECK(indices == std::vector{12, 13, 14, 22, 23, 24, 32, 33, 34});
+    }
+    SECTION("3d") {
+        std::vector<int> indices;
+        for_each_in_hypercube(slice<int, 3>(data, extent<3>(10, 10, 10)), extent<3>(1, 0, 2), 2,
+                [&](int x) { indices.push_back(x); });
+        CHECK(indices == std::vector{102, 103, 112, 113, 202, 203, 212, 213});
+    }
+    SECTION("4d") {
+        std::vector<int> indices;
+        for_each_in_hypercube(slice<int, 4>(data, extent<4>(10, 10, 10, 10)),
+                extent<4>(1, 0, 2, 3), 2, [&](int x) { indices.push_back(x); });
+        CHECK(indices == std::vector{1023, 1024, 1033, 1034, 1123, 1124, 1133, 1134,
+                2023, 2024, 2033, 2034, 2123, 2124, 2133, 2134});
+    }
+}
+
+
 TEST_CASE("load_bits") {
     SECTION("for 8-bit integers") {
         alignas(uint8_t) const uint8_t bits[2] = {0b1010'0100, 0b1000'0000};
@@ -173,7 +205,7 @@ TEMPLATE_TEST_CASE("singlethread_cpu_encoder", "", (fast_profile<float, 2>)) {
     std::string stream;
     singlethread_cpu_encoder<TestType> p;
     slice<const float, 2> data(float_data_2d_with_border, extent<2>{9, 10});
-    stream.resize(p.compressed_size_bound(data.extent()));
+    stream.resize(p.compressed_size_bound(data.size()));
     auto cursor = p.compress(data, stream.data());
     CHECK(cursor <= stream.size());
 

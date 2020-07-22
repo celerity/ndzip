@@ -98,9 +98,9 @@ namespace hcde {
 template<typename T, unsigned Dims>
 class slice {
     public:
-        explicit slice(T *data, hcde::extent<Dims> e)
+        explicit slice(T *data, extent<Dims> size)
             : _data(data)
-            , _extent(e)
+            , _size(size)
         {
         }
 
@@ -108,12 +108,12 @@ class slice {
             && std::is_same_v<std::remove_const_t<T>, U>, int> = 0>
         slice(slice<U, Dims> other)
             : _data(other._data)
-            , _extent(other._extent)
+            , _size(other._size)
         {
         }
 
-        const hcde::extent<Dims> &extent() const {
-            return _extent;
+        const extent<Dims> &size() const {
+            return _size;
         }
 
         T *data() const {
@@ -121,7 +121,7 @@ class slice {
         }
 
         size_t linear_index(const hcde::extent<Dims> &pos) const {
-            return detail::linear_index(_extent, pos);
+            return detail::linear_index(_size, pos);
         }
 
         T &operator[](const hcde::extent<Dims> &pos) const {
@@ -130,7 +130,7 @@ class slice {
 
     private:
         T *_data;
-        hcde::extent<Dims> _extent;
+        extent<Dims> _size;
 
         friend class slice<const T, Dims>;
 };
@@ -159,18 +159,19 @@ class fast_profile {
 };
 
 template<typename Profile>
-struct singlethread_cpu_encoder {
-    using profile = Profile;
-    using data_type = typename Profile::data_type;
+class singlethread_cpu_encoder {
+    public:
+        using profile = Profile;
+        using data_type = typename Profile::data_type;
 
-    constexpr static unsigned dimensions = Profile::dimensions;
+        constexpr static unsigned dimensions = Profile::dimensions;
 
-    size_t compressed_size_bound(const extent<dimensions> &e) const;
+        size_t compressed_size_bound(const extent<dimensions> &e) const;
 
-    size_t compress(const slice<const data_type, dimensions> &data, void *stream) const;
+        size_t compress(const slice<const data_type, dimensions> &data, void *stream) const;
 
-    size_t decompress(const void *stream, size_t bytes,
-            const slice<data_type, dimensions> &data) const;
+        size_t decompress(const void *stream, size_t bytes,
+                const slice<data_type, dimensions> &data) const;
 };
 
 } // namespace hcde

@@ -22,13 +22,12 @@ size_t hcde::singlethread_cpu_encoder<Profile>::compress(
     using bits_type = typename Profile::bits_type;
     constexpr static auto side_length = Profile::hypercube_side_length;
     size_t stream_pos = 0;
-    detail::for_each_hypercube_offset(data.extent(), side_length, [&](auto offset) {
+    detail::for_each_hypercube_offset(data.size(), side_length, [&](auto offset) {
         Profile p;
         bits_type cube[detail::ipow(side_length, Profile::dimensions)] = {};
         bits_type *cube_ptr = cube;
-        detail::for_each_in_hypercube<Profile::dimensions>(side_length, [&](auto element) {
-            *cube_ptr++ = p.load_value(&data[offset + element]);
-        });
+        detail::for_each_in_hypercube(data, offset, side_length,
+                [&](auto &element) { *cube_ptr++ = p.load_value(&element); });
         stream_pos += p.encode_block(cube, static_cast<char *>(stream) + stream_pos);
     });
     stream_pos += detail::pack_border(static_cast<char *>(stream) + stream_pos, data, side_length);
@@ -43,14 +42,13 @@ size_t hcde::singlethread_cpu_encoder<Profile>::decompress(const void *stream, s
     using bits_type = typename Profile::bits_type;
     constexpr static auto side_length = Profile::hypercube_side_length;
     size_t stream_pos = 0;
-    detail::for_each_hypercube_offset(data.extent(), side_length, [&](auto offset) {
+    detail::for_each_hypercube_offset(data.size(), side_length, [&](auto offset) {
         Profile p;
         bits_type cube[detail::ipow(side_length, Profile::dimensions)] = {};
         stream_pos += p.decode_block(static_cast<const char *>(stream) + stream_pos, cube);
         bits_type *cube_ptr = cube;
-        detail::for_each_in_hypercube<Profile::dimensions>(side_length, [&](auto element) {
-            p.store_value(&data[offset + element], *cube_ptr++);
-        });
+        detail::for_each_in_hypercube(data, offset, side_length,
+                [&](auto &element) { p.store_value(&element, *cube_ptr++); });
     });
     stream_pos += detail::unpack_border(data, static_cast<const char *>(stream) + stream_pos,
             side_length);

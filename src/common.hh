@@ -40,35 +40,55 @@ using native_uint128_t = unsigned __int128;
 #endif
 
 
-template<unsigned Dims, typename Fn>
-void for_each_in_hypercube(unsigned side_length, const Fn &fn) {
+template<typename T, unsigned Dims, typename Fn>
+void for_each_in_hypercube(const slice<T, Dims> &data, const extent<Dims> &offset,
+        unsigned side_length, const Fn &fn)
+{
     if constexpr (Dims == 1) {
+        auto *pointer = &data[offset];
         for (unsigned i = 0; i < side_length; ++i) {
-            fn(extent<1>{i});
+            fn(pointer[i]);
         }
     } else if constexpr (Dims == 2) {
+        auto stride = data.size()[1];
+        auto *pointer = &data[offset];
         for (unsigned i = 0; i < side_length; ++i) {
             for (unsigned j = 0; j < side_length; ++j) {
-                fn(extent<2>{i, j});
+                fn(pointer[j]);
             }
+            pointer += stride;
         }
     } else if constexpr (Dims == 3) {
+        auto stride0 = data.size()[1] * data.size()[2];
+        auto stride1 = data.size()[2];
+        auto *pointer0 = &data[offset];
         for (unsigned i = 0; i < side_length; ++i) {
+            auto pointer1 = pointer0;
             for (unsigned j = 0; j < side_length; ++j) {
                 for (unsigned k = 0; k < side_length; ++k) {
-                    fn(extent<3>{i, j, k});
+                    fn(pointer1[k]);
                 }
+                pointer1 += stride1;
             }
+            pointer0 += stride0;
         }
     } else if constexpr (Dims == 4) {
+        auto stride0 = data.size()[1] * data.size()[2] * data.size()[3];
+        auto stride1 = data.size()[2] * data.size()[3]; auto stride2 = data.size()[3];
+        auto *pointer0 = &data[offset];
         for (unsigned i = 0; i < side_length; ++i) {
+            auto pointer1 = pointer0;
             for (unsigned j = 0; j < side_length; ++j) {
+                auto pointer2 = pointer1;
                 for (unsigned k = 0; k < side_length; ++k) {
                     for (unsigned l = 0; l < side_length; ++l) {
-                        fn(extent<4>{i, j, k, l});
+                        fn(pointer2[l]);
                     }
+                    pointer2 += stride2;
                 }
+                pointer1 += stride1;
             }
+            pointer0 += stride0;
         }
     } else {
         static_assert(Dims != Dims);
@@ -383,7 +403,7 @@ void for_each_border_slice_recursive(const extent<Dims> &size, extent<Dims> pos,
 template<unsigned Dims, typename Fn>
 void for_each_border_slice(const extent<Dims> &size, unsigned side_length, const Fn &fn) {
     std::optional<unsigned> smallest_dim_with_border;
-    for (int d = 0; d < Dims; ++d) {
+    for (unsigned d = 0; d < Dims; ++d) {
         if (size[d] / side_length == 0) {
             // special case: the whole array is a border
             fn(0, size.linear_offset());
@@ -403,7 +423,7 @@ template<typename DataType, unsigned Dims>
 size_t pack_border(void *dest, const slice<DataType, Dims> &src, unsigned side_length) {
     static_assert(std::is_trivially_copyable_v<DataType>);
     size_t dest_offset = 0;
-    for_each_border_slice(src.extent(), side_length, [&](size_t src_offset, size_t count) {
+    for_each_border_slice(src.size(), side_length, [&](size_t src_offset, size_t count) {
         memcpy(static_cast<char*>(dest) + dest_offset, src.data() + src_offset,
                 count * sizeof(DataType));
         dest_offset += count * sizeof(DataType);
@@ -415,7 +435,7 @@ template<typename DataType, unsigned Dims>
 size_t unpack_border(const slice<DataType, Dims> &dest, const void *src, unsigned side_length) {
     static_assert(std::is_trivially_copyable_v<DataType>);
     size_t src_offset = 0;
-    for_each_border_slice(dest.extent(), side_length, [&](size_t dest_offset, size_t count) {
+    for_each_border_slice(dest.size(), side_length, [&](size_t dest_offset, size_t count) {
         memcpy(dest.data() + dest_offset, static_cast<const char*>(src) + src_offset,
                 count * sizeof(DataType));
         src_offset += count * sizeof(DataType);

@@ -10,7 +10,7 @@ test_bin: src/singlethread_cpu.cc test/test.cc include/hcde.hh src/common.hh Mak
 	clang++ -otest_bin src/singlethread_cpu.cc test/test.cc -Iinclude -std=c++17 -ggdb -Wall -Wextra
 
 compress: src/singlethread_cpu.cc src/compress.cc include/hcde.hh src/common.hh Makefile
-	clang++ src/singlethread_cpu.cc src/compress.cc -Iinclude -O3 -march=native -mtune=native -std=c++17 -ocompress -lboost_program_options
+	clang++ src/singlethread_cpu.cc src/compress.cc -Iinclude -O3 -march=native -mtune=native -std=c++17 -ocompress -lboost_program_options -DNDEBUG=1
 
 test: test_bin Makefile
 	./test_bin
