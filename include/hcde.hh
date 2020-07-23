@@ -140,10 +140,10 @@ class fast_profile {
     public:
         using data_type = T;
         using bits_type = detail::bits_type<T>;
+        using hypercube_offset_type = uint16_t;
 
         constexpr static unsigned dimensions = Dims;
         constexpr static unsigned hypercube_side_length = 4;
-        constexpr static unsigned superblock_size = 16;
         constexpr static size_t compressed_block_size_bound
             = 1 + sizeof(data_type) * detail::ipow(hypercube_side_length, Dims);
 
@@ -161,10 +161,10 @@ class strong_profile {
     public:
         using data_type = T;
         using bits_type = detail::bits_type<T>;
+        using hypercube_offset_type = uint32_t;
 
         constexpr static unsigned dimensions = Dims;
         constexpr static unsigned hypercube_side_length = 16;
-        constexpr static unsigned superblock_size = 4;
         constexpr static size_t compressed_block_size_bound
             = 1 + sizeof(data_type) * detail::ipow(hypercube_side_length, Dims);
 

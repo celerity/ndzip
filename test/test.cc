@@ -203,6 +203,71 @@ TEST_CASE("for_each_border_slice") {
 }
 
 
+struct test_profile {
+    using data_type = float;
+    using bits_type = uint32_t;
+
+    constexpr static unsigned dimensions = 2;
+    constexpr static unsigned hypercube_side_length = 4;
+
+    size_t encode_block(const bits_type *bits, void *stream) const {
+        size_t n_bytes = ipow(hypercube_side_length, dimensions) * sizeof(bits_type);
+        memcpy(stream, bits, n_bytes);
+        return n_bytes;
+    }
+
+    size_t decode_block(const void *stream, bits_type *bits) const {
+        size_t n_bytes = ipow(hypercube_side_length, dimensions) * sizeof(bits_type);
+        memcpy(bits, stream, n_bytes);
+        return n_bytes;
+    }
+
+    bits_type load_value(const data_type *data) const {
+        bits_type bits;
+        memcpy(&bits, data, sizeof bits);
+        return bits;
+    }
+
+    void store_value(data_type *data, bits_type bits) const {
+        memcpy(data, &bits, sizeof bits);
+    }
+};
+
+TEST_CASE("file") {
+    const size_t n = 100;
+    const auto n_hypercubes_per_dim = n / test_profile::hypercube_side_length;
+
+    std::vector<std::vector<extent<test_profile::dimensions>>> superblocks;
+    std::vector<bool> visited(ipow(n_hypercubes_per_dim, 2));
+
+    file<test_profile> f(extent<2>{n, n});
+    f.for_each_superblock([&](auto sb) {
+        std::vector<extent<test_profile::dimensions>> blocks;
+        sb.for_each_hypercube([&](auto off) {
+            CHECK(off[0] < n);
+            CHECK(off[1] < n);
+            CHECK(off[0] % test_profile::hypercube_side_length == 0);
+            CHECK(off[1] % test_profile::hypercube_side_length == 0);
+
+            auto idx = off[0] / test_profile::hypercube_side_length * n_hypercubes_per_dim
+                + off[1] / test_profile::hypercube_side_length;
+            CHECK(!visited[idx]);
+            visited[idx] = true;
+
+            blocks.push_back(off);
+        });
+        CHECK(blocks.size() == sb.num_hypercubes());
+        superblocks.push_back(std::move(blocks));
+    });
+
+    CHECK(std::all_of(visited.begin(), visited.end(), [](auto b) { return b; }));
+
+    CHECK(superblocks.size() == f.num_superblocks());
+    CHECK(!superblocks.empty());
+}
+
+/*
+
 TEMPLATE_TEST_CASE("singlethread_cpu_encoder", "", (fast_profile<float, 2>),
         (strong_profile<float, 2>))
 {
@@ -220,3 +285,4 @@ TEMPLATE_TEST_CASE("singlethread_cpu_encoder", "", (fast_profile<float, 2>),
     CHECK(memcmp(float_data_2d_with_border, restore_data, sizeof restore_data) == 0);
 }
 
+*/

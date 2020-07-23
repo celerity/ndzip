@@ -2,6 +2,7 @@
 
 #include <hcde.hh>
 
+#include <algorithm>
 #include <climits>
 #include <cstring>
 #include <limits>
@@ -246,20 +247,30 @@ using uint128_t = native_uint128_t;
 using uint128_t = emulated_uint128;
 #endif
 
-template<size_t Align, typename POD>
-POD load_aligned(const void *src) {
+template<typename POD>
+POD load_unaligned(const void *src) {
     static_assert(std::is_trivially_copyable_v<POD>);
-    assert(reinterpret_cast<uintptr_t>(src) % Align == 0);
     POD a;
-    memcpy(&a, static_cast<const char*>(__builtin_assume_aligned(src, Align)), sizeof(POD));
+    memcpy(&a, src, sizeof(POD));
     return a;
 }
 
 template<size_t Align, typename POD>
-void store_aligned(void *dest, POD a) {
+POD load_aligned(const void *src) {
+    assert(reinterpret_cast<uintptr_t>(src) % Align == 0);
+    return load_unaligned<POD>(__builtin_assume_aligned(src, Align));
+}
+
+template<typename POD>
+void store_unaligned(void *dest, POD a) {
     static_assert(std::is_trivially_copyable_v<POD>);
+    memcpy(dest, &a, sizeof(POD));
+}
+
+template<size_t Align, typename POD>
+void store_aligned(void *dest, POD a) {
     assert(reinterpret_cast<uintptr_t>(dest) % Align == 0);
-    memcpy(static_cast<char*>(__builtin_assume_aligned(dest, Align)), &a, sizeof(POD));
+    store_unaligned(__builtin_assume_aligned(dest, Align), a);
 }
 
 template<typename Integer>
@@ -456,5 +467,201 @@ size_t border_element_count(const extent<Dims> &e, unsigned side_length) {
     }
     return n_all_elems - n_cube_elems;
 }
+
+template<typename Profile>
+class superblock {
+    public:
+        superblock(extent<Profile::dimensions> start, extent<Profile::dimensions> end,
+                unsigned split_dimension)
+            : _start(start)
+            , _end(end)
+            , _split_dimension(split_dimension)
+        {
+        }
+
+        size_t num_hypercubes() const {
+            const auto side_length = Profile::hypercube_side_length;
+            size_t n_cubes = (_end[_split_dimension] - _start[_split_dimension]) / side_length;
+            for (unsigned d = _split_dimension + 1; d < Profile::dimensions; ++d) {
+                assert(_start[d] == 0);
+                n_cubes *= _end[d] / side_length;
+            }
+            return n_cubes;
+        }
+
+        template<typename Fn>
+        void for_each_hypercube(Fn &&fn) const {
+            auto dims = Profile::dimensions;
+            auto side_length = Profile::hypercube_side_length;
+            for (auto off = _start;
+                    off[_split_dimension] + side_length <= _end[_split_dimension];
+                    off[_split_dimension] += side_length)
+            {
+                if (dims >= 1 && _split_dimension == dims - 1) {
+                    fn(off);
+                } else {
+                    for (off[_split_dimension + 1] = 0;
+                            off[_split_dimension + 1] + side_length <= _end[_split_dimension + 1];
+                            off[_split_dimension + 1] += side_length)
+                    {
+                        if (dims >= 2 && _split_dimension == dims - 2) {
+                            fn(off);
+                        } else {
+                            for (off[_split_dimension + 2] = 0;
+                                    off[_split_dimension + 2] + side_length
+                                        <= _end[_split_dimension + 2];
+                                    off[_split_dimension + 2] += side_length)
+                            {
+                                if (dims >= 3 && _split_dimension == dims - 3) {
+                                    fn(off);
+                                } else {
+                                    for (off[_split_dimension + 3] = 0;
+                                            off[_split_dimension + 3] + side_length
+                                                <= _end[_split_dimension + 3];
+                                            off[_split_dimension + 3] += side_length)
+                                    {
+                                        assert(dims == 4 && _split_dimension == dims - 4);
+                                        fn(off);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+    private:
+        extent<Profile::dimensions> _start;
+        extent<Profile::dimensions> _end;
+        unsigned _split_dimension;
+};
+
+template<typename Profile>
+class file {
+    public:
+        explicit file(extent<Profile::dimensions> size)
+            : _size(size)
+        {
+        }
+
+        size_t num_superblocks() const {
+            auto split_dim = superblock_split_dimension();
+            auto side = Profile::hypercube_side_length;
+
+            size_t n_sbs = _size[split_dim] / superblock_split_granularity();
+            for (unsigned d = 0; d < split_dim; ++d) {
+                n_sbs *= _size[d] / side;
+            }
+            return n_sbs;
+        }
+
+        template<typename Fn>
+        void for_each_superblock(Fn &&fn) const {
+            auto d = superblock_split_dimension();
+            auto step = superblock_split_granularity();
+            auto side = Profile::hypercube_side_length;
+
+            if (Profile::dimensions > 0 && d == 0) {
+                for (extent<Profile::dimensions> start; start[0] + step <= _size[0]; start[0] += step) {
+                    auto end = _size;
+                    end[0] = start[0] + step;
+                    fn(superblock<Profile>{start, end, d});
+                }
+            } else if (Profile::dimensions > 1 && d == 1) {
+                for (extent<Profile::dimensions> start; start[0] + side <= _size[0]; start[0] += side) {
+                    for (start[1] = 0; start[1] + step <= _size[1]; start[1] += step) {
+                        auto end = _size;
+                        end[0] = start[0] + side;
+                        end[1] = start[1] + step;
+                        fn(superblock<Profile>{start, end, d});
+                    }
+                }
+            } else if (Profile::dimensions > 2 && d == 2) {
+                for (extent<Profile::dimensions> start; start[0] + side <= _size[0]; start[0] += side) {
+                    for (start[1] = 0; start[1] + side <= _size[1]; start[1] += side) {
+                        for (start[2] = 0; start[2] + step <= _size[2]; start[2] += step) {
+                            auto end = _size;
+                            end[0] = start[0] + side;
+                            end[1] = start[1] + side;
+                            end[2] = start[2] + step;
+                            fn(superblock<Profile>{start, end, d});
+                        }
+                    }
+                }
+            } else {
+                assert(Profile::dimensions > 3 && d == 3);
+                for (extent<Profile::dimensions> start; start[0] + side <= _size[0]; start[0] += side) {
+                    for (start[1] = 0; start[1] + side <= _size[1]; start[1] += side) {
+                        for (start[2] = 0; start[2] + side <= _size[2]; start[2] += side) {
+                            for (start[3] = 0; start[3] + step <= _size[3]; start[3] += step) {
+                                auto end = _size;
+                                end[0] = start[0] + side;
+                                end[1] = start[1] + side;
+                                end[2] = start[2] + side;
+                                end[3] = start[3] + step;
+                                fn(superblock<Profile>{start, end, d});
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        constexpr size_t num_hypercubes() const {
+            size_t n_cubes = 1;
+            for (unsigned d = 0; d < Profile::dimensions; ++d) {
+                n_cubes *= _size[d] / Profile::hypercube_side_length;
+            }
+            return n_cubes;
+        }
+
+        constexpr size_t max_num_hypercubes_per_superblock() const {
+            return 63; // TODO
+        }
+
+        constexpr size_t file_header_length() const {
+            return num_superblocks() * sizeof(uint64_t);
+        }
+
+        constexpr size_t superblock_header_length() const {
+            return max_num_hypercubes_per_superblock()
+                * sizeof(typename Profile::hypercube_offset_type);
+        }
+
+        constexpr size_t combined_length_of_all_headers() const {
+            return file_header_length() + num_superblocks() * superblock_header_length();
+        }
+
+        constexpr unsigned superblock_split_target_size() const {
+            return 32; // assumed GPU warp size
+        }
+
+        constexpr unsigned superblock_split_dimension() const {
+            return superblock_split().first;
+        }
+
+        constexpr unsigned superblock_split_granularity() const {
+            return superblock_split().second;
+        }
+
+    private:
+        extent<Profile::dimensions> _size;
+
+        constexpr std::pair<unsigned, size_t> superblock_split() const {
+            size_t n_cubes = 1;
+            unsigned d = 0;
+            for (unsigned nd = 0; nd < Profile::dimensions; ++nd) {
+                d = Profile::dimensions - 1 - nd;
+                n_cubes *= _size[d] / Profile::hypercube_side_length;
+                if (n_cubes > superblock_split_target_size() / 2) {
+                    auto granularity = _size[d] / Profile::hypercube_side_length
+                        * Profile::hypercube_side_length;
+                    return {d, granularity};
+                }
+            }
+            return {0,  _size[0] / Profile::hypercube_side_length * Profile::hypercube_side_length};
+        }
+};
 
 } // namespace hcde::detail
