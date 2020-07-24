@@ -12,13 +12,13 @@ all: singlethread_cpu.s test_bin compress
 singlethread_cpu.s: singlethread_cpu.o Makefile
 	objdump -dC -M intel singlethread_cpu.o > singlethread_cpu.s
 
-singlethread_cpu.o: $(HEADERS) src/singlethread_cpu.cc Makefile
+singlethread_cpu.o: $(HEADERS) src/singlethread_cpu.hh Makefile
 	$(CXX) -osinglethread_cpu.o -c $(CXXFLAGS) $(OPTFLAGS) $(DEBUGFLAGS) src/singlethread_cpu.cc 
 
-test_bin: $(HEADERS) src/singlethread_cpu.cc test/test.cc Makefile
+test_bin: $(HEADERS) src/singlethread_cpu.hh test/test.cc Makefile
 	$(CXX) -otest_bin $(CXXFLAGS) $(DEBUGFLAGS) src/singlethread_cpu.cc test/test.cc
 
-compress: $(HEADERS) src/singlethread_cpu.cc src/compress.cc Makefile
+compress: $(HEADERS) src/singlethread_cpu.hh src/compress.cc Makefile
 	$(CXX) -ocompress $(CXXFLAGS) $(OPTFLAGS) src/singlethread_cpu.cc src/compress.cc -lboost_program_options
 
 test: test_bin Makefile

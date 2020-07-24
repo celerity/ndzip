@@ -194,9 +194,6 @@ class alignas(16) emulated_uint128 {
         uint64_t _c[2]{};
 };
 
-template<typename T>
-constexpr inline size_t bitsof = CHAR_BIT * sizeof(T);
-
 template<typename Integer>
 unsigned significant_bits(Integer value) {
     static_assert(std::is_integral_v<Integer> && std::is_unsigned_v<Integer>);
@@ -364,12 +361,12 @@ size_t ceil_byte_offset(const void *from, basic_bit_ptr<Void, Align> to) {
 template<typename Integer>
 Integer load_bits(const_bit_ptr<sizeof(Integer)> src, size_t n_bits) {
     static_assert(std::is_integral_v<Integer> && std::is_unsigned_v<Integer>);
-    using window = next_larger_uint<Integer>;
+    using word = next_larger_uint<Integer>;
     assert(n_bits > 0 && n_bits <= bitsof<Integer>);
-    auto a = endian_transform<window>(
-            load_aligned<sizeof(Integer), window>(src.aligned_address()));
-    auto shift = bitsof<window> - src.bit_offset() - n_bits;
-    return static_cast<Integer>((a >> shift) & ~(~window{} << n_bits));
+    auto a = endian_transform<word>(
+            load_aligned<sizeof(Integer), word>(src.aligned_address()));
+    auto shift = bitsof<word> - src.bit_offset() - n_bits;
+    return static_cast<Integer>((a >> shift) & ~(~word{} << n_bits));
 }
 
 template<typename Integer>
@@ -540,6 +537,8 @@ class superblock {
 template<typename Profile>
 class file {
     public:
+        using superblock_offset_type = uint64_t;
+
         explicit file(extent<Profile::dimensions> size)
             : _size(size)
         {
@@ -621,7 +620,7 @@ class file {
         }
 
         constexpr size_t file_header_length() const {
-            return num_superblocks() * sizeof(uint64_t);
+            return std::max(size_t{1}, num_superblocks()) * sizeof(superblock_offset_type);
         }
 
         constexpr size_t superblock_header_length() const {

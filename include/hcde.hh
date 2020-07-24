@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cassert>
+#include <climits>
 #include <cstdint>
 #include <cstdlib>
 #include <type_traits>
@@ -26,6 +27,9 @@ using bits_type = std::conditional_t<sizeof(T) == 1, uint8_t,
       std::conditional_t<sizeof(T) == 2, uint16_t,
       std::conditional_t<sizeof(T) == 4, uint32_t, uint64_t>>>;
 
+template<typename T>
+constexpr inline size_t bitsof = CHAR_BIT * sizeof(T);
+
 } // namespace hcde::detail
 
 
@@ -38,7 +42,7 @@ class extent {
 
         template<typename ...Init, std::enable_if_t<((sizeof...(Init) == Dims)
             && ... && std::is_convertible_v<Init, size_t>), int> = 0>
-        constexpr explicit extent(const Init &...components) noexcept
+        constexpr extent(const Init &...components) noexcept
             : _components{static_cast<size_t>(components)...}
         {
         }
@@ -75,6 +79,9 @@ class extent {
     private:
         size_t _components[Dims] = {};
 };
+
+template<typename ...Init>
+extent(const Init &...) -> extent<sizeof...(Init)>;
 
 } // namespace extent
 
@@ -166,7 +173,8 @@ class strong_profile {
         constexpr static unsigned dimensions = Dims;
         constexpr static unsigned hypercube_side_length = 16;
         constexpr static size_t compressed_block_size_bound
-            = 1 + sizeof(data_type) * detail::ipow(hypercube_side_length, Dims);
+                = (detail::bitsof<data_type> + 4)  // TODO substitute generic constants
+                  * detail::ipow(hypercube_side_length, Dims) / CHAR_BIT;
 
         size_t encode_block(const bits_type *bits, void *stream) const;
 

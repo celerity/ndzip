@@ -1,6 +1,6 @@
+#pragma once
+
 #include "common.hh"
-#include "fast_profile.hh"
-#include "strong_profile.hh"
 
 
 template<typename Profile>
@@ -55,13 +55,17 @@ size_t hcde::singlethread_cpu_encoder<Profile>::compress(
             ++hypercube_index;
         });
 
-        auto file_offset_address = static_cast<char *>(stream)
-                + (superblock_index - 1) * sizeof(uint64_t);
-        auto file_offset = static_cast<uint64_t>(superblock_header_pos);
-        detail::store_unaligned(file_offset_address, detail::endian_transform(file_offset));
-        ++superblock_index;
+	    if (superblock_index > 0) {
+		    auto file_offset_address = static_cast<char *>(stream)
+			        + (superblock_index - 1) * sizeof(uint64_t);
+	        auto file_offset = static_cast<uint64_t>(superblock_header_pos);
+	        detail::store_unaligned(file_offset_address, detail::endian_transform(file_offset));
+        }
+		++superblock_index;
     });
 
+    auto border_offset_address = static_cast<char *>(stream) + (file.num_superblocks() - 1) * sizeof(uint64_t);
+    detail::store_unaligned(border_offset_address, detail::endian_transform(stream_pos));
     stream_pos += detail::pack_border(static_cast<char *>(stream) + stream_pos, data, side_length);
     return stream_pos;
 }
@@ -73,30 +77,22 @@ size_t hcde::singlethread_cpu_encoder<Profile>::decompress(const void *stream, s
 {
     using bits_type = typename Profile::bits_type;
     constexpr static auto side_length = Profile::hypercube_side_length;
-    size_t stream_pos = 0;
-    detail::for_each_hypercube_offset(data.size(), side_length, [&](auto offset) {
-        Profile p;
-        bits_type cube[detail::ipow(side_length, Profile::dimensions)] = {};
-        stream_pos += p.decode_block(static_cast<const char *>(stream) + stream_pos, cube);
-        bits_type *cube_ptr = cube;
-        detail::for_each_in_hypercube(data, offset, side_length,
-                [&](auto &element) { p.store_value(&element, *cube_ptr++); });
+    detail::file<Profile> file(data.size());
+
+    size_t stream_pos = file.file_header_length(); // simply skip the header
+    file.for_each_superblock([&](auto superblock) {
+        stream_pos += file.superblock_header_length(); // simply skip the header
+        superblock.for_each_hypercube([&](auto offset) {
+            Profile p;
+            bits_type cube[detail::ipow(side_length, Profile::dimensions)] = {};
+            stream_pos += p.decode_block(static_cast<const char *>(stream) + stream_pos, cube);
+            bits_type *cube_ptr = cube;
+            detail::for_each_in_hypercube(data, offset, side_length,
+                  [&](auto &element) { p.store_value(&element, *cube_ptr++); });
+        });
     });
     stream_pos += detail::unpack_border(data, static_cast<const char *>(stream) + stream_pos,
             side_length);
     return stream_pos;
 }
 
-
-namespace hcde {
-
-template class singlethread_cpu_encoder<fast_profile<float, 1>>;
-template class singlethread_cpu_encoder<fast_profile<float, 2>>;
-template class singlethread_cpu_encoder<fast_profile<float, 3>>;
-template class singlethread_cpu_encoder<fast_profile<float, 4>>;
-template class singlethread_cpu_encoder<strong_profile<float, 1>>;
-template class singlethread_cpu_encoder<strong_profile<float, 2>>;
-template class singlethread_cpu_encoder<strong_profile<float, 3>>;
-template class singlethread_cpu_encoder<strong_profile<float, 4>>;
-
-}

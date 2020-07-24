@@ -1,4 +1,6 @@
-#include <hcde.hh>
+#include "fast_profile.hh"
+#include "strong_profile.hh"
+#include "singlethread_cpu.hh"
 
 #include <cstdlib>
 #include <iostream>

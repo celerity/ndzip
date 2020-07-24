@@ -2,6 +2,7 @@
 #include "../src/common.hh"
 #include "../src/fast_profile.hh"
 #include "../src/strong_profile.hh"
+#include "../src/singlethread_cpu.hh"
 
 #define CATCH_CONFIG_MAIN
 #include <catch2/catch.hpp>
@@ -36,6 +37,21 @@ const float float_data_2d_with_border[90] = {
     0.1f, 0.1f, 0.1f, 0.1f, 4.f, 0.1f, 2.3f, 9.3f, 0.9f, 3.f,
     0.1f, 2.3f, 9.3f, 0.9f, 3.f, -0.1f, 1.1f, 0.3f, 0.0f, 4.f,
 };
+
+
+template<typename Arithmetic>
+static std::vector<Arithmetic> make_random_vector(size_t size) {
+    std::vector<Arithmetic> vector(size);
+    auto gen = std::minstd_rand();
+    if constexpr (std::is_floating_point_v<Arithmetic>) {
+        auto dist = std::uniform_real_distribution<Arithmetic>();
+        std::generate(vector.begin(), vector.end(), [&] { return dist(gen); });
+    } else {
+        auto dist = std::uniform_int_distribution<Arithmetic>();
+        std::generate(vector.begin(), vector.end(), [&] { return dist(gen); });
+    }
+    return vector;
+}
 
 
 TEST_CASE("for_each_in_hypercube") {
@@ -137,38 +153,47 @@ TEST_CASE("store_bits_linear") {
 }
 
 
-TEST_CASE("fast_profile value en-/decode") {
-    uint32_t bits[16];
-    fast_profile<float, 2> p;
-    for (unsigned i = 0; i < 16; ++i) {
-        bits[i] = p.load_value(&float_data_2d[i]);
+TEMPLATE_TEST_CASE("value en-/decoding reproduces bit-identical values", "[profile]",
+        (fast_profile<float, 2>), (strong_profile<float, 2>))
+{
+    const auto input = make_random_vector<float>(100);
+
+    TestType p;
+    std::vector<uint32_t> bits(input.size());
+    for (unsigned i = 0; i < input.size(); ++i) {
+        bits[i] = p.load_value(&input[i]);
     }
-    float data[16];
-    for (unsigned i = 0; i < 16; ++i) {
-        p.store_value(&data[i], bits[i]);
+
+    std::vector<float> output(input.size());
+    for (unsigned i = 0; i < output.size(); ++i) {
+        p.store_value(&output[i], bits[i]);
     }
-    CHECK(memcmp(float_data_2d, data, sizeof data) == 0);
+    CHECK(memcmp(input.data(), output.data(), input.size() * sizeof(float)) == 0);
 }
 
 
-TEST_CASE("fast_profile block en-/decode") {
-    uint32_t bits[16];
-    uint32_t bits2[16]={0};
+TEMPLATE_TEST_CASE("block en-/decoding reproduces bit-identical values", "[profile]",
+        (fast_profile<float, 2>), (strong_profile<float, 2>))
+{
+    const auto random = make_random_vector<uint32_t>(ipow(TestType::hypercube_side_length, 2));
+    auto halves = random; for (auto &h: halves) { h >>= 16u; };
+    const auto zeroes = std::vector<uint32_t>(random.size(), 0);
 
-    auto en_decode = [&](auto &data) {
-        fast_profile<float, 2> p;
-        for (unsigned i = 0; i < 16; ++i) {
-            bits[i] = p.load_value(&data[i]);
-        }
-        char stream[100] = {0};
-        p.encode_block(bits, stream);
-        p.decode_block(stream, bits2);
+    const auto test_vector = [](const std::vector<uint32_t> &input) {
+        TestType p;
+        std::vector<uint32_t> output(input.size());
+        // stream buffer must be large enough for aligned stores. TODO can this be expressed generically?
+        std::byte stream[TestType::compressed_block_size_bound + sizeof(uint32_t)];
+        memset(stream, 0, sizeof stream);
+        p.encode_block(input.data(), stream);
+        p.decode_block(stream, output.data());
+
+        CHECK(memcmp(input.data(), output.data(), input.size() * sizeof(uint32_t)) == 0);
     };
 
-    en_decode(float_data_2d);
-    CHECK(memcmp(bits, bits2, sizeof bits) == 0);
-    en_decode(float_data_2d_identical);
-    CHECK(memcmp(bits, bits2, sizeof bits) == 0);
+    test_vector(random);
+    test_vector(halves);
+    test_vector(zeroes);
 }
 
 
@@ -191,7 +216,7 @@ static auto dump_border_slices(const extent<Dims> &size, unsigned side_length) {
 }
 
 
-TEST_CASE("for_each_border_slice") {
+TEST_CASE("for_each_border_slice iterates correctly") {
     CHECK(dump_border_slices(extent<2>{4, 4}, 4) == slice_vec{});
     CHECK(dump_border_slices(extent<2>{4, 6}, 2) == slice_vec{});
     CHECK(dump_border_slices(extent<2>{5, 4}, 4) == slice_vec{{16, 4}});
@@ -206,9 +231,12 @@ TEST_CASE("for_each_border_slice") {
 struct test_profile {
     using data_type = float;
     using bits_type = uint32_t;
+    using hypercube_offset_type = uint32_t;
 
     constexpr static unsigned dimensions = 2;
     constexpr static unsigned hypercube_side_length = 4;
+    constexpr static size_t compressed_block_size_bound
+            = sizeof(bits_type) * ipow(hypercube_side_length, dimensions);
 
     size_t encode_block(const bits_type *bits, void *stream) const {
         size_t n_bytes = ipow(hypercube_side_length, dimensions) * sizeof(bits_type);
@@ -233,7 +261,7 @@ struct test_profile {
     }
 };
 
-TEST_CASE("file") {
+TEST_CASE("file produces a sane superblock / hypercube / header layout", "[file]") {
     const size_t n = 100;
     const auto n_hypercubes_per_dim = n / test_profile::hypercube_side_length;
 
@@ -264,25 +292,105 @@ TEST_CASE("file") {
 
     CHECK(superblocks.size() == f.num_superblocks());
     CHECK(!superblocks.empty());
+
+    CHECK(f.file_header_length() == f.num_superblocks() * sizeof(uint64_t));
+    CHECK(f.num_hypercubes() == ipow(n_hypercubes_per_dim, 2));
 }
 
-/*
 
-TEMPLATE_TEST_CASE("singlethread_cpu_encoder", "", (fast_profile<float, 2>),
-        (strong_profile<float, 2>))
+TEMPLATE_TEST_CASE("encoder produces the expected bit stream", "[encoder]",
+                   (singlethread_cpu_encoder<test_profile>))
 {
-    std::string stream;
-    singlethread_cpu_encoder<TestType> p;
-    slice<const float, 2> data(float_data_2d_with_border, extent<2>{9, 10});
-    stream.resize(p.compressed_size_bound(data.size()));
-    auto cursor = p.compress(data, stream.data());
-    CHECK(cursor <= stream.size());
+    const size_t n = 199;
+    const auto cell = 3.141592f;
+    const auto border = 2.71828f;
+    std::vector<float> data(n * n);
+    slice<float, 2> array(data.data(), extent{n, n});
 
-    float restore_data[sizeof(float_data_2d_with_border) / sizeof(float)];
-    slice<float, 2> restore(restore_data, extent<2>{9, 10});
-    auto de_cursor = p.decompress(stream.data(), cursor, restore);
-    CHECK(de_cursor == cursor);
-    CHECK(memcmp(float_data_2d_with_border, restore_data, sizeof restore_data) == 0);
+    const auto border_start = n / test_profile::hypercube_side_length * test_profile::hypercube_side_length;
+    for (size_t i = 0; i < n; ++i) {
+        for (size_t j = 0; j < n; ++j) {
+            array[{i, j}] = i < border_start && j < border_start ? cell : border;
+        }
+    }
+
+    file<test_profile> f(array.size());
+    REQUIRE(f.num_superblocks() > 1);
+
+    TestType encoder;
+    std::vector<std::byte> stream(encoder.compressed_size_bound(array.size()));
+    size_t size = encoder.compress(array, stream.data());
+
+    CHECK(size <= stream.size());
+    stream.resize(size);
+
+    const size_t hypercube_size = sizeof(float) * ipow(test_profile::hypercube_side_length, 2);
+
+    const auto *file_header = stream.data();
+    size_t superblock_index = 0;
+    size_t current_superblock_offset = f.file_header_length();
+    f.for_each_superblock([&](auto superblock) {
+        if (superblock_index > 0) {
+            const void *file_offset_address = file_header + (superblock_index - 1) * sizeof(uint64_t);
+            CHECK(endian_transform(load_unaligned<uint64_t>(file_offset_address)) == current_superblock_offset);
+        }
+
+        const auto *superblock_header = stream.data() + current_superblock_offset;
+        size_t hypercube_index = 0;
+        superblock.for_each_hypercube([&](auto) {
+            const auto hypercube_offset = hypercube_index * hypercube_size;
+            if (hypercube_index > 0) {
+                const void *superblock_offset_address = superblock_header
+                        + (hypercube_index - 1) * sizeof(test_profile::hypercube_offset_type);
+                CHECK(endian_transform(load_unaligned<test_profile::hypercube_offset_type>(superblock_offset_address))
+                      == hypercube_offset);
+            }
+            for (size_t i = 0; i < ipow(test_profile::hypercube_side_length, 2); ++i) {
+                float value;
+                const void *value_offset_address = superblock_header + f.superblock_header_length() + i * sizeof value;
+                test_profile{}.store_value(&value, load_unaligned<test_profile::bits_type>(value_offset_address));
+                CHECK(memcmp(&value, &cell, sizeof value) == 0);
+            }
+            ++hypercube_index;
+        });
+
+        ++superblock_index;
+        current_superblock_offset += f.superblock_header_length() + superblock.num_hypercubes() * hypercube_size;
+    });
+
+    const void *border_offset_address = file_header + (f.num_superblocks() - 1) * sizeof(uint64_t);
+    CHECK(endian_transform(load_unaligned<uint64_t>(border_offset_address)) == current_superblock_offset);
+    size_t n_border_elems = 0;
+    for_each_border_slice(array.size(), test_profile::hypercube_side_length, [&](auto, auto count) {
+        for (unsigned i = 0; i < count; ++i) {
+            float value;
+            const void *value_offset_address = stream.data() + current_superblock_offset
+                    + (n_border_elems + i) * sizeof value;
+            test_profile{}.store_value(&value, load_unaligned<test_profile::bits_type>(value_offset_address));
+            CHECK(memcmp(&value, &border, sizeof value) == 0);
+        }
+        n_border_elems += count;
+    });
+    CHECK(n_border_elems == array.size().linear_offset() - ipow(border_start, 2));
 }
 
-*/
+TEMPLATE_TEST_CASE("encoder reproduces the bit-identical array", "[encoder]",
+        (singlethread_cpu_encoder<test_profile>))
+{
+    const size_t n = 199;
+    std::vector<float> input_data(n * n);
+    std::generate(input_data.begin(), input_data.end(),
+            [gen=std::minstd_rand(), dist=std::uniform_real_distribution<float>()]() mutable { return dist(gen); });
+    slice<const float, 2> input(input_data.data(), extent{n, n});
+
+    TestType encoder;
+    std::vector<std::byte> stream(encoder.compressed_size_bound(input.size()));
+    stream.resize(encoder.compress(input, stream.data()));
+
+    std::vector<float> output_data(n * n);
+    slice<float, 2> output(output_data.data(), extent{n, n});
+    encoder.decompress(stream.data(), stream.size(), output);
+
+    CHECK(memcmp(input_data.data(), output_data.data(), input_data.size() * sizeof(float)) == 0);
+}
+
