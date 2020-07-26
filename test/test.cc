@@ -3,6 +3,7 @@
 #include "../src/fast_profile.hh"
 #include "../src/strong_profile.hh"
 #include "../src/singlethread_cpu.hh"
+#include "../src/multithread_cpu.hh"
 
 #define CATCH_CONFIG_MAIN
 #include <catch2/catch.hpp>
@@ -299,7 +300,7 @@ TEST_CASE("file produces a sane superblock / hypercube / header layout", "[file]
 
 
 TEMPLATE_TEST_CASE("encoder produces the expected bit stream", "[encoder]",
-                   (singlethread_cpu_encoder<test_profile>))
+        (singlethread_cpu_encoder<test_profile>), (multithread_cpu_encoder<test_profile>))
 {
     const size_t n = 199;
     const auto cell = 3.141592f;
@@ -375,12 +376,10 @@ TEMPLATE_TEST_CASE("encoder produces the expected bit stream", "[encoder]",
 }
 
 TEMPLATE_TEST_CASE("encoder reproduces the bit-identical array", "[encoder]",
-        (singlethread_cpu_encoder<test_profile>))
+        (singlethread_cpu_encoder<test_profile>), (multithread_cpu_encoder<test_profile>))
 {
     const size_t n = 199;
-    std::vector<float> input_data(n * n);
-    std::generate(input_data.begin(), input_data.end(),
-            [gen=std::minstd_rand(), dist=std::uniform_real_distribution<float>()]() mutable { return dist(gen); });
+    auto input_data = make_random_vector<float>(n * n);
     slice<const float, 2> input(input_data.data(), extent{n, n});
 
     TestType encoder;

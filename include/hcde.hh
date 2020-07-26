@@ -187,11 +187,31 @@ class strong_profile {
 
 template<typename Profile>
 class singlethread_cpu_encoder {
+public:
+    using profile = Profile;
+    using data_type = typename Profile::data_type;
+
+    constexpr static unsigned dimensions = Profile::dimensions;
+
+    size_t compressed_size_bound(const extent<dimensions> &e) const;
+
+    size_t compress(const slice<const data_type, dimensions> &data, void *stream) const;
+
+    size_t decompress(const void *stream, size_t bytes,
+                      const slice<data_type, dimensions> &data) const;
+};
+
+template<typename Profile>
+class multithread_cpu_encoder {
     public:
         using profile = Profile;
         using data_type = typename Profile::data_type;
 
         constexpr static unsigned dimensions = Profile::dimensions;
+
+        multithread_cpu_encoder();
+
+        explicit multithread_cpu_encoder(size_t num_threads);
 
         size_t compressed_size_bound(const extent<dimensions> &e) const;
 
@@ -199,6 +219,9 @@ class singlethread_cpu_encoder {
 
         size_t decompress(const void *stream, size_t bytes,
                 const slice<data_type, dimensions> &data) const;
+
+    private:
+        size_t _num_threads;
 };
 
 } // namespace hcde

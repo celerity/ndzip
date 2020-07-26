@@ -1,6 +1,7 @@
 #include "fast_profile.hh"
 #include "strong_profile.hh"
 #include "singlethread_cpu.hh"
+#include "multithread_cpu.hh"
 
 #include <cstdlib>
 #include <iostream>
@@ -187,7 +188,7 @@ int main(int argc, char **argv) {
     bool ok = false;
     if (strong || (!fast && !strong)) {
         if (size_components.size() == 2) {
-            hcde::singlethread_cpu_encoder<hcde::strong_profile<float, 2>> encoder;
+            hcde::multithread_cpu_encoder<hcde::strong_profile<float, 2>> encoder;
             auto size = hcde::extent<2>{size_components[0], size_components[1]};
             if (decompress) {
                 ok = decompress_stream(in_stream.get(), out_stream.get(), size, encoder);
@@ -195,7 +196,7 @@ int main(int argc, char **argv) {
                 ok = compress_stream(in_stream.get(), out_stream.get(), size, encoder);
             }
         } else if (size_components.size() == 3) {
-            hcde::singlethread_cpu_encoder<hcde::strong_profile<float, 3>> encoder;
+            hcde::multithread_cpu_encoder<hcde::strong_profile<float, 3>> encoder;
             auto size = hcde::extent<3>{size_components[0], size_components[1], size_components[2]};
             if (decompress) {
                 ok = decompress_stream(in_stream.get(), out_stream.get(), size, encoder);
@@ -205,7 +206,7 @@ int main(int argc, char **argv) {
         }
     } else {
         if (size_components.size() == 2) {
-            hcde::singlethread_cpu_encoder<hcde::fast_profile<float, 2>> encoder;
+            hcde::multithread_cpu_encoder<hcde::fast_profile<float, 2>> encoder;
             auto size = hcde::extent<2>{size_components[0], size_components[1]};
             if (decompress) {
                 ok = decompress_stream(in_stream.get(), out_stream.get(), size, encoder);
@@ -213,7 +214,7 @@ int main(int argc, char **argv) {
                 ok = compress_stream(in_stream.get(), out_stream.get(), size, encoder);
             }
         } else if (size_components.size() == 3) {
-            hcde::singlethread_cpu_encoder<hcde::fast_profile<float, 3>> encoder;
+            hcde::multithread_cpu_encoder<hcde::fast_profile<float, 3>> encoder;
             auto size = hcde::extent<3>{size_components[0], size_components[1], size_components[2]};
             if (decompress) {
                 ok = decompress_stream(in_stream.get(), out_stream.get(), size, encoder);

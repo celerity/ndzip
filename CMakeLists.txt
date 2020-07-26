@@ -3,6 +3,7 @@ cmake_minimum_required(VERSION 3.10)
 project(hcde)
 set(CMAKE_CXX_STANDARD 17)
 
+find_package(Threads REQUIRED)
 find_package(Boost REQUIRED COMPONENTS program_options)
 
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -Wextra -Werror=return-type -Werror=init-self")
@@ -14,9 +15,11 @@ add_library(hcde STATIC
     src/fast_profile.hh
     src/strong_profile.hh
     src/singlethread_cpu.hh
+    src/multithread_cpu.hh
 )
 
 set_target_properties(hcde PROPERTIES LINKER_LANGUAGE CXX)
+target_link_libraries(hcde ${CMAKE_THREAD_LIBS_INIT})
 
 add_executable(compress src/compress.cc)
 target_link_libraries(compress hcde Boost::program_options)
