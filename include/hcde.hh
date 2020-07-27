@@ -67,6 +67,18 @@ class extent {
             return result;
         }
 
+        friend bool operator==(const extent &left, const extent &right) {
+            bool eq = true;
+            for (unsigned d = 0; d < Dims; ++d) {
+                eq &= left[d] == right[d];
+            }
+            return eq;
+        }
+
+        friend bool operator!=(const extent &left, const extent &right) {
+            return !operator==(left, right);
+        }
+
         size_t linear_offset() const {
             size_t offset = 1;
             for (unsigned d = 0; d < Dims; ++d) {
@@ -220,6 +232,27 @@ class mt_cpu_encoder {
     private:
         size_t _num_threads;
 };
+
+
+#if HCDE_GPU_SUPPORT
+
+template<typename Profile>
+class gpu_encoder {
+    public:
+        using profile = Profile;
+        using data_type = typename Profile::data_type;
+
+        constexpr static unsigned dimensions = Profile::dimensions;
+
+        size_t compressed_size_bound(const extent<dimensions> &e) const;
+
+        size_t compress(const slice<const data_type, dimensions> &data, void *stream) const;
+
+        size_t decompress(const void *stream, size_t bytes,
+                const slice<data_type, dimensions> &data) const;
+};
+
+#endif // HCDE_GPU_SUPPORT
 
 } // namespace hcde
 

@@ -158,6 +158,10 @@ static bool process_stream(bool decompress, const std::vector<size_t> &size_comp
         return process_stream<hcde::cpu_encoder, Data>(decompress, size_components, profile, in, out);
     } else if (encoder == "cpu-mt") {
         return process_stream<hcde::mt_cpu_encoder, Data>(decompress, size_components, profile, in, out);
+#if HCDE_GPU_SUPPORT
+    } else if (encoder == "gpu") {
+        return process_stream<hcde::gpu_encoder, Data>(decompress, size_components, profile, in, out);
+#endif
     } else {
         throw opts::error("Invalid encoder \"" + encoder + "\" in option -e / --encoder");
     }
@@ -197,7 +201,11 @@ int main(int argc, char **argv) {
                     "array size (one value per dimension, first-major)")
             ("data-type,t", opts::value(&data_type), "float|double (default float)")
             ("profile,p", opts::value(&profile), "fast|strong (default strong)")
+#if HCDE_GPU_SUPPORT
+            ("encoder,e", opts::value(&encoder), "cpu|cpu-mt|gpu (default cpu-mt)")
+#else
             ("encoder,e", opts::value(&encoder), "cpu|cpu-mt (default cpu-mt)")
+#endif
             ("input,i", opts::value(&input), "input file (default '-' is stdin)")
             ("output,o", opts::value(&output), "output file (default '-' is stdout)");
 

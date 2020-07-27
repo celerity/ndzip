@@ -4,6 +4,10 @@
 #include "../hcde/cpu_encoder.inl"
 #include "../hcde/mt_cpu_encoder.inl"
 
+#if HCDE_GPU_SUPPORT
+#   include "../hcde/gpu_encoder.inl"
+#endif
+
 #define CATCH_CONFIG_MAIN
 #include <catch2/catch.hpp>
 
@@ -201,12 +205,13 @@ TEST_CASE("for_each_border_slice iterates correctly") {
 }
 
 
+template<unsigned Dims>
 struct test_profile {
     using data_type = float;
     using bits_type = uint32_t;
     using hypercube_offset_type = uint32_t;
 
-    constexpr static unsigned dimensions = 2;
+    constexpr static unsigned dimensions = Dims;
     constexpr static unsigned hypercube_side_length = 4;
     constexpr static size_t compressed_block_size_bound
             = sizeof(bits_type) * ipow(hypercube_side_length, dimensions);
@@ -234,28 +239,46 @@ struct test_profile {
     }
 };
 
-TEST_CASE("file produces a sane superblock / hypercube / header layout", "[file]") {
+
+TEMPLATE_TEST_CASE("file produces a sane superblock / hypercube / header layout", "[file]",
+    (std::integral_constant<unsigned, 1>), (std::integral_constant<unsigned, 2>),
+    (std::integral_constant<unsigned, 3>), (std::integral_constant<unsigned, 4>))
+{
+    constexpr unsigned dims = TestType::value;
+    using profile = test_profile<dims>;
     const size_t n = 100;
-    const auto n_hypercubes_per_dim = n / test_profile::hypercube_side_length;
+    const auto n_hypercubes_per_dim = n / profile::hypercube_side_length;
+    const auto side_length = profile::hypercube_side_length;
 
-    std::vector<std::vector<extent<test_profile::dimensions>>> superblocks;
-    std::vector<bool> visited(ipow(n_hypercubes_per_dim, 2));
+    extent<dims> size;
+    for (unsigned d = 0; d < dims; ++d) {
+        size[d] = n;
+    }
 
-    file<test_profile> f(extent<2>{n, n});
+    std::vector<std::vector<extent<dims>>> superblocks;
+    std::vector<bool> visited(ipow(n_hypercubes_per_dim, dims));
+
+    file<profile> f(size);
     f.for_each_superblock([&](auto sb) {
-        std::vector<extent<test_profile::dimensions>> blocks;
+        std::vector<extent<dims>> blocks;
+        size_t hypercube_index = 0;
         sb.for_each_hypercube([&](auto off) {
-            CHECK(off[0] < n);
-            CHECK(off[1] < n);
-            CHECK(off[0] % test_profile::hypercube_side_length == 0);
-            CHECK(off[1] % test_profile::hypercube_side_length == 0);
+            for (unsigned d = 0; d < dims; ++d) {
+                CHECK(off[d] < n);
+                CHECK(off[d] % side_length == 0);
+            }
 
-            auto idx = off[0] / test_profile::hypercube_side_length * n_hypercubes_per_dim
-                + off[1] / test_profile::hypercube_side_length;
-            CHECK(!visited[idx]);
-            visited[idx] = true;
+            auto cell_index = off[0] / side_length;
+            for (unsigned d = 1; d < dims; ++d) {
+                cell_index = cell_index * n_hypercubes_per_dim + off[d] / side_length;
+            }
+            CHECK(!visited[cell_index]);
+            visited[cell_index] = true;
 
             blocks.push_back(off);
+
+            CHECK(sb.hypercube_offset_at(hypercube_index) == off);
+            ++hypercube_index;
         });
         CHECK(blocks.size() == sb.num_hypercubes());
         superblocks.push_back(std::move(blocks));
@@ -267,27 +290,32 @@ TEST_CASE("file produces a sane superblock / hypercube / header layout", "[file]
     CHECK(!superblocks.empty());
 
     CHECK(f.file_header_length() == f.num_superblocks() * sizeof(uint64_t));
-    CHECK(f.num_hypercubes() == ipow(n_hypercubes_per_dim, 2));
+    CHECK(f.num_hypercubes() == ipow(n_hypercubes_per_dim, dims));
 }
 
 
 TEMPLATE_TEST_CASE("encoder produces the expected bit stream", "[encoder]",
-        (cpu_encoder<test_profile>), (mt_cpu_encoder<test_profile>))
+        (cpu_encoder<test_profile<2>>), (mt_cpu_encoder<test_profile<2>>)
+#if HCDE_GPU_SUPPORT
+        , (gpu_encoder<test_profile<2>>)
+#endif
+        )
 {
+    using profile = test_profile<2>;
     const size_t n = 199;
     const auto cell = 3.141592f;
     const auto border = 2.71828f;
     std::vector<float> data(n * n);
     slice<float, 2> array(data.data(), extent{n, n});
 
-    const auto border_start = n / test_profile::hypercube_side_length * test_profile::hypercube_side_length;
+    const auto border_start = n / profile::hypercube_side_length * profile::hypercube_side_length;
     for (size_t i = 0; i < n; ++i) {
         for (size_t j = 0; j < n; ++j) {
             array[{i, j}] = i < border_start && j < border_start ? cell : border;
         }
     }
 
-    file<test_profile> f(array.size());
+    file<profile> f(array.size());
     REQUIRE(f.num_superblocks() > 1);
 
     TestType encoder;
@@ -297,7 +325,7 @@ TEMPLATE_TEST_CASE("encoder produces the expected bit stream", "[encoder]",
     CHECK(size <= stream.size());
     stream.resize(size);
 
-    const size_t hypercube_size = sizeof(float) * ipow(test_profile::hypercube_side_length, 2);
+    const size_t hypercube_size = sizeof(float) * ipow(profile::hypercube_side_length, 2);
 
     const auto *file_header = stream.data();
     size_t superblock_index = 0;
@@ -314,14 +342,14 @@ TEMPLATE_TEST_CASE("encoder produces the expected bit stream", "[encoder]",
             const auto hypercube_offset = hypercube_index * hypercube_size;
             if (hypercube_index > 0) {
                 const void *superblock_offset_address = superblock_header
-                        + (hypercube_index - 1) * sizeof(test_profile::hypercube_offset_type);
-                CHECK(endian_transform(load_unaligned<test_profile::hypercube_offset_type>(superblock_offset_address))
+                        + (hypercube_index - 1) * sizeof(profile::hypercube_offset_type);
+                CHECK(endian_transform(load_unaligned<profile::hypercube_offset_type>(superblock_offset_address))
                       == hypercube_offset);
             }
-            for (size_t i = 0; i < ipow(test_profile::hypercube_side_length, 2); ++i) {
+            for (size_t i = 0; i < ipow(profile::hypercube_side_length, 2); ++i) {
                 float value;
                 const void *value_offset_address = superblock_header + f.superblock_header_length() + i * sizeof value;
-                test_profile{}.store_value(&value, load_unaligned<test_profile::bits_type>(value_offset_address));
+                profile{}.store_value(&value, load_unaligned<profile::bits_type>(value_offset_address));
                 CHECK(memcmp(&value, &cell, sizeof value) == 0);
             }
             ++hypercube_index;
@@ -334,12 +362,12 @@ TEMPLATE_TEST_CASE("encoder produces the expected bit stream", "[encoder]",
     const void *border_offset_address = file_header + (f.num_superblocks() - 1) * sizeof(uint64_t);
     CHECK(endian_transform(load_unaligned<uint64_t>(border_offset_address)) == current_superblock_offset);
     size_t n_border_elems = 0;
-    for_each_border_slice(array.size(), test_profile::hypercube_side_length, [&](auto, auto count) {
+    for_each_border_slice(array.size(), profile::hypercube_side_length, [&](auto, auto count) {
         for (unsigned i = 0; i < count; ++i) {
             float value;
             const void *value_offset_address = stream.data() + current_superblock_offset
                     + (n_border_elems + i) * sizeof value;
-            test_profile{}.store_value(&value, load_unaligned<test_profile::bits_type>(value_offset_address));
+            profile{}.store_value(&value, load_unaligned<profile::bits_type>(value_offset_address));
             CHECK(memcmp(&value, &border, sizeof value) == 0);
         }
         n_border_elems += count;
@@ -347,8 +375,9 @@ TEMPLATE_TEST_CASE("encoder produces the expected bit stream", "[encoder]",
     CHECK(n_border_elems == array.size().linear_offset() - ipow(border_start, 2));
 }
 
+
 TEMPLATE_TEST_CASE("encoder reproduces the bit-identical array", "[encoder]",
-        (cpu_encoder<test_profile>), (mt_cpu_encoder<test_profile>))
+        (cpu_encoder<test_profile<2>>), (mt_cpu_encoder<test_profile<2>>))
 {
     const size_t n = 199;
     auto input_data = make_random_vector<float>(n * n);

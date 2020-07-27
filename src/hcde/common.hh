@@ -48,8 +48,7 @@ using native_uint128_t = unsigned __int128;
 
 template<typename T, unsigned Dims, typename Fn>
 void for_each_in_hypercube(const slice<T, Dims> &data, const extent<Dims> &offset,
-        unsigned side_length, const Fn &fn)
-{
+    unsigned side_length, const Fn &fn) {
     if constexpr (Dims == 1) {
         auto *pointer = &data[offset];
         for (unsigned i = 0; i < side_length; ++i) {
@@ -80,7 +79,8 @@ void for_each_in_hypercube(const slice<T, Dims> &data, const extent<Dims> &offse
         }
     } else if constexpr (Dims == 4) {
         auto stride0 = data.size()[1] * data.size()[2] * data.size()[3];
-        auto stride1 = data.size()[2] * data.size()[3]; auto stride2 = data.size()[3];
+        auto stride1 = data.size()[2] * data.size()[3];
+        auto stride2 = data.size()[3];
         auto *pointer0 = &data[offset];
         for (unsigned i = 0; i < side_length; ++i) {
             auto pointer1 = pointer0;
@@ -128,7 +128,7 @@ void for_each_hypercube_offset(extent<Dims> size, unsigned side_length, const Fn
                 for (unsigned k = 0; k < size[2] / side_length; ++k) {
                     for (unsigned l = 0; l < size[3] / side_length; ++l) {
                         fn(extent<4>{i * side_length, j * side_length, k * side_length,
-                                l * side_length});
+                            l * side_length});
                     }
                 }
             }
@@ -147,8 +147,7 @@ class alignas(16) emulated_uint128 {
         constexpr emulated_uint128() noexcept = default;
 
         constexpr explicit emulated_uint128(uint64_t v)
-            : _c{0, v}
-        {
+            : _c{0, v} {
         }
 
         constexpr emulated_uint128 operator>>(unsigned shift) const {
@@ -193,8 +192,7 @@ class alignas(16) emulated_uint128 {
         friend emulated_uint128 endian_transform<emulated_uint128>(emulated_uint128);
 
         constexpr emulated_uint128(uint64_t hi, uint64_t lo)
-            : _c{hi, lo}
-        {
+            : _c{hi, lo} {
         }
 
         uint64_t _c[2]{};
@@ -227,7 +225,7 @@ Integer endian_transform(Integer value) {
 #if HCDE_HAVE_NATIVE_UINT128_T
         } else if constexpr (std::is_same_v<Integer, native_uint128_t>) {
             return (native_uint128_t{__builtin_bswap64(value)} << 64u)
-             | (native_uint128_t{__builtin_bswap64(value >> 64u)});
+                | (native_uint128_t{__builtin_bswap64(value >> 64u)});
 #endif
         } else if constexpr (std::is_same_v<Integer, uint64_t>) {
             return __builtin_bswap64(value);
@@ -278,16 +276,16 @@ void store_aligned(void *dest, POD a) {
 
 template<typename Integer>
 using next_larger_uint = std::conditional_t<std::is_same_v<Integer, uint8_t>, uint16_t,
-      std::conditional_t<std::is_same_v<Integer, uint16_t>, uint32_t,
-      std::conditional_t<std::is_same_v<Integer, uint32_t>, uint64_t,
-      std::conditional_t<std::is_same_v<Integer, uint64_t>, uint128_t, void>>>>;
+    std::conditional_t<std::is_same_v<Integer, uint16_t>, uint32_t,
+        std::conditional_t<std::is_same_v<Integer, uint32_t>, uint64_t,
+            std::conditional_t<std::is_same_v<Integer, uint64_t>, uint128_t, void>>>>;
 
 template<typename Void, size_t Align>
 class basic_bit_ptr {
-    static_assert(std::is_void_v<Void>);
+        static_assert(std::is_void_v<Void>);
 
     public:
-        using address_type = Void*;
+        using address_type = Void *;
         using bit_offset_type = size_t;
         constexpr static size_t byte_alignment = Align;
         constexpr static size_t bit_alignment = Align * CHAR_BIT;
@@ -298,8 +296,7 @@ class basic_bit_ptr {
 
         basic_bit_ptr(address_type aligned_address, size_t bit_offset)
             : _aligned_address(aligned_address)
-            , _bit_offset(bit_offset)
-        {
+              , _bit_offset(bit_offset) {
             assert(reinterpret_cast<uintptr_t>(aligned_address) % byte_alignment == 0);
             assert(bit_offset < bit_alignment);
         }
@@ -308,14 +305,13 @@ class basic_bit_ptr {
             std::enable_if_t<std::is_const_v<Void> && !std::is_const_v<OtherVoid>, int> = 0>
         basic_bit_ptr(const basic_bit_ptr<OtherVoid, Align> &other)
             : _aligned_address(other._aligned_address)
-            , _bit_offset(other._bit_offset)
-        {
+              , _bit_offset(other._bit_offset) {
         }
 
         static basic_bit_ptr from_unaligned_pointer(address_type unaligned) {
             auto misalign = reinterpret_cast<uintptr_t>(unaligned) % byte_alignment;
             return basic_bit_ptr(reinterpret_cast<byte_address_type>(unaligned) - misalign,
-                    misalign * CHAR_BIT);
+                misalign * CHAR_BIT);
         }
 
         address_type aligned_address() const {
@@ -344,7 +340,7 @@ class basic_bit_ptr {
         }
 
     private:
-        using byte_address_type = std::conditional_t<std::is_const_v<Void>, const char, char>*;
+        using byte_address_type = std::conditional_t<std::is_const_v<Void>, const char, char> *;
 
         Void *_aligned_address = nullptr;
         size_t _bit_offset = 0;
@@ -360,8 +356,8 @@ using const_bit_ptr = basic_bit_ptr<const void, Align>;
 
 template<typename Void, size_t Align>
 size_t ceil_byte_offset(const void *from, basic_bit_ptr<Void, Align> to) {
-    return reinterpret_cast<const char*>(to.aligned_address())
-        - reinterpret_cast<const char*>(from) + (to.bit_offset() + (CHAR_BIT - 1)) / CHAR_BIT;
+    return reinterpret_cast<const char *>(to.aligned_address())
+        - reinterpret_cast<const char *>(from) + (to.bit_offset() + (CHAR_BIT - 1)) / CHAR_BIT;
 }
 
 template<typename Integer>
@@ -370,7 +366,7 @@ Integer load_bits(const_bit_ptr<sizeof(Integer)> src, size_t n_bits) {
     using word = next_larger_uint<Integer>;
     assert(n_bits > 0 && n_bits <= bitsof<Integer>);
     auto a = endian_transform<word>(
-            load_aligned<sizeof(Integer), word>(src.aligned_address()));
+        load_aligned<sizeof(Integer), word>(src.aligned_address()));
     auto shift = bitsof<word> - src.bit_offset() - n_bits;
     return static_cast<Integer>((a >> shift) & ~(~word{} << n_bits));
 }
@@ -392,15 +388,14 @@ void store_bits_linear(bit_ptr<sizeof(Integer)> dest, size_t n_bits, Integer val
 
 template<unsigned Dims, typename Fn>
 void for_each_border_slice_recursive(const extent<Dims> &size, extent<Dims> pos,
-        unsigned side_length, unsigned d, unsigned smallest_dim_with_border, const Fn &fn)
-{
+    unsigned side_length, unsigned d, unsigned smallest_dim_with_border, const Fn &fn) {
     auto border_begin = size[d] / side_length * side_length;
     auto border_end = size[d];
 
     if (d < smallest_dim_with_border) {
         for (pos[d] = 0; pos[d] < border_begin; ++pos[d]) {
             for_each_border_slice_recursive(size, pos, side_length, d + 1,
-                    smallest_dim_with_border, fn);
+                smallest_dim_with_border, fn);
         }
     }
 
@@ -430,7 +425,7 @@ void for_each_border_slice(const extent<Dims> &size, unsigned side_length, const
     }
     if (smallest_dim_with_border) {
         for_each_border_slice_recursive(size, extent<Dims>{}, side_length, 0,
-                *smallest_dim_with_border, fn);
+            *smallest_dim_with_border, fn);
     }
 }
 
@@ -440,8 +435,8 @@ size_t pack_border(void *dest, const slice<DataType, Dims> &src, unsigned side_l
     static_assert(std::is_trivially_copyable_v<DataType>);
     size_t dest_offset = 0;
     for_each_border_slice(src.size(), side_length, [&](size_t src_offset, size_t count) {
-        memcpy(static_cast<char*>(dest) + dest_offset, src.data() + src_offset,
-                count * sizeof(DataType));
+        memcpy(static_cast<char *>(dest) + dest_offset, src.data() + src_offset,
+            count * sizeof(DataType));
         dest_offset += count * sizeof(DataType);
     });
     return dest_offset;
@@ -453,8 +448,8 @@ size_t unpack_border(const slice<DataType, Dims> &dest, const void *src, unsigne
     static_assert(std::is_trivially_copyable_v<DataType>);
     size_t src_offset = 0;
     for_each_border_slice(dest.size(), side_length, [&](size_t dest_offset, size_t count) {
-        memcpy(dest.data() + dest_offset, static_cast<const char*>(src) + src_offset,
-                count * sizeof(DataType));
+        memcpy(dest.data() + dest_offset, static_cast<const char *>(src) + src_offset,
+            count * sizeof(DataType));
         src_offset += count * sizeof(DataType);
     });
     return src_offset;
@@ -475,11 +470,10 @@ template<typename Profile>
 class superblock {
     public:
         superblock(extent<Profile::dimensions> start, extent<Profile::dimensions> end,
-                unsigned split_dimension)
+            unsigned split_dimension)
             : _start(start)
-            , _end(end)
-            , _split_dimension(split_dimension)
-        {
+              , _end(end)
+              , _split_dimension(split_dimension) {
         }
 
         size_t num_hypercubes() const {
@@ -497,32 +491,28 @@ class superblock {
             auto dims = Profile::dimensions;
             auto side_length = Profile::hypercube_side_length;
             for (auto off = _start;
-                    off[_split_dimension] + side_length <= _end[_split_dimension];
-                    off[_split_dimension] += side_length)
-            {
+                off[_split_dimension] + side_length <= _end[_split_dimension];
+                off[_split_dimension] += side_length) {
                 if (dims >= 1 && _split_dimension == dims - 1) {
                     fn(off);
                 } else {
                     for (off[_split_dimension + 1] = 0;
-                            off[_split_dimension + 1] + side_length <= _end[_split_dimension + 1];
-                            off[_split_dimension + 1] += side_length)
-                    {
+                        off[_split_dimension + 1] + side_length <= _end[_split_dimension + 1];
+                        off[_split_dimension + 1] += side_length) {
                         if (dims >= 2 && _split_dimension == dims - 2) {
                             fn(off);
                         } else {
                             for (off[_split_dimension + 2] = 0;
-                                    off[_split_dimension + 2] + side_length
-                                        <= _end[_split_dimension + 2];
-                                    off[_split_dimension + 2] += side_length)
-                            {
+                                off[_split_dimension + 2] + side_length
+                                    <= _end[_split_dimension + 2];
+                                off[_split_dimension + 2] += side_length) {
                                 if (dims >= 3 && _split_dimension == dims - 3) {
                                     fn(off);
                                 } else {
                                     for (off[_split_dimension + 3] = 0;
-                                            off[_split_dimension + 3] + side_length
-                                                <= _end[_split_dimension + 3];
-                                            off[_split_dimension + 3] += side_length)
-                                    {
+                                        off[_split_dimension + 3] + side_length
+                                            <= _end[_split_dimension + 3];
+                                        off[_split_dimension + 3] += side_length) {
                                         assert(dims == 4 && _split_dimension == dims - 4);
                                         fn(off);
                                     }
@@ -532,6 +522,39 @@ class superblock {
                     }
                 }
             }
+        }
+
+        extent<Profile::dimensions> hypercube_offset_at(size_t hypercube_index) const {
+            auto dims = Profile::dimensions;
+            auto side_length = Profile::hypercube_side_length;
+            auto cell_index = hypercube_index * side_length;
+
+            auto off = _start;
+            if (dims >= 1 && _split_dimension == dims - 1) {
+                off[_split_dimension] += cell_index;
+            } else if (dims >= 2 && _split_dimension == dims - 1) {
+                auto stride = _end[_split_dimension + 1] - _start[_split_dimension + 1];
+                off[_split_dimension] += cell_index / stride;
+                off[_split_dimension + 1] = cell_index % stride;
+            } else if (dims >= 3 && _split_dimension == dims - 2) {
+                auto stride1 = (_end[_split_dimension + 2] - _start[_split_dimension + 2]);
+                auto stride0 = (_end[_split_dimension + 1] - _start[_split_dimension + 1])
+                    * stride1;
+                off[_split_dimension] += cell_index / stride0;
+                off[_split_dimension + 1] = (cell_index % stride0) / stride1;
+                off[_split_dimension + 2] = (cell_index % stride0) % stride1;
+            } else if (dims >= 4 && _split_dimension == dims - 3) {
+                auto stride2 = (_end[_split_dimension + 2] - _start[_split_dimension + 2]);
+                auto stride1 = (_end[_split_dimension + 2] - _start[_split_dimension + 2]) * stride2;
+                auto stride0 = (_end[_split_dimension + 1] - _start[_split_dimension + 1]) * stride1;
+                off[_split_dimension] += cell_index / stride0;
+                off[_split_dimension + 1] = (cell_index % stride0) / stride1;
+                off[_split_dimension + 2] = ((cell_index % stride0) % stride1) / stride2;
+                off[_split_dimension + 3] = ((cell_index % stride0) % stride1) % stride2;
+            } else {
+                assert(false);
+            }
+            return off;
         }
 
     private:
@@ -546,8 +569,7 @@ class file {
         using superblock_offset_type = uint64_t;
 
         explicit file(extent<Profile::dimensions> size)
-            : _size(size)
-        {
+            : _size(size) {
         }
 
         size_t num_superblocks() const {
@@ -571,7 +593,7 @@ class file {
                 for (extent<Profile::dimensions> start; start[0] + step <= _size[0]; start[0] += step) {
                     auto end = _size;
                     end[0] = start[0] + step;
-                    fn(superblock<Profile>{start, end, d});
+                    fn(superblock < Profile > {start, end, d});
                 }
             } else if (Profile::dimensions > 1 && d == 1) {
                 for (extent<Profile::dimensions> start; start[0] + side <= _size[0]; start[0] += side) {
@@ -579,7 +601,7 @@ class file {
                         auto end = _size;
                         end[0] = start[0] + side;
                         end[1] = start[1] + step;
-                        fn(superblock<Profile>{start, end, d});
+                        fn(superblock < Profile > {start, end, d});
                     }
                 }
             } else if (Profile::dimensions > 2 && d == 2) {
@@ -590,7 +612,7 @@ class file {
                             end[0] = start[0] + side;
                             end[1] = start[1] + side;
                             end[2] = start[2] + step;
-                            fn(superblock<Profile>{start, end, d});
+                            fn(superblock < Profile > {start, end, d});
                         }
                     }
                 }
@@ -605,7 +627,7 @@ class file {
                                 end[1] = start[1] + side;
                                 end[2] = start[2] + side;
                                 end[3] = start[3] + step;
-                                fn(superblock<Profile>{start, end, d});
+                                fn(superblock < Profile > {start, end, d});
                             }
                         }
                     }
@@ -665,7 +687,7 @@ class file {
                     return {d, granularity};
                 }
             }
-            return {0,  _size[0] / Profile::hypercube_side_length * Profile::hypercube_side_length};
+            return {0, _size[0] / Profile::hypercube_side_length * Profile::hypercube_side_length};
         }
 };
 
