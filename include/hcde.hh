@@ -1,6 +1,5 @@
 #pragma once
 
-#include <cassert>
 #include <climits>
 #include <cstdint>
 #include <cstdlib>
@@ -89,10 +88,8 @@ namespace hcde::detail {
 
     template<unsigned Dims>
     size_t linear_index(const hcde::extent<Dims> &size, const hcde::extent<Dims> &pos) {
-        // assert(pos[0] < size[0]);
         size_t l = pos[0];
         for (unsigned d = 1; d < Dims; ++d) {
-            // assert(pos[d] < size[d]);
             l = l * size[d] + pos[d];
         }
         return l;
@@ -186,7 +183,7 @@ class strong_profile {
 };
 
 template<typename Profile>
-class singlethread_cpu_encoder {
+class cpu_encoder {
 public:
     using profile = Profile;
     using data_type = typename Profile::data_type;
@@ -202,16 +199,16 @@ public:
 };
 
 template<typename Profile>
-class multithread_cpu_encoder {
+class mt_cpu_encoder {
     public:
         using profile = Profile;
         using data_type = typename Profile::data_type;
 
         constexpr static unsigned dimensions = Profile::dimensions;
 
-        multithread_cpu_encoder();
+        mt_cpu_encoder();
 
-        explicit multithread_cpu_encoder(size_t num_threads);
+        explicit mt_cpu_encoder(size_t num_threads);
 
         size_t compressed_size_bound(const extent<dimensions> &e) const;
 

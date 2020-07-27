@@ -4,7 +4,7 @@
 
 
 template<typename Profile>
-size_t hcde::singlethread_cpu_encoder<Profile>::compressed_size_bound(
+size_t hcde::cpu_encoder<Profile>::compressed_size_bound(
         const extent<dimensions> &size) const
 {
     detail::file<Profile> file(size);
@@ -16,7 +16,7 @@ size_t hcde::singlethread_cpu_encoder<Profile>::compressed_size_bound(
 
 
 template<typename Profile>
-size_t hcde::singlethread_cpu_encoder<Profile>::compress(
+size_t hcde::cpu_encoder<Profile>::compress(
         const slice<const data_type, dimensions> &data, void *stream) const
 {
     using bits_type = typename Profile::bits_type;
@@ -72,7 +72,7 @@ size_t hcde::singlethread_cpu_encoder<Profile>::compress(
 
 
 template<typename Profile>
-size_t hcde::singlethread_cpu_encoder<Profile>::decompress(const void *stream, size_t bytes,
+size_t hcde::cpu_encoder<Profile>::decompress(const void *stream, size_t bytes,
         const slice<data_type, dimensions> &data) const
 {
     using bits_type = typename Profile::bits_type;
@@ -96,3 +96,10 @@ size_t hcde::singlethread_cpu_encoder<Profile>::decompress(const void *stream, s
     return stream_pos;
 }
 
+
+namespace hcde {
+    extern template class cpu_encoder<fast_profile<float, 2>>;
+    extern template class cpu_encoder<fast_profile<float, 3>>;
+    extern template class cpu_encoder<strong_profile<float, 2>>;
+    extern template class cpu_encoder<strong_profile<float, 3>>;
+}

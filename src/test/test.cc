@@ -1,9 +1,8 @@
-#include <hcde.hh>
-#include "../src/common.hh"
-#include "../src/fast_profile.hh"
-#include "../src/strong_profile.hh"
-#include "../src/singlethread_cpu.hh"
-#include "../src/multithread_cpu.hh"
+#include "../hcde/common.hh"
+#include "../hcde/fast_profile.inl"
+#include "../hcde/strong_profile.inl"
+#include "../hcde/cpu_encoder.inl"
+#include "../hcde/mt_cpu_encoder.inl"
 
 #define CATCH_CONFIG_MAIN
 #include <catch2/catch.hpp>
@@ -11,33 +10,6 @@
 
 using namespace hcde;
 using namespace hcde::detail;
-
-
-const float float_data_2d[16] = {
-    0.1f, 1.1f, 2.3f, 4.9f,
-    -0.1f, 1.1f, 2.3f, 4.9f,
-    0.1f, 2.3f, 9.3f, 0.9f,
-    -0.1f, 1.1f, 0.3f, 0.0f,
-};
-
-const float float_data_2d_identical[16] = {
-    1.0f, 1.0f, 1.0f, 1.0f,
-    1.0f, 1.0f, 1.0f, 1.0f,
-    1.0f, 1.0f, 1.0f, 1.0f,
-    1.0f, 1.0f, 1.0f, 1.0f,
-};
-
-const float float_data_2d_with_border[90] = {
-    0.1f, 1.1f, 2.3f, 4.9f, 1.f, -0.1f, 1.1f, 2.3f, 4.9f, 2.f,
-    0.1f, 2.3f, 9.3f, 0.9f, 3.f, -0.1f, 1.1f, 0.3f, 0.0f, 4.f,
-    -0.1f, 1.1f, 2.3f, 4.9f, 2.f, 0.1f, 1.1f, 2.3f, 4.9f, 1.f,
-    -0.1f, 1.1f, 0.3f, 0.0f, 4.f, 0.1f, 2.3f, 9.3f, 0.9f, 3.f,
-    0.1f, 0.1f, 0.1f, 0.1f, 1.f, -0.1f, 1.1f, 2.3f, 4.9f, 2.f,
-    0.1f, 0.1f, 0.1f, 0.1f, 3.f, -0.1f, 1.1f, 0.3f, 0.0f, 4.f,
-    0.1f, 0.1f, 0.1f, 0.1f, 2.f, 0.1f, 1.1f, 2.3f, 4.9f, 1.f,
-    0.1f, 0.1f, 0.1f, 0.1f, 4.f, 0.1f, 2.3f, 9.3f, 0.9f, 3.f,
-    0.1f, 2.3f, 9.3f, 0.9f, 3.f, -0.1f, 1.1f, 0.3f, 0.0f, 4.f,
-};
 
 
 template<typename Arithmetic>
@@ -300,7 +272,7 @@ TEST_CASE("file produces a sane superblock / hypercube / header layout", "[file]
 
 
 TEMPLATE_TEST_CASE("encoder produces the expected bit stream", "[encoder]",
-        (singlethread_cpu_encoder<test_profile>), (multithread_cpu_encoder<test_profile>))
+        (cpu_encoder<test_profile>), (mt_cpu_encoder<test_profile>))
 {
     const size_t n = 199;
     const auto cell = 3.141592f;
@@ -376,7 +348,7 @@ TEMPLATE_TEST_CASE("encoder produces the expected bit stream", "[encoder]",
 }
 
 TEMPLATE_TEST_CASE("encoder reproduces the bit-identical array", "[encoder]",
-        (singlethread_cpu_encoder<test_profile>), (multithread_cpu_encoder<test_profile>))
+        (cpu_encoder<test_profile>), (mt_cpu_encoder<test_profile>))
 {
     const size_t n = 199;
     auto input_data = make_random_vector<float>(n * n);

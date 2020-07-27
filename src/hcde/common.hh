@@ -3,30 +3,36 @@
 #include <hcde.hh>
 
 #include <algorithm>
+#include <cassert>
 #include <climits>
 #include <cstring>
 #include <limits>
 #include <optional>
 
+
 #define HCDE_BIG_ENDIAN 0
 #define HCDE_LITTLE_ENDIAN 1
 
-#if defined(__BYTE_ORDER) && __BYTE_ORDER == __BIG_ENDIAN || \
-    defined(__BIG_ENDIAN__) || \
+#if defined(__BYTE_ORDER)
+#   if __BYTE_ORDER == __BIG_ENDIAN
+#       define HCDE_ENDIAN HCDE_BIG_ENDIAN
+#   else
+#       define HCDE_ENDIAN HCDE_LITTLE_ENDIAN
+#   endif
+#elif defined(__BIG_ENDIAN__) || \
     defined(__ARMEB__) || \
     defined(__THUMBEB__) || \
     defined(__AARCH64EB__) || \
     defined(_MIBSEB) || defined(__MIBSEB) || defined(__MIBSEB__)
 #   define HCDE_ENDIAN HCDE_BIG_ENDIAN
-#elif defined(__BYTE_ORDER) && __BYTE_ORDER == __LITTLE_ENDIAN || \
-    defined(__LITTLE_ENDIAN__) || \
+#elif defined(__LITTLE_ENDIAN__) || \
     defined(__ARMEL__) || \
     defined(__THUMBEL__) || \
     defined(__AARCH64EL__) || \
     defined(_MIPSEL) || defined(__MIPSEL) || defined(__MIPSEL__)
 #   define HCDE_ENDIAN HCDE_LITTLE_ENDIAN
 #else
-#   error "Unknown endian"
+#   error "Unknown endianess"
 #endif
 
 
