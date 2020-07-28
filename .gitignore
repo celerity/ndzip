@@ -1,12 +1,8 @@
 /.idea/
 /build/
-/compress
-/test_bin
 perf.data*
 core.*
 vgcore.*
 callgrind.out.*
 cachegrind.out.*
-*.o
-*.s
 

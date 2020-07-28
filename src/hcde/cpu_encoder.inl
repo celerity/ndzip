@@ -30,7 +30,6 @@ size_t hcde::cpu_encoder<Profile>::compress(
     file.for_each_superblock([&](auto superblock) {
         size_t superblock_header_pos = stream_pos;
         stream_pos += file.superblock_header_length();
-        size_t superblock_data_pos = stream_pos;
 
         Profile p;
         cube.resize(detail::ipow(side_length, Profile::dimensions) * superblock.num_hypercubes());
@@ -47,7 +46,7 @@ size_t hcde::cpu_encoder<Profile>::compress(
                 auto offset_address = static_cast<char *>(stream) + superblock_header_pos
                         + (hypercube_index - 1) * sizeof(typename Profile::hypercube_offset_type);
                 auto offset = static_cast<typename Profile::hypercube_offset_type>(
-                        stream_pos - superblock_data_pos);
+                        stream_pos - superblock_header_pos);
                 detail::store_unaligned(offset_address, detail::endian_transform(offset));
             }
             stream_pos += p.encode_block(cube_pos, static_cast<char *>(stream) + stream_pos);

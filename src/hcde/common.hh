@@ -102,43 +102,6 @@ void for_each_in_hypercube(const slice<T, Dims> &data, const extent<Dims> &offse
 }
 
 
-template<unsigned Dims, typename Fn>
-void for_each_hypercube_offset(extent<Dims> size, unsigned side_length, const Fn &fn) {
-    if constexpr (Dims == 1) {
-        for (unsigned i = 0; i < size[0] / side_length; ++i) {
-            fn(extent<1>{i * side_length});
-        }
-    } else if constexpr (Dims == 2) {
-        for (unsigned i = 0; i < size[0] / side_length; ++i) {
-            for (unsigned j = 0; j < size[1] / side_length; ++j) {
-                fn(extent<2>{i * side_length, j * side_length});
-            }
-        }
-    } else if constexpr (Dims == 3) {
-        for (unsigned i = 0; i < size[0] / side_length; ++i) {
-            for (unsigned j = 0; j < size[1] / side_length; ++j) {
-                for (unsigned k = 0; k < size[2] / side_length; ++k) {
-                    fn(extent<3>{i * side_length, j * side_length, k * side_length});
-                }
-            }
-        }
-    } else if constexpr (Dims == 4) {
-        for (unsigned i = 0; i < size[0] / side_length; ++i) {
-            for (unsigned j = 0; j < size[1] / side_length; ++j) {
-                for (unsigned k = 0; k < size[2] / side_length; ++k) {
-                    for (unsigned l = 0; l < size[3] / side_length; ++l) {
-                        fn(extent<4>{i * side_length, j * side_length, k * side_length,
-                            l * side_length});
-                    }
-                }
-            }
-        }
-    } else {
-        static_assert(Dims != Dims);
-    }
-}
-
-
 template<typename Integer>
 Integer endian_transform(Integer value);
 

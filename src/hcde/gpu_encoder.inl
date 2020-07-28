@@ -2,7 +2,14 @@
 
 #include "common.hh"
 
+#ifdef __GNUC__
+#   pragma GCC diagnostic push
+#   pragma GCC diagnostic ignored "-Wunused-parameter"
+#endif
 #include <SYCL/sycl.hpp>
+#ifdef __GNUC__
+#   pragma GCC diagnostic pop
+#endif
 
 
 namespace hcde::detail {
@@ -59,8 +66,8 @@ size_t hcde::gpu_encoder<Profile>::compress(
     std::vector<sycl::buffer<std::byte>> sb_streams;
     sb_streams.reserve(superblocks.size());
     for (auto &sb: superblocks) {
-        sb_streams.emplace_back(sycl::range<1>{sb.num_hypercubes()
-            * (sizeof(hypercube_offset_type) + Profile::compressed_block_size_bound)});
+        sb_streams.emplace_back(sycl::range<1>{file.superblock_header_length()
+            + sb.num_hypercubes() * Profile::compressed_block_size_bound});
     }
     sycl::buffer<uint64_t> sb_lengths(sycl::range<1>(superblocks.size()));
 
@@ -102,7 +109,7 @@ size_t hcde::gpu_encoder<Profile>::compress(
                 });
 
                 hypercube_offset_type hc_offsets[sb.num_hypercubes()];
-                auto offset = (sb.num_hypercubes() - 1) * sizeof(hypercube_offset_type);
+                auto offset = file.superblock_header_length();
                 for (size_t i = 0; i < sb.num_hypercubes(); ++i) {
                     hc_offsets[i] = offset;
                     offset += static_cast<hypercube_offset_type>(hc_lengths[i]);
@@ -111,7 +118,7 @@ size_t hcde::gpu_encoder<Profile>::compress(
                 sb_length_access[group.get_id()] = static_cast<uint64_t>(offset);
 
                 std::byte *sb_stream = sb_stream_access[sb_index].get_pointer();
-                group.parallel_for_work_item([sb, sb_stream, &hc_offsets, &hc_streams, &hc_lengths](
+                group.parallel_for_work_item([file, sb, sb_stream, &hc_offsets, &hc_streams, &hc_lengths](
                     sycl::h_item<1> &item) {
                     auto hc_index = item.get_local_id(0);
                     if (hc_index < sb.num_hypercubes()) {

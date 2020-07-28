@@ -37,6 +37,9 @@ namespace hcde {
 template<unsigned Dims>
 class extent {
     public:
+        using const_iterator = const size_t *;
+        using iterator = size_t *;
+
         constexpr extent() noexcept = default;
 
         template<typename ...Init, std::enable_if_t<((sizeof...(Init) == Dims)
@@ -44,6 +47,14 @@ class extent {
         constexpr extent(const Init &...components) noexcept
             : _components{static_cast<size_t>(components)...}
         {
+        }
+
+        static extent broadcast(size_t scalar) {
+            extent e;
+            for (unsigned d = 0; d < Dims; ++d) {
+                e[d] = scalar;
+            }
+            return e;
         }
 
         size_t &operator[](unsigned d) {
@@ -85,6 +96,22 @@ class extent {
                 offset *= _components[d];
             }
             return offset;
+        }
+
+        iterator begin() {
+            return _components;
+        }
+
+        iterator end() {
+            return _components + Dims;
+        }
+
+        const_iterator begin() const {
+            return _components;
+        }
+
+        const_iterator end() const {
+            return _components + Dims;
         }
 
     private:
