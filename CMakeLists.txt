@@ -52,9 +52,12 @@ endif ()
 
 if (Catch2_FOUND)
     add_executable(test src/test/test.cc)
-    if (hipSYCL_FOUND)
+    if (hipSYCL_FOUND AND HIPSYCL_PLATFORM STREQUAL "cpu")
         # For some reason, add_sycl_to_target does not link `compress` to OpenMP when using hipCPU
+        target_compile_definitions(test PRIVATE -DHCDE_TEST_GPU_SUPPORT=1)
         add_sycl_to_target(TARGET test SOURCES src/test/test.cc)
+    else ()
+        target_compile_definitions(test PRIVATE -DHCDE_TEST_GPU_SUPPORT=0)
     endif ()
     target_link_libraries(test PRIVATE hcde Catch2::Catch2)
 endif ()

@@ -4,7 +4,7 @@
 #include "../hcde/cpu_encoder.inl"
 #include "../hcde/mt_cpu_encoder.inl"
 
-#if HCDE_GPU_SUPPORT && defined(__HIPCPU__)
+#if HCDE_TEST_GPU_SUPPORT
 #   include "../hcde/gpu_encoder.inl"
 #endif
 
@@ -333,7 +333,7 @@ TEMPLATE_TEST_CASE("file produces a sane superblock / hypercube / header layout"
 TEMPLATE_TEST_CASE("encoder produces the expected bit stream", "[encoder]",
     (cpu_encoder<test_profile<2>>), (cpu_encoder<test_profile<3>>),
     (mt_cpu_encoder<test_profile<2>>), (mt_cpu_encoder<test_profile<3>>)
-#if HCDE_GPU_SUPPORT && defined(__HIPCPU__)
+#if HCDE_TEST_GPU_SUPPORT
     , (gpu_encoder<test_profile<2>>), (gpu_encoder<test_profile<3>>)
 #endif
 ) {
@@ -422,7 +422,7 @@ TEMPLATE_TEST_CASE("encoder produces the expected bit stream", "[encoder]",
 TEMPLATE_TEST_CASE("encoder reproduces the bit-identical array", "[encoder]",
     (cpu_encoder<test_profile<2>>), (cpu_encoder<test_profile<3>>),
     (mt_cpu_encoder<test_profile<2>>), (mt_cpu_encoder<test_profile<3>>)
-#if HCDE_GPU_SUPPORT && defined(__HIPCPU__)
+#if HCDE_TEST_GPU_SUPPORT
     , (gpu_encoder<test_profile<2>>), (gpu_encoder<test_profile<3>>)
 #endif
 ) {

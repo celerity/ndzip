@@ -68,30 +68,31 @@ size_t hcde::gpu_encoder<Profile>::compress(const slice<const data_type, dimensi
     const auto superblocks = detail::collect_superblocks(file);
     sycl::buffer<detail::superblock<Profile>> superblock_buffer(superblocks.data(), sycl::range<1>(superblocks.size()));
 
-    std::vector<sycl::buffer<std::byte>> sb_streams;
-    sb_streams.reserve(superblocks.size());
+    std::vector<uint64_t> sb_initial_offset_data;
+    uint64_t offset = file.file_header_length();
     for (auto &sb: superblocks) {
-        sb_streams.emplace_back(sycl::range<1>{file.superblock_header_length()
-            + sb.num_hypercubes() * Profile::compressed_block_size_bound});
+        sb_initial_offset_data.push_back(offset);
+        offset += file.superblock_header_length() + sb.num_hypercubes() * Profile::compressed_block_size_bound;
     }
-    sycl::buffer<uint64_t> sb_lengths(sycl::range<1>(superblocks.size()));
+
+    sycl::buffer<uint64_t> sb_initial_offsets(static_cast<const uint64_t*>(sb_initial_offset_data.data()),
+        sycl::range<1>{file.num_superblocks()});
+    sycl::buffer<std::byte> stream_buffer{sycl::range<1>(compressed_size_bound(data.size()))};
+    sycl::buffer<uint64_t> sb_lengths(sycl::range<1>{superblocks.size()});
 
     q.submit([&](sycl::handler &cgh) {
         auto data_access = data_buffer.template get_access<sycl::access::mode::read>(cgh);
         auto superblock_access = superblock_buffer.template get_access<sycl::access::mode::read>(cgh);
-        std::vector<sycl::accessor<std::byte, 1, sycl::access::mode::discard_write>> sb_stream_access;
-        sb_stream_access.reserve(sb_streams.size());
-        for (auto &stream: sb_streams) {
-            sb_stream_access.emplace_back(stream.get_access<sycl::access::mode::discard_write>(cgh));
-        }
+        auto stream_access = stream_buffer.get_access<sycl::access::mode::discard_write>(cgh);
+        auto sb_initial_offset_access = sb_initial_offsets.get_access<sycl::access::mode::read>(cgh);
         auto sb_length_access = sb_lengths.get_access<sycl::access::mode::discard_write>(cgh);
 
         cgh.parallel_for_work_group<detail::encode_kernel<Profile>>(
             sycl::range<1>(superblocks.size()), sycl::range<1>(file.max_num_hypercubes_per_superblock()),
-            [file, superblock_access, data_access, sb_stream_access, sb_length_access, data_size = data.size()](
-                sycl::group<1> group) {
-                const auto sb_index = group.get_id(0);
-                const auto sb = superblock_access[group.get_id()];
+            [file, superblock_access, data_access, stream_access, sb_length_access, sb_initial_offset_access,
+                data_size = data.size()](sycl::group<1> group) {
+                const auto sb_id = group.get_id();
+                const auto sb = superblock_access[sb_id];
 
                 slice<const data_type, dimensions> device_data(data_access.get_pointer(), data_size);
 
@@ -123,9 +124,9 @@ size_t hcde::gpu_encoder<Profile>::compress(const slice<const data_type, dimensi
                     offset += static_cast<hypercube_offset_type>(hc_lengths[i]);
                 }
 
-                sb_length_access[group.get_id()] = static_cast<uint64_t>(offset);
+                sb_length_access[sb_id] = static_cast<uint64_t>(offset);
 
-                std::byte *sb_stream = sb_stream_access[sb_index].get_pointer();
+                std::byte *sb_stream = stream_access.get_pointer() + sb_initial_offset_access[sb_id];
                 group.parallel_for_work_item([file, sb, sb_stream, &hc_offsets, &hc_streams, &hc_lengths](
                     sycl::h_item<1> item) {
                     auto hc_index = item.get_local_id(0);
@@ -141,6 +142,7 @@ size_t hcde::gpu_encoder<Profile>::compress(const slice<const data_type, dimensi
     });
 
     auto file_pos = static_cast<uint64_t>(file.file_header_length());
+    auto sb_stream_access = stream_buffer.get_access<sycl::access::mode::read>();
     auto sb_length_access = sb_lengths.get_access<sycl::access::mode::read>();
     for (size_t i = 0; i < superblocks.size(); ++i) {
         auto length = sb_length_access[sycl::id<1>{i}];
@@ -149,9 +151,8 @@ size_t hcde::gpu_encoder<Profile>::compress(const slice<const data_type, dimensi
             detail::store_unaligned(file_offset_address, detail::endian_transform(file_pos));
         }
 
-        auto sb_stream_access = sb_streams[i].get_access<sycl::access::mode::read>();
-        memcpy(static_cast<char *>(stream) + file_pos, sb_stream_access.get_pointer(), length);
-
+        memcpy(static_cast<char *>(stream) + file_pos,
+            sb_stream_access.get_pointer() + sb_initial_offset_data[i], length);
         file_pos += length;
     }
 
