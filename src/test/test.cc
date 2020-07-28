@@ -76,17 +76,20 @@ TEST_CASE("for_each_in_hypercube") {
         for_each_in_hypercube(slice<int, 1>(data, extent<1>(100)), extent<1>(5), 4,
             [&](int x) { indices.push_back(x); });
         CHECK(indices == std::vector{5, 6, 7, 8});
-    }SECTION("2d") {
+    }
+    SECTION("2d") {
         std::vector<int> indices;
         for_each_in_hypercube(slice<int, 2>(data, extent<2>(10, 10)), extent<2>(1, 2), 3,
             [&](int x) { indices.push_back(x); });
         CHECK(indices == std::vector{12, 13, 14, 22, 23, 24, 32, 33, 34});
-    }SECTION("3d") {
+    }
+    SECTION("3d") {
         std::vector<int> indices;
         for_each_in_hypercube(slice<int, 3>(data, extent<3>(10, 10, 10)), extent<3>(1, 0, 2), 2,
             [&](int x) { indices.push_back(x); });
         CHECK(indices == std::vector{102, 103, 112, 113, 202, 203, 212, 213});
-    }SECTION("4d") {
+    }
+    SECTION("4d") {
         std::vector<int> indices;
         for_each_in_hypercube(slice<int, 4>(data, extent<4>(10, 10, 10, 10)),
             extent<4>(1, 0, 2, 3), 2, [&](int x) { indices.push_back(x); });
@@ -102,18 +105,21 @@ TEST_CASE("load_bits") {
         CHECK(load_bits<uint8_t>(const_bit_ptr<1>(bits, 0), 2) == 0b10);
         CHECK(load_bits<uint8_t>(const_bit_ptr<1>(bits, 2), 3) == 0b100);
         CHECK(load_bits<uint8_t>(const_bit_ptr<1>(bits, 5), 4) == 0b1001);
-    }SECTION("for 16-bit integers") {
+    }
+    SECTION("for 16-bit integers") {
         alignas(uint16_t) const uint8_t bits[4] = {0b1010'0100, 0b1000'0000};
         CHECK(load_bits<uint16_t>(const_bit_ptr<2>(bits, 0), 2) == 0b10);
         CHECK(load_bits<uint16_t>(const_bit_ptr<2>(bits, 2), 3) == 0b100);
         CHECK(load_bits<uint16_t>(const_bit_ptr<2>(bits, 5), 4) == 0b1001);
-    }SECTION("for 32-bit integers") {
+    }
+    SECTION("for 32-bit integers") {
         alignas(uint32_t) const uint8_t bits[8] = {0b1010'0100, 0b1100'0000};
         CHECK(load_bits<uint32_t>(const_bit_ptr<4>(bits, 0), 2) == 0b10);
         CHECK(load_bits<uint32_t>(const_bit_ptr<4>(bits, 2), 3) == 0b100);
         CHECK(load_bits<uint32_t>(const_bit_ptr<4>(bits, 5), 4) == 0b1001);
         CHECK(load_bits<uint32_t>(const_bit_ptr<4>(bits, 9), 27) == 0b100000000000000000000000000);
-    }SECTION("for 64-bit integers") {
+    }
+    SECTION("for 64-bit integers") {
         alignas(uint64_t) const uint8_t bits[16] = {0b1010'0100, 0b1100'0000};
         CHECK(load_bits<uint64_t>(const_bit_ptr<8>(bits, 0), 2) == 0b10);
         CHECK(load_bits<uint64_t>(const_bit_ptr<8>(bits, 2), 3) == 0b100);
@@ -130,14 +136,16 @@ TEST_CASE("store_bits_linear") {
         store_bits_linear<uint8_t>(bit_ptr<1>(bits, 2), 3, 0b100);
         store_bits_linear<uint8_t>(bit_ptr<1>(bits, 5), 4, 0b1001);
         CHECK(memcmp(bits, expected_bits, sizeof bits) == 0);
-    }SECTION("for 32-bit integers") {
+    }
+    SECTION("for 32-bit integers") {
         alignas(uint16_t) const uint8_t expected_bits[4] = {0b1010'0100, 0b1000'0000};
         alignas(uint16_t) uint8_t bits[4] = {0};
         store_bits_linear<uint16_t>(bit_ptr<2>(bits, 0), 2, 0b10);
         store_bits_linear<uint16_t>(bit_ptr<2>(bits, 2), 3, 0b100);
         store_bits_linear<uint16_t>(bit_ptr<2>(bits, 5), 4, 0b1001);
         CHECK(memcmp(bits, expected_bits, sizeof bits) == 0);
-    }SECTION("for 32-bit integers") {
+    }
+    SECTION("for 32-bit integers") {
         alignas(uint32_t) const uint8_t expected_bits[8] = {0b1010'0100, 0b1100'0000};
         alignas(uint32_t) uint8_t bits[8] = {0};
         store_bits_linear<uint32_t>(bit_ptr<4>(bits, 0), 2, 0b10);
@@ -145,7 +153,8 @@ TEST_CASE("store_bits_linear") {
         store_bits_linear<uint32_t>(bit_ptr<4>(bits, 5), 4, 0b1001);
         store_bits_linear<uint32_t>(bit_ptr<4>(bits, 9), 27, 0b100000000000000000000000000);
         CHECK(memcmp(bits, expected_bits, sizeof bits) == 0);
-    }SECTION("for 32-bit integers") {
+    }
+    SECTION("for 32-bit integers") {
         alignas(uint64_t) const uint8_t expected_bits[16] = {0b1010'0100, 0b1100'0000};
         alignas(uint64_t) uint8_t bits[16] = {0};
         store_bits_linear<uint64_t>(bit_ptr<8>(bits, 0), 2, 0b10);
@@ -412,8 +421,11 @@ TEMPLATE_TEST_CASE("encoder produces the expected bit stream", "[encoder]",
 
 TEMPLATE_TEST_CASE("encoder reproduces the bit-identical array", "[encoder]",
     (cpu_encoder<test_profile<2>>), (cpu_encoder<test_profile<3>>),
-    (mt_cpu_encoder<test_profile<2>>), (mt_cpu_encoder<test_profile<3>>))
-{
+    (mt_cpu_encoder<test_profile<2>>), (mt_cpu_encoder<test_profile<3>>)
+#if HCDE_GPU_SUPPORT
+    , (gpu_encoder<test_profile<2>>), (gpu_encoder<test_profile<3>>)
+#endif
+) {
     using profile = typename TestType::profile;
 
     constexpr auto dims = profile::dimensions;

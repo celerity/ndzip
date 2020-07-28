@@ -33,15 +33,19 @@ std::vector<superblock<Profile>> collect_superblocks(const file<Profile> &f) {
     return sbs;
 }
 
+// SYCL kernel id type
 template<typename Profile>
 class encode_kernel;
+
+// SYCL kernel id type
+template<typename Profile>
+class decode_kernel;
 
 }
 
 
 template<typename Profile>
-size_t hcde::gpu_encoder<Profile>::compressed_size_bound(
-    const extent<dimensions> &size) const {
+size_t hcde::gpu_encoder<Profile>::compressed_size_bound(const extent<dimensions> &size) const {
     detail::file<Profile> file(size);
     size_t bound = file.combined_length_of_all_headers();
     bound += file.num_hypercubes() * Profile::compressed_block_size_bound;
@@ -51,8 +55,7 @@ size_t hcde::gpu_encoder<Profile>::compressed_size_bound(
 
 
 template<typename Profile>
-size_t hcde::gpu_encoder<Profile>::compress(
-    const slice<const data_type, dimensions> &data, void *stream) const {
+size_t hcde::gpu_encoder<Profile>::compress(const slice<const data_type, dimensions> &data, void *stream) const {
     using bits_type = typename Profile::bits_type;
     using hypercube_offset_type = typename Profile::hypercube_offset_type;
     constexpr static auto side_length = Profile::hypercube_side_length;
@@ -62,6 +65,7 @@ size_t hcde::gpu_encoder<Profile>::compress(
 
     const detail::file<Profile> file(data.size());
     const auto superblocks = detail::collect_superblocks(file);
+    sycl::buffer<detail::superblock<Profile>> superblock_buffer(superblocks.data(), sycl::range<1>(superblocks.size()));
 
     std::vector<sycl::buffer<std::byte>> sb_streams;
     sb_streams.reserve(superblocks.size());
@@ -73,6 +77,7 @@ size_t hcde::gpu_encoder<Profile>::compress(
 
     q.submit([&](sycl::handler &cgh) {
         auto data_access = data_buffer.template get_access<sycl::access::mode::read>(cgh);
+        auto superblock_access = superblock_buffer.template get_access<sycl::access::mode::read>(cgh);
         std::vector<sycl::accessor<std::byte, 1, sycl::access::mode::discard_write>> sb_stream_access;
         sb_stream_access.reserve(sb_streams.size());
         for (auto &stream: sb_streams) {
@@ -81,31 +86,33 @@ size_t hcde::gpu_encoder<Profile>::compress(
         auto sb_length_access = sb_lengths.get_access<sycl::access::mode::discard_write>(cgh);
 
         cgh.parallel_for_work_group<detail::encode_kernel<Profile>>(
-            sycl::range<1>(superblocks.size()),
-            sycl::range<1>(file.max_num_hypercubes_per_superblock()),
-            [=, data_size = data.size()](sycl::group<1> group) {
-                auto sb_index = group.get_id(0);
+            sycl::range<1>(superblocks.size()), sycl::range<1>(file.max_num_hypercubes_per_superblock()),
+            [file, superblock_access, data_access, sb_stream_access, sb_length_access, data_size = data.size()](
+                sycl::group<1> group) {
+                const auto sb_index = group.get_id(0);
+                const auto sb = superblock_access[group.get_id()];
+
                 slice<const data_type, dimensions> device_data(data_access.get_pointer(), data_size);
-                auto &sb = superblocks[sb_index];
 
                 std::byte hc_streams[sb.num_hypercubes()][Profile::compressed_block_size_bound + sizeof(bits_type)];
                 size_t hc_lengths[sb.num_hypercubes()];
-                group.parallel_for_work_item([sb, &device_data, &hc_lengths, &hc_streams](sycl::h_item<1> &item) {
+                group.parallel_for_work_item([sb, &device_data, &hc_lengths, &hc_streams](sycl::h_item<1> item) {
                     auto hc_index = item.get_local_id(0);
-                    if (hc_index < sb.num_hypercubes()) {
-                        Profile p;
-
-                        bits_type cube[detail::ipow(side_length, Profile::dimensions)];
-                        auto offset = sb.hypercube_offset_at(hc_index);
-                        auto *cube_pos = cube;
-                        detail::for_each_in_hypercube(device_data, offset, side_length,
-                            [&](auto &element) {
-                                *cube_pos++ = p.load_value(&element);
-                            });
-
-                        memset(hc_streams[hc_index], 0, sizeof hc_streams[hc_index]);
-                        hc_lengths[hc_index] = p.encode_block(cube, hc_streams[hc_index]);
+                    if (hc_index >= sb.num_hypercubes()) {
+                        return;
                     }
+
+                    Profile p;
+                    bits_type cube[detail::ipow(side_length, Profile::dimensions)];
+                    auto offset = sb.hypercube_offset_at(hc_index);
+                    auto *cube_pos = cube;
+                    detail::for_each_in_hypercube(device_data, offset, side_length,
+                        [&](auto &element) {
+                            *cube_pos++ = p.load_value(&element);
+                        });
+
+                    memset(hc_streams[hc_index], 0, sizeof hc_streams[hc_index]);
+                    hc_lengths[hc_index] = p.encode_block(cube, hc_streams[hc_index]);
                 });
 
                 hypercube_offset_type hc_offsets[sb.num_hypercubes()];
@@ -119,7 +126,7 @@ size_t hcde::gpu_encoder<Profile>::compress(
 
                 std::byte *sb_stream = sb_stream_access[sb_index].get_pointer();
                 group.parallel_for_work_item([file, sb, sb_stream, &hc_offsets, &hc_streams, &hc_lengths](
-                    sycl::h_item<1> &item) {
+                    sycl::h_item<1> item) {
                     auto hc_index = item.get_local_id(0);
                     if (hc_index < sb.num_hypercubes()) {
                         if (hc_index > 0) {
@@ -159,55 +166,76 @@ size_t hcde::gpu_encoder<Profile>::compress(
 
 template<typename Profile>
 size_t hcde::gpu_encoder<Profile>::decompress(const void *stream, size_t bytes,
-    const slice<data_type, dimensions> &data) const {
-    /*
+    const slice<data_type, dimensions> &data) const
+{
     using bits_type = typename Profile::bits_type;
+    using hypercube_offset_type = typename Profile::hypercube_offset_type;
     constexpr static auto side_length = Profile::hypercube_side_length;
 
-    detail::file<Profile> file(data.size());
-    auto sb_groups = detail::collect_superblock_groups(file, _num_threads);
+    const detail::file<Profile> file(data.size());
+    const auto superblocks = detail::collect_superblocks(file);
+    sycl::buffer<detail::superblock<Profile>> superblock_buffer(superblocks.data(), sycl::range<1>(superblocks.size()));
 
-    std::vector<std::thread> threads;
-    threads.reserve(_num_threads);
-    for (auto &group: sb_groups) {
-        threads.emplace_back([&group, stream, &data, file] {
-            for (auto &[index, sb]: group) {
-                size_t stream_pos;
-                if (index > 0) {
-                    auto offset_address = static_cast<const char *>(stream)
-                            + (index - 1) * sizeof(uint64_t);
-                    stream_pos = static_cast<size_t>(detail::endian_transform(
-                            detail::load_unaligned<uint64_t>(offset_address)));
-                } else {
-                    stream_pos = file.file_header_length();
+    sycl::queue q;
+    sycl::buffer<std::byte> stream_buffer(static_cast<const std::byte*>(stream), sycl::range<1>(bytes));
+    sycl::buffer<data_type> data_buffer(sycl::range<1>(data.size().linear_offset()));
+
+    q.submit([&](sycl::handler &cgh) {
+        auto stream_access = stream_buffer.get_access<sycl::access::mode::read>(cgh);
+        auto data_access = data_buffer.template get_access<sycl::access::mode::discard_write>(cgh);
+        auto superblock_access = superblock_buffer.template get_access<sycl::access::mode::read>(cgh);
+
+        cgh.parallel_for_work_group<detail::decode_kernel<Profile>>(sycl::range<1>(superblocks.size()),
+            sycl::range<1>(file.max_num_hypercubes_per_superblock()),
+                [superblock_access, data_access, stream_access, file, data_size = data.size()](sycl::group<1> group) {
+                const auto sb_index = group.get_id(0);
+                const auto sb = superblock_access[group.get_id()];
+
+                slice<data_type, dimensions> device_data(data_access.get_pointer(), data_size);
+                std::byte *device_stream = stream_access.get_pointer();
+
+                size_t sb_offset = file.file_header_length();
+                if (sb_index > 0) {
+                    auto sb_offset_address = device_stream + (sb_index - 1) * sizeof(uint64_t);
+                    sb_offset = detail::endian_transform(detail::load_unaligned<uint64_t>(sb_offset_address));
                 }
-                stream_pos += file.superblock_header_length(); // simply skip the header
 
-                sb.for_each_hypercube([&](auto offset) {
+                group.parallel_for_work_item([=](sycl::h_item<1> item) {
+                    auto hc_index = item.get_local_id(0);
+                    if (hc_index >= sb.num_hypercubes()) {
+                        return;
+                    }
+
+                    size_t hc_offset = file.superblock_header_length();
+                    if (hc_index > 0) {
+                        auto hc_offset_address = device_stream + sb_offset
+                            + (hc_index - 1) * sizeof(hypercube_offset_type);
+                        hc_offset = detail::endian_transform(
+                            detail::load_unaligned<hypercube_offset_type>(hc_offset_address));
+                    }
+
                     Profile p;
                     bits_type cube[detail::ipow(side_length, Profile::dimensions)] = {};
-                    stream_pos += p.decode_block(
-                            static_cast<const char *>(stream) + stream_pos, cube);
+                    p.decode_block(device_stream + sb_offset + hc_offset, cube);
                     bits_type *cube_ptr = cube;
-                    detail::for_each_in_hypercube(data, offset, side_length,
-                            [&](auto &element) { p.store_value(&element, *cube_ptr++); });
+                    auto offset = sb.hypercube_offset_at(hc_index);
+                    detail::for_each_in_hypercube(device_data, offset, side_length,
+                        [&](auto &element) { p.store_value(&element, *cube_ptr++); });
                 });
-            }
         });
-    }
+    });
+
+    q.wait();
+
+    auto host_data = data_buffer.template get_access<sycl::access::mode::read>();
+    memcpy(data.data(), host_data.get_pointer(), data.size().linear_offset() * sizeof(data_type));
 
     auto border_pos_address = static_cast<const char *>(stream)
-            + (file.num_superblocks() - 1) * sizeof(uint64_t);
+        + (file.num_superblocks() - 1) * sizeof(uint64_t);
     auto border_pos = static_cast<size_t>(detail::endian_transform(
-            detail::load_unaligned<uint64_t>(border_pos_address)));
+        detail::load_unaligned<uint64_t>(border_pos_address)));
     auto border_length = detail::unpack_border(data, static_cast<const char *>(stream) + border_pos,
-            side_length);
-
-    for (auto &t: threads) {
-        t.join();
-    }
-
+        side_length);
     return border_pos + border_length;
-     */return 0;
 }
 
