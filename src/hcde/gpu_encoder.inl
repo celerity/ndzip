@@ -91,13 +91,16 @@ size_t hcde::gpu_encoder<Profile>::compress(const slice<const data_type, dimensi
             sycl::range<1>(superblocks.size()), sycl::range<1>(file.max_num_hypercubes_per_superblock()),
             [file, superblock_access, data_access, stream_access, sb_length_access, sb_initial_offset_access,
                 data_size = data.size()](sycl::group<1> group) {
+                using hc_stream_block = std::byte[Profile::compressed_block_size_bound + sizeof(bits_type)];
+                using hc_length_block = size_t[file.max_num_hypercubes_per_superblock()];
+
                 const auto sb_id = group.get_id();
                 const auto sb = superblock_access[sb_id];
 
                 slice<const data_type, dimensions> device_data(data_access.get_pointer(), data_size);
 
-                std::byte hc_streams[sb.num_hypercubes()][Profile::compressed_block_size_bound + sizeof(bits_type)];
-                size_t hc_lengths[sb.num_hypercubes()];
+                sycl::private_memory<hc_stream_block> hc_streams(group);
+                hc_length_block hc_lengths;
                 group.parallel_for_work_item([sb, &device_data, &hc_lengths, &hc_streams](sycl::h_item<1> item) {
                     auto hc_index = item.get_local_id(0);
                     if (hc_index >= sb.num_hypercubes()) {
@@ -113,8 +116,8 @@ size_t hcde::gpu_encoder<Profile>::compress(const slice<const data_type, dimensi
                             *cube_pos++ = p.load_value(&element);
                         });
 
-                    memset(hc_streams[hc_index], 0, sizeof hc_streams[hc_index]);
-                    hc_lengths[hc_index] = p.encode_block(cube, hc_streams[hc_index]);
+                    memset(hc_streams(item), 0, sizeof(hc_stream_block));
+                    hc_lengths[hc_index] = p.encode_block(cube, hc_streams(item));
                 });
 
                 hypercube_offset_type hc_offsets[sb.num_hypercubes()];
@@ -127,7 +130,7 @@ size_t hcde::gpu_encoder<Profile>::compress(const slice<const data_type, dimensi
                 sb_length_access[sb_id] = static_cast<uint64_t>(offset);
 
                 std::byte *sb_stream = stream_access.get_pointer() + sb_initial_offset_access[sb_id];
-                group.parallel_for_work_item([file, sb, sb_stream, &hc_offsets, &hc_streams, &hc_lengths](
+                group.parallel_for_work_item([sb, sb_stream, &hc_offsets, &hc_streams, &hc_lengths](
                     sycl::h_item<1> item) {
                     auto hc_index = item.get_local_id(0);
                     if (hc_index < sb.num_hypercubes()) {
@@ -135,7 +138,7 @@ size_t hcde::gpu_encoder<Profile>::compress(const slice<const data_type, dimensi
                             detail::store_unaligned(sb_stream + sizeof(hypercube_offset_type) * (hc_index - 1),
                                 detail::endian_transform(hc_offsets[hc_index]));
                         }
-                        memcpy(sb_stream + hc_offsets[hc_index], hc_streams[hc_index], hc_lengths[hc_index]);
+                        memcpy(sb_stream + hc_offsets[hc_index], hc_streams(item), hc_lengths[hc_index]);
                     }
                 });
             });
