@@ -2,8 +2,9 @@
 
 #include "common.hh"
 
-#include <thread>
+#include <cstddef>
 #include <condition_variable>
+#include <thread>
 #include <vector>
 
 

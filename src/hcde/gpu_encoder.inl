@@ -5,6 +5,7 @@
 #ifdef __GNUC__
 #   pragma GCC diagnostic push
 #   pragma GCC diagnostic ignored "-Wunused-parameter"
+#   pragma GCC diagnostic ignored "-Wundef"
 #endif
 #include <SYCL/sycl.hpp>
 #ifdef __GNUC__

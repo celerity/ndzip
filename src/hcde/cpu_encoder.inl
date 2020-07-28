@@ -2,6 +2,8 @@
 
 #include "common.hh"
 
+#include <vector>
+
 
 template<typename Profile>
 size_t hcde::cpu_encoder<Profile>::compressed_size_bound(
