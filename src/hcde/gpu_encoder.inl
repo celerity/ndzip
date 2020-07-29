@@ -188,15 +188,12 @@ size_t hcde::gpu_encoder<Profile>::decompress(const void *stream, size_t bytes,
         auto data_access = data_buffer.template get_access<sycl::access::mode::discard_write>(cgh);
         auto superblock_access = superblock_buffer.template get_access<sycl::access::mode::read>(cgh);
 
-        cgh.parallel_for<detail::decode_kernel<Profile>>(sycl::nd_range<1>{
-            sycl::range<1>{superblocks.size() * file.max_num_hypercubes_per_superblock()},
-            sycl::range<1>{file.max_num_hypercubes_per_superblock()}},
-            [superblock_access, data_access, stream_access, file, data_size = data.size()](sycl::nd_item<1> nd_item) {
-                const auto sb_id = nd_item.get_group().get_id();
-                const auto sb_index = sb_id[0];
-                const auto sb = superblock_access[sb_id];
-                const auto hc_id = nd_item.get_local_id();
-                const auto hc_index = hc_id[0];
+        cgh.parallel_for<detail::decode_kernel<Profile>>(
+            sycl::range<2>{superblocks.size(), file.max_num_hypercubes_per_superblock()},
+            [superblock_access, data_access, stream_access, file, data_size = data.size()](sycl::item<2> item) {
+                const auto sb_index = item.get_id(0);
+                const auto hc_index = item.get_id(1);
+                const auto sb = superblock_access[sycl::id<1>{sb_index}];
 
                 if (hc_index >= sb.num_hypercubes()) {
                     return;
