@@ -86,61 +86,59 @@ size_t hcde::gpu_encoder<Profile>::compress(const slice<const data_type, dimensi
         auto stream_access = stream_buffer.get_access<sycl::access::mode::discard_write>(cgh);
         auto sb_initial_offset_access = sb_initial_offsets.get_access<sycl::access::mode::read>(cgh);
         auto sb_length_access = sb_lengths.get_access<sycl::access::mode::discard_write>(cgh);
+        auto hc_length_access = sycl::accessor<hypercube_offset_type, 1, sycl::access::mode::read_write,
+            sycl::access::target::local>(sycl::range<1>{file.max_num_hypercubes_per_superblock()}, cgh);
+        auto hc_offset_access = sycl::accessor<hypercube_offset_type, 1, sycl::access::mode::read_write,
+            sycl::access::target::local>(sycl::range<1>{file.max_num_hypercubes_per_superblock()}, cgh);
 
-        cgh.parallel_for_work_group<detail::encode_kernel<Profile>>(
-            sycl::range<1>(superblocks.size()), sycl::range<1>(file.max_num_hypercubes_per_superblock()),
+        cgh.parallel_for<detail::encode_kernel<Profile>>(sycl::nd_range<1>{
+            sycl::range<1>{superblocks.size() * file.max_num_hypercubes_per_superblock()},
+            sycl::range<1>{file.max_num_hypercubes_per_superblock()}},
             [file, superblock_access, data_access, stream_access, sb_length_access, sb_initial_offset_access,
-                data_size = data.size()](sycl::group<1> group) {
-                using hc_stream_block = std::byte[Profile::compressed_block_size_bound + sizeof(bits_type)];
-                using hc_length_block = size_t[file.max_num_hypercubes_per_superblock()];
-
-                const auto sb_id = group.get_id();
+                hc_length_access, hc_offset_access, data_size = data.size()](sycl::nd_item<1> nd_item) {
+                const auto sb_id = nd_item.get_group().get_id();
                 const auto sb = superblock_access[sb_id];
+                const auto hc_id = nd_item.get_local_id();
+                const auto hc_index = hc_id[0];
 
                 slice<const data_type, dimensions> device_data(data_access.get_pointer(), data_size);
 
-                sycl::private_memory<hc_stream_block> hc_streams(group);
-                hc_length_block hc_lengths;
-                group.parallel_for_work_item([sb, &device_data, &hc_lengths, &hc_streams](sycl::h_item<1> item) {
-                    auto hc_index = item.get_local_id(0);
-                    if (hc_index >= sb.num_hypercubes()) {
-                        return;
-                    }
-
-                    Profile p;
-                    bits_type cube[detail::ipow(side_length, Profile::dimensions)];
-                    auto offset = sb.hypercube_offset_at(hc_index);
-                    auto *cube_pos = cube;
-                    detail::for_each_in_hypercube(device_data, offset, side_length,
-                        [&](auto &element) {
-                            *cube_pos++ = p.load_value(&element);
-                        });
-
-                    memset(hc_streams(item), 0, sizeof(hc_stream_block));
-                    hc_lengths[hc_index] = p.encode_block(cube, hc_streams(item));
-                });
-
-                hypercube_offset_type hc_offsets[sb.num_hypercubes()];
-                auto offset = file.superblock_header_length();
-                for (size_t i = 0; i < sb.num_hypercubes(); ++i) {
-                    hc_offsets[i] = offset;
-                    offset += static_cast<hypercube_offset_type>(hc_lengths[i]);
+                if (hc_index >= sb.num_hypercubes()) {
+                    return;
                 }
 
-                sb_length_access[sb_id] = static_cast<uint64_t>(offset);
+                Profile p;
+                bits_type cube[detail::ipow(side_length, Profile::dimensions)];
+                auto offset = sb.hypercube_offset_at(hc_index);
+                auto *cube_pos = cube;
+                detail::for_each_in_hypercube(device_data, offset, side_length,
+                    [&](auto &element) {
+                        *cube_pos++ = p.load_value(&element);
+                    });
+
+                std::byte hc_stream[Profile::compressed_block_size_bound + sizeof(bits_type)] = {};
+                hc_length_access[hc_id] = p.encode_block(cube, hc_stream);
+
+                nd_item.barrier();
+
+                if (hc_index == 0) {
+                    auto offset = file.superblock_header_length();
+                    for (size_t i = 0; i < sb.num_hypercubes(); ++i) {
+                        hc_offset_access[sycl::id<1>{i}] = offset;
+                        offset += static_cast<hypercube_offset_type>(hc_length_access[sycl::id<1>{i}]);
+                    }
+
+                    sb_length_access[sb_id] = static_cast<uint64_t>(offset);
+                }
+
+                nd_item.barrier();
 
                 std::byte *sb_stream = stream_access.get_pointer() + sb_initial_offset_access[sb_id];
-                group.parallel_for_work_item([sb, sb_stream, &hc_offsets, &hc_streams, &hc_lengths](
-                    sycl::h_item<1> item) {
-                    auto hc_index = item.get_local_id(0);
-                    if (hc_index < sb.num_hypercubes()) {
-                        if (hc_index > 0) {
-                            detail::store_unaligned(sb_stream + sizeof(hypercube_offset_type) * (hc_index - 1),
-                                detail::endian_transform(hc_offsets[hc_index]));
-                        }
-                        memcpy(sb_stream + hc_offsets[hc_index], hc_streams(item), hc_lengths[hc_index]);
-                    }
-                });
+                if (hc_index > 0) {
+                    detail::store_unaligned(sb_stream + sizeof(hypercube_offset_type) * (hc_index - 1),
+                        detail::endian_transform(hc_offset_access[hc_id]));
+                }
+                memcpy(sb_stream + hc_offset_access[hc_id], hc_stream, hc_length_access[hc_id]);
             });
     });
 
@@ -190,11 +188,19 @@ size_t hcde::gpu_encoder<Profile>::decompress(const void *stream, size_t bytes,
         auto data_access = data_buffer.template get_access<sycl::access::mode::discard_write>(cgh);
         auto superblock_access = superblock_buffer.template get_access<sycl::access::mode::read>(cgh);
 
-        cgh.parallel_for_work_group<detail::decode_kernel<Profile>>(sycl::range<1>(superblocks.size()),
-            sycl::range<1>(file.max_num_hypercubes_per_superblock()),
-                [superblock_access, data_access, stream_access, file, data_size = data.size()](sycl::group<1> group) {
-                const auto sb_index = group.get_id(0);
-                const auto sb = superblock_access[group.get_id()];
+        cgh.parallel_for<detail::decode_kernel<Profile>>(sycl::nd_range<1>{
+            sycl::range<1>{superblocks.size() * file.max_num_hypercubes_per_superblock()},
+            sycl::range<1>{file.max_num_hypercubes_per_superblock()}},
+            [superblock_access, data_access, stream_access, file, data_size = data.size()](sycl::nd_item<1> nd_item) {
+                const auto sb_id = nd_item.get_group().get_id();
+                const auto sb_index = sb_id[0];
+                const auto sb = superblock_access[sb_id];
+                const auto hc_id = nd_item.get_local_id();
+                const auto hc_index = hc_id[0];
+
+                if (hc_index >= sb.num_hypercubes()) {
+                    return;
+                }
 
                 slice<data_type, dimensions> device_data(data_access.get_pointer(), data_size);
                 std::byte *device_stream = stream_access.get_pointer();
@@ -205,28 +211,21 @@ size_t hcde::gpu_encoder<Profile>::decompress(const void *stream, size_t bytes,
                     sb_offset = detail::endian_transform(detail::load_unaligned<uint64_t>(sb_offset_address));
                 }
 
-                group.parallel_for_work_item([=](sycl::h_item<1> item) {
-                    auto hc_index = item.get_local_id(0);
-                    if (hc_index >= sb.num_hypercubes()) {
-                        return;
-                    }
+                size_t hc_offset = file.superblock_header_length();
+                if (hc_index > 0) {
+                    auto hc_offset_address = device_stream + sb_offset
+                        + (hc_index - 1) * sizeof(hypercube_offset_type);
+                    hc_offset = detail::endian_transform(
+                        detail::load_unaligned<hypercube_offset_type>(hc_offset_address));
+                }
 
-                    size_t hc_offset = file.superblock_header_length();
-                    if (hc_index > 0) {
-                        auto hc_offset_address = device_stream + sb_offset
-                            + (hc_index - 1) * sizeof(hypercube_offset_type);
-                        hc_offset = detail::endian_transform(
-                            detail::load_unaligned<hypercube_offset_type>(hc_offset_address));
-                    }
-
-                    Profile p;
-                    bits_type cube[detail::ipow(side_length, Profile::dimensions)] = {};
-                    p.decode_block(device_stream + sb_offset + hc_offset, cube);
-                    bits_type *cube_ptr = cube;
-                    auto offset = sb.hypercube_offset_at(hc_index);
-                    detail::for_each_in_hypercube(device_data, offset, side_length,
-                        [&](auto &element) { p.store_value(&element, *cube_ptr++); });
-                });
+                Profile p;
+                bits_type cube[detail::ipow(side_length, Profile::dimensions)] = {};
+                p.decode_block(device_stream + sb_offset + hc_offset, cube);
+                bits_type *cube_ptr = cube;
+                auto offset = sb.hypercube_offset_at(hc_index);
+                detail::for_each_in_hypercube(device_data, offset, side_length,
+                    [&](auto &element) { p.store_value(&element, *cube_ptr++); });
         });
     });
 
