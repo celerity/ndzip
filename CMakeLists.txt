@@ -42,7 +42,11 @@ endif ()
 target_include_directories(hcde PUBLIC include)
 target_link_libraries(hcde PRIVATE ${CMAKE_THREAD_LIBS_INIT})
 
-add_executable(compress src/compress/compress.cc)
+add_executable(compress
+    src/compress/compress.cc
+    src/compress/io.cc
+    src/compress/io.hh
+)
 target_link_libraries(compress PRIVATE hcde Boost::program_options)
 
 if (hipSYCL_FOUND)
