@@ -60,20 +60,33 @@ size_t hcde::mt_cpu_encoder<Profile>::compress(
 
     constexpr static auto side_length = Profile::hypercube_side_length;
     detail::file<Profile> file(data.size());
+
+    auto num_sbs = file.num_superblocks();
     auto sb_groups = detail::collect_superblock_groups(file, _num_threads);
+
+    std::vector<size_t> initial_sb_offsets(num_sbs);
+    std::vector<size_t> sb_lengths(num_sbs);
+
+    {
+        size_t sb_index = 0;
+        size_t offset = file.file_header_length();
+        file.for_each_superblock([&](auto sb) {
+            initial_sb_offsets[sb_index] = offset;
+            offset += file.superblock_header_length()
+                + sb.num_hypercubes() * Profile::compressed_block_size_bound;
+            ++sb_index;
+        });
+    }
 
     std::vector<std::thread> threads;
     threads.reserve(_num_threads);
-    std::vector<std::vector<std::byte>> streams(file.num_superblocks());
+
     for (auto &group: sb_groups) {
-        threads.emplace_back([&group, &data, &streams, file] {
+        threads.emplace_back([&group, &data, &initial_sb_offsets, &sb_lengths, stream, file] {
             std::vector<bits_type> cube;
 
             for (auto &[index, sb]: group) {
-                streams[index].resize(file.superblock_header_length()
-                        + sb.num_hypercubes() * Profile::compressed_block_size_bound);
-
-                auto sb_stream = streams[index].data();
+                auto sb_stream = static_cast<std::byte*>(stream) + initial_sb_offsets[index];
                 size_t sb_stream_pos = file.superblock_header_length();
 
                 Profile p;
@@ -99,7 +112,7 @@ size_t hcde::mt_cpu_encoder<Profile>::compress(
                     ++hypercube_index;
                 });
 
-                streams[index].resize(sb_stream_pos);
+                sb_lengths[index] = sb_stream_pos;
             }
         });
     }
@@ -108,18 +121,16 @@ size_t hcde::mt_cpu_encoder<Profile>::compress(
         t.join();
     }
 
-    size_t sb_index = 0;
-    size_t file_pos = file.file_header_length();
-    for (auto &sb_stream: streams) {
-        if (sb_index > 0) {
-            auto file_offset_address = static_cast<char *>(stream)
-                    + (sb_index - 1) * sizeof(uint64_t);
-            auto file_offset = static_cast<uint64_t>(file_pos);
-            detail::store_unaligned(file_offset_address, detail::endian_transform(file_offset));
-        }
-        memcpy(static_cast<char *>(stream) + file_pos, sb_stream.data(), sb_stream.size());
-        file_pos += sb_stream.size();
-        ++sb_index;
+    size_t file_pos = file.file_header_length() + sb_lengths[0];
+    for (size_t sb_index = 1; sb_index < num_sbs; ++sb_index) {
+        auto file_offset_address = static_cast<char *>(stream)
+                + (sb_index - 1) * sizeof(uint64_t);
+        auto file_offset = static_cast<uint64_t>(file_pos);
+        detail::store_unaligned(file_offset_address, detail::endian_transform(file_offset));
+        assert(file_pos <= initial_sb_offsets[sb_index]);
+        memmove(static_cast<std::byte *>(stream) + file_pos,
+            static_cast<const std::byte *>(stream) + initial_sb_offsets[sb_index], sb_lengths[sb_index]);
+        file_pos += sb_lengths[sb_index];
     }
 
     auto border_offset_address =
