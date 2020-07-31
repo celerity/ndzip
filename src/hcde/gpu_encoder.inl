@@ -109,12 +109,9 @@ size_t hcde::gpu_encoder<Profile>::compress(const slice<const data_type, dimensi
 
                 Profile p;
                 bits_type cube[detail::ipow(side_length, Profile::dimensions)];
-                auto offset = sb.hypercube_offset_at(hc_index);
+                auto hc = sb.hypercube_at(hc_index);
                 auto *cube_pos = cube;
-                detail::for_each_in_hypercube(device_data, offset, side_length,
-                    [&](auto &element) {
-                        *cube_pos++ = p.load_value(&element);
-                    });
+                hc.for_each_cell(device_data, [&](auto *cell) { *cube_pos++ = p.load_value(cell); });
 
                 std::byte hc_stream[Profile::compressed_block_size_bound + sizeof(bits_type)] = {};
                 hc_length_access[hc_id] = p.encode_block(cube, hc_stream);
@@ -220,9 +217,8 @@ size_t hcde::gpu_encoder<Profile>::decompress(const void *stream, size_t bytes,
                 bits_type cube[detail::ipow(side_length, Profile::dimensions)] = {};
                 p.decode_block(device_stream + sb_offset + hc_offset, cube);
                 bits_type *cube_ptr = cube;
-                auto offset = sb.hypercube_offset_at(hc_index);
-                detail::for_each_in_hypercube(device_data, offset, side_length,
-                    [&](auto &element) { p.store_value(&element, *cube_ptr++); });
+                sb.hypercube_at(hc_index).for_each_cell(device_data,
+                    [&](auto *cell) { p.store_value(cell, *cube_ptr++); });
         });
     });
 

@@ -38,6 +38,12 @@
 
 namespace hcde::detail {
 
+using file_offset_type = uint64_t;
+using superblock_offset_type = uint32_t;
+
+constexpr size_t superblock_size = 32;
+
+
 #ifdef __SIZEOF_INT128__
 using native_uint128_t = unsigned __int128;
 #   define HCDE_HAVE_NATIVE_UINT128_T 1
@@ -46,58 +52,12 @@ using native_uint128_t = unsigned __int128;
 #endif
 
 
-template<typename T, unsigned Dims, typename Fn>
-void for_each_in_hypercube(const slice<T, Dims> &data, const extent<Dims> &offset,
-    unsigned side_length, const Fn &fn) {
-    if constexpr (Dims == 1) {
-        auto *pointer = &data[offset];
-        for (unsigned i = 0; i < side_length; ++i) {
-            fn(pointer[i]);
-        }
-    } else if constexpr (Dims == 2) {
-        auto stride = data.size()[1];
-        auto *pointer = &data[offset];
-        for (unsigned i = 0; i < side_length; ++i) {
-            for (unsigned j = 0; j < side_length; ++j) {
-                fn(pointer[j]);
-            }
-            pointer += stride;
-        }
-    } else if constexpr (Dims == 3) {
-        auto stride0 = data.size()[1] * data.size()[2];
-        auto stride1 = data.size()[2];
-        auto *pointer0 = &data[offset];
-        for (unsigned i = 0; i < side_length; ++i) {
-            auto pointer1 = pointer0;
-            for (unsigned j = 0; j < side_length; ++j) {
-                for (unsigned k = 0; k < side_length; ++k) {
-                    fn(pointer1[k]);
-                }
-                pointer1 += stride1;
-            }
-            pointer0 += stride0;
-        }
-    } else if constexpr (Dims == 4) {
-        auto stride0 = data.size()[1] * data.size()[2] * data.size()[3];
-        auto stride1 = data.size()[2] * data.size()[3];
-        auto stride2 = data.size()[3];
-        auto *pointer0 = &data[offset];
-        for (unsigned i = 0; i < side_length; ++i) {
-            auto pointer1 = pointer0;
-            for (unsigned j = 0; j < side_length; ++j) {
-                auto pointer2 = pointer1;
-                for (unsigned k = 0; k < side_length; ++k) {
-                    for (unsigned l = 0; l < side_length; ++l) {
-                        fn(pointer2[l]);
-                    }
-                    pointer2 += stride2;
-                }
-                pointer1 += stride1;
-            }
-            pointer0 += stride0;
-        }
+template<typename Fn, typename Index, typename T>
+[[gnu::always_inline]] void invoke_for_element(Fn &&fn, Index index, T &&value) {
+    if constexpr (std::is_invocable_v<Fn, T, Index>) {
+        fn(std::forward<T>(value), index);
     } else {
-        static_assert(Dims != Dims);
+        fn(std::forward<T>(value));
     }
 }
 
@@ -259,7 +219,7 @@ class basic_bit_ptr {
 
         basic_bit_ptr(address_type aligned_address, size_t bit_offset)
             : _aligned_address(aligned_address)
-              , _bit_offset(bit_offset) {
+            , _bit_offset(bit_offset) {
             assert(reinterpret_cast<uintptr_t>(aligned_address) % byte_alignment == 0);
             assert(bit_offset < bit_alignment);
         }
@@ -268,7 +228,7 @@ class basic_bit_ptr {
             std::enable_if_t<std::is_const_v<Void> && !std::is_const_v<OtherVoid>, int> = 0>
         basic_bit_ptr(const basic_bit_ptr<OtherVoid, Align> &other)
             : _aligned_address(other._aligned_address)
-              , _bit_offset(other._bit_offset) {
+            , _bit_offset(other._bit_offset) {
         }
 
         static basic_bit_ptr from_unaligned_pointer(address_type unaligned) {
@@ -429,189 +389,159 @@ size_t border_element_count(const extent<Dims> &e, unsigned side_length) {
     return n_all_elems - n_cube_elems;
 }
 
+template<unsigned Dims>
+extent<Dims> global_hypercube_offset(const extent<Dims> &hypercubes_per_dim, unsigned side_length, size_t index) {
+    // less-or-equal: Allow generating one-past-end offset
+    assert(index <= hypercubes_per_dim[0]);
+    extent<Dims> off;
+    for (unsigned d = 1; d < Dims; ++d) {
+        off[d - 1] = index / hypercubes_per_dim[d] * side_length;
+        index %= hypercubes_per_dim[d];
+    }
+    off[Dims - 1] = index * side_length;
+    return off;
+}
+
+template<typename Profile>
+class hypercube {
+    public:
+        explicit hypercube(const extent<Profile::dimensions> &offset)
+            : _offset(offset) {
+        }
+
+        template<typename DataType, typename Fn>
+        [[gnu::always_inline]] void for_each_cell(const slice<DataType, Profile::dimensions> &data,
+            const Fn &fn) const {
+            constexpr auto side_length = Profile::hypercube_side_length;
+            if constexpr (Profile::dimensions == 1) {
+                auto *pointer = &data[_offset];
+                for (unsigned i = 0; i < side_length; ++i) {
+                    invoke_for_element(fn, i, pointer + i);
+                }
+            } else if constexpr (Profile::dimensions == 2) {
+                auto stride = data.size()[1];
+                auto *pointer = &data[_offset];
+                for (unsigned i = 0; i < side_length; ++i) {
+                    for (unsigned j = 0; j < side_length; ++j) {
+                        invoke_for_element(fn, i * side_length + j, pointer + j);
+                    }
+                    pointer += stride;
+                }
+            } else if constexpr (Profile::dimensions == 3) {
+                auto stride0 = data.size()[1] * data.size()[2];
+                auto stride1 = data.size()[2];
+                auto *pointer0 = &data[_offset];
+                for (unsigned i = 0; i < side_length; ++i) {
+                    auto pointer1 = pointer0;
+                    for (unsigned j = 0; j < side_length; ++j) {
+                        for (unsigned k = 0; k < side_length; ++k) {
+                            invoke_for_element(fn, (i * side_length + j) * side_length + k, pointer1 + k);
+                        }
+                        pointer1 += stride1;
+                    }
+                    pointer0 += stride0;
+                }
+            } else if constexpr (Profile::dimensions == 4) {
+                auto stride0 = data.size()[1] * data.size()[2] * data.size()[3];
+                auto stride1 = data.size()[2] * data.size()[3];
+                auto stride2 = data.size()[3];
+                auto *pointer0 = &data[_offset];
+                for (unsigned i = 0; i < side_length; ++i) {
+                    auto pointer1 = pointer0;
+                    for (unsigned j = 0; j < side_length; ++j) {
+                        auto pointer2 = pointer1;
+                        for (unsigned k = 0; k < side_length; ++k) {
+                            for (unsigned l = 0; l < side_length; ++l) {
+                                invoke_for_element(fn, ((i * side_length + j) * side_length + k) * side_length + l,
+                                    pointer2 + l);
+                            }
+                            pointer2 += stride2;
+                        }
+                        pointer1 += stride1;
+                    }
+                    pointer0 += stride0;
+                }
+            } else {
+                static_assert(Profile::dimensions != Profile::dimensions);
+            }
+        }
+
+        extent<Profile::dimensions> global_offset() const {
+            return _offset;
+        }
+
+    private:
+        extent<Profile::dimensions> _offset;
+};
+
 template<typename Profile>
 class superblock {
     public:
-        superblock(extent<Profile::dimensions> start, extent<Profile::dimensions> end,
-            unsigned split_dimension)
-            : _start(start)
-              , _end(end)
-              , _split_dimension(split_dimension) {
+        superblock(extent<Profile::dimensions> hypercubes_per_dim, size_t first_hc_index)
+            : _hypercubes_per_dim(hypercubes_per_dim)
+            , _first_hc_index(first_hc_index)
+        {
         }
 
         size_t num_hypercubes() const {
-            const auto side_length = Profile::hypercube_side_length;
-            size_t n_cubes = (_end[_split_dimension] - _start[_split_dimension]) / side_length;
-            for (unsigned d = _split_dimension + 1; d < Profile::dimensions; ++d) {
-                assert(_start[d] == 0);
-                n_cubes *= _end[d] / side_length;
-            }
-            return n_cubes;
+            return std::min(_hypercubes_per_dim[0] - _first_hc_index, superblock_size);
         }
 
         template<typename Fn>
         void for_each_hypercube(Fn &&fn) const {
-            auto dims = Profile::dimensions;
-            auto side_length = Profile::hypercube_side_length;
-            for (auto off = _start;
-                off[_split_dimension] + side_length <= _end[_split_dimension];
-                off[_split_dimension] += side_length) {
-                if (dims >= 1 && _split_dimension == dims - 1) {
-                    fn(off);
-                } else {
-                    for (off[_split_dimension + 1] = 0;
-                        off[_split_dimension + 1] + side_length <= _end[_split_dimension + 1];
-                        off[_split_dimension + 1] += side_length) {
-                        if (dims >= 2 && _split_dimension == dims - 2) {
-                            fn(off);
-                        } else {
-                            for (off[_split_dimension + 2] = 0;
-                                off[_split_dimension + 2] + side_length
-                                    <= _end[_split_dimension + 2];
-                                off[_split_dimension + 2] += side_length) {
-                                if (dims >= 3 && _split_dimension == dims - 3) {
-                                    fn(off);
-                                } else {
-                                    for (off[_split_dimension + 3] = 0;
-                                        off[_split_dimension + 3] + side_length
-                                            <= _end[_split_dimension + 3];
-                                        off[_split_dimension + 3] += side_length) {
-                                        assert(dims == 4 && _split_dimension == dims - 4);
-                                        fn(off);
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
+            for (size_t index = 0; index < num_hypercubes(); ++index) {
+                invoke_for_element(fn, index, hypercube<Profile>{global_hypercube_offset(
+                    _hypercubes_per_dim, Profile::hypercube_side_length, _first_hc_index + index)});
             }
         }
 
-        extent<Profile::dimensions> hypercube_offset_at(size_t hypercube_index) const {
-            auto dims = Profile::dimensions;
-            auto side_length = Profile::hypercube_side_length;
-            auto cell_index = hypercube_index * side_length;
-
-            auto off = _start;
-            if (dims >= 1 && _split_dimension == dims - 1) {
-                off[_split_dimension] += cell_index;
-            } else if (dims >= 2 && _split_dimension == dims - 1) {
-                auto stride = _end[_split_dimension + 1] - _start[_split_dimension + 1];
-                off[_split_dimension] += cell_index / stride;
-                off[_split_dimension + 1] = cell_index % stride;
-            } else if (dims >= 3 && _split_dimension == dims - 2) {
-                auto stride1 = (_end[_split_dimension + 2] - _start[_split_dimension + 2]);
-                auto stride0 = (_end[_split_dimension + 1] - _start[_split_dimension + 1])
-                    * stride1;
-                off[_split_dimension] += cell_index / stride0;
-                off[_split_dimension + 1] = (cell_index % stride0) / stride1;
-                off[_split_dimension + 2] = (cell_index % stride0) % stride1;
-            } else if (dims >= 4 && _split_dimension == dims - 3) {
-                auto stride2 = (_end[_split_dimension + 2] - _start[_split_dimension + 2]);
-                auto stride1 = (_end[_split_dimension + 2] - _start[_split_dimension + 2]) * stride2;
-                auto stride0 = (_end[_split_dimension + 1] - _start[_split_dimension + 1]) * stride1;
-                off[_split_dimension] += cell_index / stride0;
-                off[_split_dimension + 1] = (cell_index % stride0) / stride1;
-                off[_split_dimension + 2] = ((cell_index % stride0) % stride1) / stride2;
-                off[_split_dimension + 3] = ((cell_index % stride0) % stride1) % stride2;
-            } else {
-                assert(false);
-            }
-            return off;
+        hypercube<Profile> hypercube_at(size_t hc_offset_index) const {
+            // less-or-equal: Allow generating one-past-end offset
+            assert(hc_offset_index <= superblock_size);
+            return hypercube<Profile>{global_hypercube_offset(_hypercubes_per_dim, Profile::hypercube_side_length,
+                _first_hc_index + hc_offset_index)};
         }
 
     private:
-        extent<Profile::dimensions> _start;
-        extent<Profile::dimensions> _end;
-        unsigned _split_dimension;
+        extent<Profile::dimensions> _hypercubes_per_dim;
+        size_t _first_hc_index;
 };
 
 template<typename Profile>
 class file {
     public:
-        using superblock_offset_type = uint64_t;
-
         explicit file(extent<Profile::dimensions> size)
-            : _size(size) {
+            : _size(size)
+        {
+            size_t hypercubes = 1;
+            for (unsigned nd = 0; nd < Profile::dimensions; ++nd) {
+                auto d = Profile::dimensions - 1 - nd;
+                hypercubes *= _size[d] / Profile::hypercube_side_length;
+                _hypercubes_per_dim[d] = hypercubes;
+            }
         }
 
         size_t num_superblocks() const {
-            auto split_dim = superblock_split_dimension();
-            auto side = Profile::hypercube_side_length;
-
-            size_t n_sbs = _size[split_dim] / superblock_split_granularity();
-            for (unsigned d = 0; d < split_dim; ++d) {
-                n_sbs *= _size[d] / side;
-            }
-            return n_sbs;
+            return (_hypercubes_per_dim[0] + superblock_size - 1) / superblock_size;
         }
 
         template<typename Fn>
         void for_each_superblock(Fn &&fn) const {
-            auto d = superblock_split_dimension();
-            auto step = superblock_split_granularity();
-            auto side = Profile::hypercube_side_length;
-
-            if (Profile::dimensions > 0 && d == 0) {
-                for (extent<Profile::dimensions> start; start[0] + step <= _size[0]; start[0] += step) {
-                    auto end = _size;
-                    end[0] = start[0] + step;
-                    fn(superblock < Profile > {start, end, d});
-                }
-            } else if (Profile::dimensions > 1 && d == 1) {
-                for (extent<Profile::dimensions> start; start[0] + side <= _size[0]; start[0] += side) {
-                    for (start[1] = 0; start[1] + step <= _size[1]; start[1] += step) {
-                        auto end = _size;
-                        end[0] = start[0] + side;
-                        end[1] = start[1] + step;
-                        fn(superblock < Profile > {start, end, d});
-                    }
-                }
-            } else if (Profile::dimensions > 2 && d == 2) {
-                for (extent<Profile::dimensions> start; start[0] + side <= _size[0]; start[0] += side) {
-                    for (start[1] = 0; start[1] + side <= _size[1]; start[1] += side) {
-                        for (start[2] = 0; start[2] + step <= _size[2]; start[2] += step) {
-                            auto end = _size;
-                            end[0] = start[0] + side;
-                            end[1] = start[1] + side;
-                            end[2] = start[2] + step;
-                            fn(superblock < Profile > {start, end, d});
-                        }
-                    }
-                }
-            } else {
-                assert(Profile::dimensions > 3 && d == 3);
-                for (extent<Profile::dimensions> start; start[0] + side <= _size[0]; start[0] += side) {
-                    for (start[1] = 0; start[1] + side <= _size[1]; start[1] += side) {
-                        for (start[2] = 0; start[2] + side <= _size[2]; start[2] += side) {
-                            for (start[3] = 0; start[3] + step <= _size[3]; start[3] += step) {
-                                auto end = _size;
-                                end[0] = start[0] + side;
-                                end[1] = start[1] + side;
-                                end[2] = start[2] + side;
-                                end[3] = start[3] + step;
-                                fn(superblock < Profile > {start, end, d});
-                            }
-                        }
-                    }
-                }
+            for (size_t start = 0; start < _hypercubes_per_dim[0]; start += superblock_size) {
+                invoke_for_element(fn, start / superblock_size, superblock<Profile>(_hypercubes_per_dim, start));
             }
         }
 
         constexpr size_t num_hypercubes() const {
-            size_t n_cubes = 1;
-            for (unsigned d = 0; d < Profile::dimensions; ++d) {
-                n_cubes *= _size[d] / Profile::hypercube_side_length;
-            }
-            return n_cubes;
+            return _hypercubes_per_dim[0];
         }
 
         constexpr size_t max_num_hypercubes_per_superblock() const {
-            return 63; // TODO
+            return superblock_size;
         }
 
         constexpr size_t file_header_length() const {
-            return std::max(size_t{1}, num_superblocks()) * sizeof(superblock_offset_type);
+            return std::max(size_t{1}, num_superblocks()) * sizeof(file_offset_type);
         }
 
         constexpr size_t superblock_header_length() const {
@@ -623,35 +553,9 @@ class file {
             return file_header_length() + num_superblocks() * superblock_header_length();
         }
 
-        constexpr unsigned superblock_split_target_size() const {
-            return 32; // assumed GPU warp size
-        }
-
-        constexpr unsigned superblock_split_dimension() const {
-            return superblock_split().first;
-        }
-
-        constexpr unsigned superblock_split_granularity() const {
-            return superblock_split().second;
-        }
-
     private:
         extent<Profile::dimensions> _size;
-
-        constexpr std::pair<unsigned, size_t> superblock_split() const {
-            size_t n_cubes = 1;
-            unsigned d = 0;
-            for (unsigned nd = 0; nd < Profile::dimensions; ++nd) {
-                d = Profile::dimensions - 1 - nd;
-                n_cubes *= _size[d] / Profile::hypercube_side_length;
-                if (n_cubes > superblock_split_target_size() / 2) {
-                    auto granularity = _size[d] / Profile::hypercube_side_length
-                        * Profile::hypercube_side_length;
-                    return {d, granularity};
-                }
-            }
-            return {0, _size[0] / Profile::hypercube_side_length * Profile::hypercube_side_length};
-        }
+        extent<Profile::dimensions> _hypercubes_per_dim;
 };
 
 } // namespace hcde::detail

@@ -68,13 +68,11 @@ size_t hcde::mt_cpu_encoder<Profile>::compress(
     std::vector<size_t> sb_lengths(num_sbs);
 
     {
-        size_t sb_index = 0;
         size_t offset = file.file_header_length();
-        file.for_each_superblock([&](auto sb) {
+        file.for_each_superblock([&](auto sb, auto sb_index) {
             initial_sb_offsets[sb_index] = offset;
             offset += file.superblock_header_length()
                 + sb.num_hypercubes() * Profile::compressed_block_size_bound;
-            ++sb_index;
         });
     }
 
@@ -93,23 +91,20 @@ size_t hcde::mt_cpu_encoder<Profile>::compress(
                 cube.resize(detail::ipow(side_length, Profile::dimensions)
                         * sb.num_hypercubes());
                 bits_type *cube_pos = cube.data();
-                sb.for_each_hypercube([&](auto offset) {
-                    detail::for_each_in_hypercube(data, offset, side_length,
-                            [&](auto &element) { *cube_pos++ = p.load_value(&element); });
+                sb.for_each_hypercube([&](auto hc) {
+                    hc.for_each_cell(data, [&](auto *element) { *cube_pos++ = p.load_value(element); });
                 });
 
-                size_t hypercube_index = 0;
                 cube_pos = cube.data();
-                sb.for_each_hypercube([&](auto) {
-                    if (hypercube_index > 0) {
-                        auto offset_address = sb_stream + (hypercube_index - 1)
+                sb.for_each_hypercube([&](auto, auto hc_index) {
+                    if (hc_index > 0) {
+                        auto offset_address = sb_stream + (hc_index - 1)
                                 * sizeof(typename Profile::hypercube_offset_type);
                         auto offset = static_cast<typename Profile::hypercube_offset_type>(sb_stream_pos);
                         detail::store_unaligned(offset_address, detail::endian_transform(offset));
                     }
                     sb_stream_pos += p.encode_block(cube_pos, sb_stream + sb_stream_pos);
                     cube_pos += detail::ipow(side_length, Profile::dimensions);
-                    ++hypercube_index;
                 });
 
                 sb_lengths[index] = sb_stream_pos;
@@ -166,14 +161,13 @@ size_t hcde::mt_cpu_encoder<Profile>::decompress(const void *stream, size_t byte
                 }
                 stream_pos += file.superblock_header_length(); // simply skip the header
 
-                sb.for_each_hypercube([&](auto offset) {
+                sb.for_each_hypercube([&](auto hc) {
                     Profile p;
                     bits_type cube[detail::ipow(side_length, Profile::dimensions)] = {};
                     stream_pos += p.decode_block(
                             static_cast<const char *>(stream) + stream_pos, cube);
                     bits_type *cube_ptr = cube;
-                    detail::for_each_in_hypercube(data, offset, side_length,
-                            [&](auto &element) { p.store_value(&element, *cube_ptr++); });
+                    hc.for_each_cell(data, [&](auto *cell) { p.store_value(cell, *cube_ptr++); });
                 });
             }
         });

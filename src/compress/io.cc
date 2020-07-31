@@ -215,7 +215,7 @@ class mmap_output_stream final
         explicit mmap_output_stream(const std::string &file_name, size_t max_chunk_size)
             : _max_chunk_size(max_chunk_size) {
             if (!file_name.empty() && file_name != "-") {
-                _fd = open(file_name.c_str(), O_RDWR | O_TRUNC | O_CREAT);
+                _fd = open(file_name.c_str(), O_RDWR | O_TRUNC | O_CREAT, (mode_t) 0666);
                 if (_fd == -1) {
                     throw io_error("open: " + file_name + ": " + strerror(errno));
                 }
