@@ -253,10 +253,13 @@ void xor_neighborhood_decode(const Bits *__restrict in, Bits * __restrict out) {
 
 template<typename Profile>
 [[gnu::noinline]]
-bit_ptr<sizeof(typename Profile::bits_type)> encode_difference_bits(typename Profile::bits_type *difference,
+bit_ptr<sizeof(typename Profile::bits_type)> encode_difference_bits(
+    const typename Profile::bits_type *difference,
     bit_ptr<sizeof(typename Profile::bits_type)> dest) {
     using bits_type = typename Profile::bits_type;
     constexpr unsigned width_width = 4;
+    auto remainder_dest = dest;
+    remainder_dest.advance(width_width * (detail::ipow(Profile::hypercube_side_length, Profile::dimensions) - 1));
     for (unsigned i = 1; i < detail::ipow(Profile::hypercube_side_length, Profile::dimensions); ++i) {
         auto width = detail::significant_bits(difference[i]);
         if (width == 0) {
@@ -266,12 +269,38 @@ bit_ptr<sizeof(typename Profile::bits_type)> encode_difference_bits(typename Pro
             auto verbatim_bits = width < 19 ? 18 : width - 1;
             detail::store_bits_linear<bits_type>(dest, width_width, width_code);
             dest.advance(width_width);
-            detail::store_bits_linear<bits_type>(dest, verbatim_bits,
+            detail::store_bits_linear<bits_type>(remainder_dest, verbatim_bits,
                 difference[i] & ~(~bits_type{} << (width - 1)));
-            dest.advance(verbatim_bits);
+            remainder_dest.advance(verbatim_bits);
         }
     }
-    return dest;
+    return remainder_dest;
+}
+
+template<typename Profile>
+[[gnu::noinline]]
+const_bit_ptr<sizeof(typename Profile::bits_type)>
+decode_difference_bits(const_bit_ptr<sizeof(typename Profile::bits_type)> src,
+    typename Profile::bits_type *difference) {
+    using bits_type = typename Profile::bits_type;
+    constexpr unsigned width_width = 4;
+    auto remainder_src = src;
+    remainder_src.advance(width_width * (detail::ipow(Profile::hypercube_side_length, Profile::dimensions) - 1));
+    for (unsigned i = 1; i < detail::ipow(Profile::hypercube_side_length, Profile::dimensions); ++i) {
+        auto width_code = detail::load_bits<bits_type>(src, width_width);
+        src.advance(width_width);
+        if (width_code == 0) {
+            difference[i] = 0;
+        } else if (width_code == 1) {
+            difference[i] = detail::load_bits<bits_type>(remainder_src, 18);
+            remainder_src.advance(18);
+        } else {
+            auto width = width_code + 17;
+            difference[i] = (1 << (width - 1)) | detail::load_bits<bits_type>(remainder_src, width - 1);
+            remainder_src.advance(width - 1);
+        }
+    }
+    return remainder_src;
 }
 
 } // namespace hcde::detail
@@ -317,25 +346,9 @@ size_t strong_profile<T, Dims>::decode_block(const void *stream, bits_type *bits
     src.advance(detail::bitsof<T>);
 
     bits_type difference[detail::ipow(hypercube_side_length, Dims)];
-
-    constexpr unsigned width_width = 4;
-    for (unsigned i = 1; i < detail::ipow(hypercube_side_length, Dims); ++i) {
-        auto width_code = detail::load_bits<bits_type>(src, width_width);
-        src.advance(width_width);
-        if (width_code == 0) {
-            difference[i] = 0;
-        } else if (width_code == 1) {
-            difference[i] = detail::load_bits<bits_type>(src, 18);
-            src.advance(18);
-        } else {
-            auto width = width_code + 17;
-            difference[i] = (1 << (width - 1)) | detail::load_bits<bits_type>(src, width - 1);
-            src.advance(width - 1);
-        }
-    }
+    src = detail::decode_difference_bits<strong_profile>(src, difference);
 
     detail::xor_neighborhood_decode<bits_type, Dims, hypercube_side_length>(difference, bits);
-
     return ceil_byte_offset(stream, src);
 }
 
