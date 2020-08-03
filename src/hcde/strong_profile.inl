@@ -270,7 +270,7 @@ bit_ptr<sizeof(typename Profile::bits_type)> encode_difference_bits(
             detail::store_bits_linear<bits_type>(dest, width_width, width_code);
             dest.advance(width_width);
             detail::store_bits_linear<bits_type>(remainder_dest, verbatim_bits,
-                difference[i] & ~(~bits_type{} << (width - 1)));
+                difference[i] & ~(~bits_type{} << (verbatim_bits)));
             remainder_dest.advance(verbatim_bits);
         }
     }
