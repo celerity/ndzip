@@ -96,22 +96,24 @@ struct positional_bits_repr<T, std::enable_if_t<std::is_floating_point_v<T>>> {
 };
 
 
-template<typename Bits, unsigned Dims>
+template<typename Bits, unsigned Dims, unsigned SideLength>
 [[gnu::noinline]]
-void xor_neighborhood(unsigned side_length, const Bits *neighborhood, const Bits *in, Bits *out) {
+void xor_neighborhood_encode(const Bits *__restrict in, Bits * __restrict out) {
     unsigned dim3_stride = 1;
-    unsigned dim2_stride = Dims > 3 ? side_length : 1;
-    unsigned dim1_stride = Dims > 2 ? dim2_stride * side_length : 1;
-    unsigned dim0_stride = Dims > 1 ? dim1_stride * side_length : 1;
+    unsigned dim2_stride = Dims > 3 ? SideLength : 1;
+    unsigned dim1_stride = Dims > 2 ? dim2_stride * SideLength : 1;
+    unsigned dim0_stride = Dims > 1 ? dim1_stride * SideLength : 1;
     unsigned strides[] = {dim0_stride, dim1_stride, dim2_stride, dim3_stride};
 
     if constexpr (Dims >= 1) {
         for (unsigned d = 0; d < Dims; ++d) {
             size_t offset = 0;
-            for (unsigned i = 1; i < side_length; ++i) {
-                size_t prev_offset = offset;
+            auto left = in[offset];
+            for (unsigned i = 1; i < SideLength; ++i) {
                 offset += strides[d];
-                out[offset] = in[offset] ^ neighborhood[prev_offset];
+                auto right = in[offset];
+                out[offset] = left ^ right;
+                left = right;
             }
         }
     }
@@ -119,16 +121,19 @@ void xor_neighborhood(unsigned side_length, const Bits *neighborhood, const Bits
         for (unsigned d0 = 0; d0 < Dims; ++d0) {
             for (unsigned d1 = d0 + 1; d1 < Dims; ++d1) {
                 size_t offset0 = 0;
-                for (unsigned i = 1; i < side_length; ++i) {
+                for (unsigned i = 1; i < SideLength; ++i) {
                     offset0 += strides[d0];
                     auto offset1 = offset0;
-                    for (unsigned j = 1; j < side_length; ++j) {
+                    auto l00 = offset1 -  strides[d0];
+                    auto l10 = offset1;
+                    auto left = in[l00] ^ in[l10];
+                    for (unsigned j = 1; j < SideLength; ++j) {
                         offset1 += strides[d1];
-                        auto n00 = offset1 - strides[d1] - strides[d0];
-                        auto n01 = offset1 - strides[d0];
-                        auto n10 = offset1 - strides[d1];
-                        out[offset1] = in[offset1] ^ neighborhood[n00] ^ neighborhood[n01]
-                            ^ neighborhood[n10];
+                        auto r01 = offset1 - strides[d0];
+                        auto r11 = offset1;
+                        auto right = in[r01] ^ in[r11];
+                        out[offset1] = left ^ right;
+                        left = right;
                     }
                 }
             }
@@ -139,24 +144,104 @@ void xor_neighborhood(unsigned side_length, const Bits *neighborhood, const Bits
             for (unsigned d1 = d0 + 1; d1 < Dims; ++d1) {
                 for (unsigned d2 = d1 + 1; d2 < Dims; ++d2) {
                     size_t offset0 = 0;
-                    for (unsigned i = 1; i < side_length; ++i) {
+                    for (unsigned i = 1; i < SideLength; ++i) {
                         offset0 += strides[d0];
                         auto offset1 = offset0;
-                        for (unsigned j = 1; j < side_length; ++j) {
+                        for (unsigned j = 1; j < SideLength; ++j) {
                             offset1 += strides[d1];
                             auto offset2 = offset1;
-                            for (unsigned k = 1; k < side_length; ++k) {
+                            auto l000 = offset2 - strides[d1] - strides[d0];
+                            auto l010 = offset2 - strides[d0];
+                            auto l100 = offset2 - strides[d1];
+                            auto l110 = offset2;
+                            auto left = in[l000] ^ in[l010] ^ in[l100] ^ in[l110];
+                            for (unsigned k = 1; k < SideLength; ++k) {
                                 offset2 += strides[d2];
-                                auto n000 = offset2 - strides[d2] - strides[d1] - strides[d0];
-                                auto n001 = offset2 - strides[d1] - strides[d0];
-                                auto n010 = offset2 - strides[d2] - strides[d0];
-                                auto n100 = offset2 - strides[d2] - strides[d1];
-                                auto n011 = offset2 - strides[d0];
-                                auto n101 = offset2 - strides[d1];
-                                auto n110 = offset2 - strides[d2];
-                                out[offset2] = in[offset2] ^ neighborhood[n000]
-                                    ^ neighborhood[n001] ^ neighborhood[n010] ^ neighborhood[n100]
-                                    ^ neighborhood[n011] ^ neighborhood[n101] ^ neighborhood[n110];
+                                auto r001 = offset2 - strides[d1] - strides[d0];
+                                auto r011 = offset2 - strides[d0];
+                                auto r101 = offset2 - strides[d1];
+                                auto r111 = offset2;
+                                auto right = in[r001] ^ in[r011] ^ in[r101] ^ in[r111];
+                                out[offset2] = left ^ right;
+                                left = right;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+
+template<typename Bits, unsigned Dims, unsigned SideLength>
+[[gnu::noinline]]
+void xor_neighborhood_decode(const Bits *__restrict in, Bits * __restrict out) {
+    unsigned dim3_stride = 1;
+    unsigned dim2_stride = Dims > 3 ? SideLength : 1;
+    unsigned dim1_stride = Dims > 2 ? dim2_stride * SideLength : 1;
+    unsigned dim0_stride = Dims > 1 ? dim1_stride * SideLength : 1;
+    unsigned strides[] = {dim0_stride, dim1_stride, dim2_stride, dim3_stride};
+
+    if constexpr (Dims >= 1) {
+        for (unsigned d = 0; d < Dims; ++d) {
+            size_t offset = 0;
+            auto left = out[offset];
+            for (unsigned i = 1; i < SideLength; ++i) {
+                offset += strides[d];
+                auto result = left ^ in[offset];
+                out[offset] = result;
+                left = result;
+            }
+        }
+    }
+    if constexpr (Dims >= 2) {
+        for (unsigned d0 = 0; d0 < Dims; ++d0) {
+            for (unsigned d1 = d0 + 1; d1 < Dims; ++d1) {
+                size_t offset0 = 0;
+                for (unsigned i = 1; i < SideLength; ++i) {
+                    offset0 += strides[d0];
+                    auto offset1 = offset0;
+                    auto l00 = offset1 -  strides[d0];
+                    auto l10 = offset1;
+                    auto left = out[l00] ^ out[l10];
+                    for (unsigned j = 1; j < SideLength; ++j) {
+                        offset1 += strides[d1];
+                        auto r01 = offset1 - strides[d0];
+                        auto imm = out[r01];
+                        auto right = left ^ in[offset1];
+                        out[offset1] = right ^ imm ;
+                        left = right;
+                    }
+                }
+            }
+        }
+    }
+    if constexpr (Dims >= 3) {
+        for (unsigned d0 = 0; d0 < Dims; ++d0) {
+            for (unsigned d1 = d0 + 1; d1 < Dims; ++d1) {
+                for (unsigned d2 = d1 + 1; d2 < Dims; ++d2) {
+                    size_t offset0 = 0;
+                    for (unsigned i = 1; i < SideLength; ++i) {
+                        offset0 += strides[d0];
+                        auto offset1 = offset0;
+                        for (unsigned j = 1; j < SideLength; ++j) {
+                            offset1 += strides[d1];
+                            auto offset2 = offset1;
+                            auto l000 = offset2 - strides[d1] - strides[d0];
+                            auto l010 = offset2 - strides[d0];
+                            auto l100 = offset2 - strides[d1];
+                            auto l110 = offset2;
+                            auto left = out[l000] ^ out[l010] ^ out[l100] ^ out[l110];
+                            for (unsigned k = 1; k < SideLength; ++k) {
+                                offset2 += strides[d2];
+                                auto r001 = offset2 - strides[d1] - strides[d0];
+                                auto r011 = offset2 - strides[d0];
+                                auto r101 = offset2 - strides[d1];
+                                auto imm = out[r001] ^ out[r011] ^ out[r101];
+                                auto right = left ^ in[offset2];
+                                out[offset2] = right ^ imm;
+                                left = right;
                             }
                         }
                     }
@@ -192,7 +277,7 @@ size_t strong_profile<T, Dims>::encode_block(const bits_type *bits, void *stream
     dest.advance(detail::bitsof<T>);
 
     bits_type difference[detail::ipow(hypercube_side_length, Dims)];
-    detail::xor_neighborhood<bits_type, Dims>(hypercube_side_length, bits, bits, difference);
+    detail::xor_neighborhood_encode<bits_type, Dims, hypercube_side_length>(bits, difference);
 
     constexpr unsigned width_width = 4;
     for (unsigned i = 1; i < detail::ipow(hypercube_side_length, Dims); ++i) {
@@ -244,7 +329,7 @@ size_t strong_profile<T, Dims>::decode_block(const void *stream, bits_type *bits
         }
     }
 
-    detail::xor_neighborhood<bits_type, Dims>(hypercube_side_length, bits, difference, bits);
+    detail::xor_neighborhood_decode<bits_type, Dims, hypercube_side_length>(difference, bits);
 
     return ceil_byte_offset(stream, src);
 }
