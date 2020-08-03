@@ -207,7 +207,7 @@ class strong_profile {
         using hypercube_offset_type = uint32_t;
 
         constexpr static unsigned dimensions = Dims;
-        constexpr static unsigned hypercube_side_length = 16;
+        constexpr static unsigned hypercube_side_length = Dims == 1 ? 256 : Dims == 2 ? 64 : 16;
         constexpr static size_t compressed_block_size_bound
                 = (detail::bitsof<data_type> + 4)  // TODO substitute generic constants
                   * detail::ipow(hypercube_side_length, Dims) / CHAR_BIT;
