@@ -23,7 +23,7 @@ class io_error
 
 class input_stream {
     public:
-        virtual ~input_stream() noexcept(false) = default;
+        virtual ~input_stream() noexcept(false) {}
         virtual std::pair<const void *, size_t> read_some(size_t remainder_from_last_chunk) = 0;
 
         std::pair<const void *, size_t> read_some() { return read_some(0); }
@@ -33,7 +33,7 @@ class input_stream {
 
 class output_stream {
     public:
-        virtual ~output_stream() noexcept(false) = default;
+        virtual ~output_stream() noexcept(false) {}
         virtual void *get_write_buffer() = 0;
         virtual void commit_chunk(size_t length) = 0;
 };

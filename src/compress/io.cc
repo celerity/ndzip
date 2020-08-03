@@ -1,6 +1,7 @@
 #include "io.hh"
 
 #include <cassert>
+#include <cstddef>
 #include <cstring>
 
 #if HCDE_MMAP_SUPPORT
