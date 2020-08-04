@@ -87,9 +87,9 @@ template<template<typename> typename Encoder,
 void process_stream(bool decompress, const std::vector<size_t> &size_components, const std::string &in,
     const std::string &out, const io_factory &io) {
     switch (size_components.size()) {
-        // case 1:
-        //     return process_stream(decompress, in, out, hcde::extent{size_components[0]},
-        //             Encoder<Profile<Data, 1>>{}, io);
+        case 1:
+            return process_stream(decompress, in, out, hcde::extent{size_components[0]},
+                Encoder<Profile<Data, 1>>{}, io);
         case 2:
             return process_stream(decompress, in, out, hcde::extent{size_components[0], size_components[1]},
                 Encoder<Profile<Data, 2>>{}, io);

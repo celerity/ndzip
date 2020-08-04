@@ -144,8 +144,10 @@ size_t hcde::cpu_encoder<Profile>::decompress(const void *stream, size_t bytes,
 
 
 namespace hcde {
+    extern template class cpu_encoder<fast_profile<float, 1>>;
     extern template class cpu_encoder<fast_profile<float, 2>>;
     extern template class cpu_encoder<fast_profile<float, 3>>;
+    extern template class cpu_encoder<strong_profile<float, 1>>;
     extern template class cpu_encoder<strong_profile<float, 2>>;
     extern template class cpu_encoder<strong_profile<float, 3>>;
 }
