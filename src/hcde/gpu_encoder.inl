@@ -80,6 +80,9 @@ size_t hcde::gpu_encoder<Profile>::compress(const slice<const data_type, dimensi
     sycl::buffer<std::byte> stream_buffer{sycl::range<1>(compressed_size_bound(data.size()))};
     sycl::buffer<uint64_t> sb_lengths(sycl::range<1>{superblocks.size()});
 
+    static_assert(std::is_trivially_copyable_v<hcde::detail::superblock<Profile>>);
+    static_assert(std::is_trivially_copyable_v<hcde::detail::file<Profile>>);
+
     q.submit([&](sycl::handler &cgh) {
         auto data_access = data_buffer.template get_access<sycl::access::mode::read>(cgh);
         auto superblock_access = superblock_buffer.template get_access<sycl::access::mode::read>(cgh);

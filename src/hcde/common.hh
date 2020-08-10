@@ -35,13 +35,15 @@
 #   error "Unknown endianess"
 #endif
 
+#define HCDE_SUPERBLOCK_SIZE (size_t{32})
+
 
 namespace hcde::detail {
 
 using file_offset_type = uint64_t;
 using superblock_offset_type = uint32_t;
 
-constexpr size_t superblock_size = 32;
+constexpr auto superblock_size = HCDE_SUPERBLOCK_SIZE;
 
 
 #ifdef __SIZEOF_INT128__
@@ -484,7 +486,10 @@ class superblock {
         }
 
         size_t num_hypercubes() const {
-            return std::min(_hypercubes_per_dim[0] - _first_hc_index, superblock_size);
+            // For some bizarre reason, replacing HCDE_SUPERBLOCK_SIZE with detail::superblock_size
+            // causes a miscompilation with hipSYCL where superblock_size is treated as containing
+            // zero.
+            return std::min(_hypercubes_per_dim[0] - _first_hc_index, HCDE_SUPERBLOCK_SIZE);
         }
 
         template<typename Fn>
@@ -497,7 +502,7 @@ class superblock {
 
         hypercube<Profile> hypercube_at(size_t hc_offset_index) const {
             // less-or-equal: Allow generating one-past-end offset
-            assert(hc_offset_index <= superblock_size);
+            assert(hc_offset_index <= HCDE_SUPERBLOCK_SIZE);
             return hypercube<Profile>{global_hypercube_offset(_hypercubes_per_dim, Profile::hypercube_side_length,
                 _first_hc_index + hc_offset_index)};
         }
