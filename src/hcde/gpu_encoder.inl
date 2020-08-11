@@ -49,6 +49,11 @@ class decode_kernel;
 template<typename Profile>
 struct hcde::gpu_encoder<Profile>::impl {
     sycl::queue q;
+
+    impl()
+        : q({sycl::property::queue::enable_profiling{}})
+    {
+    }
 };
 
 
@@ -111,6 +116,9 @@ size_t hcde::gpu_encoder<Profile>::compress(const slice<const data_type, dimensi
         auto sb_length_access = sb_lengths.get_access<sycl::access::mode::discard_write>(cgh);
         auto bits_access = sycl::accessor<bits_type, 1, sycl::access::mode::read_write,
             sycl::access::target::local>(sycl::range<1>{file.max_num_hypercubes_per_superblock() * hc_size}, cgh);
+        auto hc_stream_access = sycl::accessor<std::byte, 1, sycl::access::mode::read_write,
+            sycl::access::target::local>(sycl::range<1>{file.max_num_hypercubes_per_superblock()
+            * (Profile::compressed_block_size_bound + sizeof(bits_type))}, cgh);
         auto hc_length_access = sycl::accessor<hypercube_offset_type, 1, sycl::access::mode::read_write,
             sycl::access::target::local>(sycl::range<1>{file.max_num_hypercubes_per_superblock()}, cgh);
         auto hc_offset_access = sycl::accessor<hypercube_offset_type, 1, sycl::access::mode::read_write,
@@ -118,10 +126,10 @@ size_t hcde::gpu_encoder<Profile>::compress(const slice<const data_type, dimensi
 
         cgh.parallel_for<detail::encode_kernel<Profile>>(sycl::nd_range<1>{
             sycl::range<1>{superblocks.size() * file.max_num_hypercubes_per_superblock()},
-            sycl::range<1>{file.max_num_hypercubes_per_superblock()}},
+                sycl::range<1>{file.max_num_hypercubes_per_superblock()}},
             [file, superblock_access, data_access, stream_access, bits_access, sb_length_access,
-                sb_initial_offset_access, hc_size, hc_length_access, hc_offset_access, data_size = data.size()](
-                    sycl::nd_item<1> nd_item) {
+                sb_initial_offset_access, hc_stream_access, hc_size, hc_length_access, hc_offset_access,
+                data_size = data.size()](sycl::nd_item<1> nd_item) {
                 const auto sb_id = nd_item.get_group().get_id();
                 const auto sb = superblock_access[sb_id];
                 const auto hc_id = nd_item.get_local_id();
@@ -136,7 +144,8 @@ size_t hcde::gpu_encoder<Profile>::compress(const slice<const data_type, dimensi
 
                 nd_item.barrier();
 
-                std::byte hc_stream[Profile::compressed_block_size_bound + sizeof(bits_type)] = {};
+                std::byte *hc_stream = hc_stream_access.get_pointer()
+                    + hc_index * (Profile::compressed_block_size_bound + sizeof(bits_type));
                 if (hc_index < n_hcs) {
                     hc_length_access[hc_id] = p.encode_block(bits + hc_size * hc_index, hc_stream);
                 }
@@ -182,6 +191,9 @@ size_t hcde::gpu_encoder<Profile>::compress(const slice<const data_type, dimensi
     }
 
     event.wait_and_throw();
+    auto duration = event.template get_profiling_info<sycl::info::event_profiling::command_end>()
+        - event.template get_profiling_info<sycl::info::event_profiling::command_start>();
+    printf("kernel time %gs\n", 1e-9*duration);
 
     auto border_offset_address =
         static_cast<char *>(stream) + (file.num_superblocks() - 1) * sizeof(uint64_t);
