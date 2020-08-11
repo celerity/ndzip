@@ -64,7 +64,8 @@ size_t hcde::gpu_encoder<Profile>::compress(const slice<const data_type, dimensi
     constexpr static auto side_length = Profile::hypercube_side_length;
     const auto hc_size = detail::ipow(side_length, Profile::dimensions);
 
-    sycl::queue q;
+    sycl::exception_list exceptions;
+    sycl::queue q(sycl::async_handler([&](sycl::exception_list e) { exceptions = e; }));
     sycl::buffer<data_type> data_buffer(data.data(), sycl::range<1>(num_elements(data.size())));
 
     const detail::file<Profile> file(data.size());
@@ -165,7 +166,10 @@ size_t hcde::gpu_encoder<Profile>::compress(const slice<const data_type, dimensi
         file_pos += length;
     }
 
-    q.wait();
+    q.wait_and_throw();
+    for (auto &e: exceptions) {
+        std::rethrow_exception(e);
+    }
 
     auto border_offset_address =
         static_cast<char *>(stream) + (file.num_superblocks() - 1) * sizeof(uint64_t);
@@ -187,7 +191,8 @@ size_t hcde::gpu_encoder<Profile>::decompress(const void *stream, size_t bytes,
     const auto superblocks = detail::collect_superblocks(file);
     sycl::buffer<detail::superblock<Profile>> superblock_buffer(superblocks.data(), sycl::range<1>(superblocks.size()));
 
-    sycl::queue q;
+    sycl::exception_list exceptions;
+    sycl::queue q(sycl::async_handler([&](sycl::exception_list e) { exceptions = e; }));
     sycl::buffer<std::byte> stream_buffer(static_cast<const std::byte*>(stream), sycl::range<1>(bytes));
     sycl::buffer<data_type> data_buffer(sycl::range<1>(num_elements(data.size())));
 
@@ -233,7 +238,10 @@ size_t hcde::gpu_encoder<Profile>::decompress(const void *stream, size_t bytes,
         });
     });
 
-    q.wait();
+    q.wait_and_throw();
+    for (auto &e: exceptions) {
+        std::rethrow_exception(e);
+    }
 
     auto host_data = data_buffer.template get_access<sycl::access::mode::read>();
     memcpy(data.data(), host_data.get_pointer(), num_elements(data.size()) * sizeof(data_type));
