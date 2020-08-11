@@ -4,10 +4,6 @@
 #include "../hcde/cpu_encoder.inl"
 #include "../hcde/mt_cpu_encoder.inl"
 
-#if HCDE_GPU_SUPPORT
-#   include "../hcde/gpu_encoder.inl"
-#endif
-
 #define CATCH_CONFIG_MAIN
 #include <catch2/catch.hpp>
 
@@ -308,9 +304,6 @@ TEMPLATE_TEST_CASE("file produces a sane superblock / hypercube / header layout"
 TEMPLATE_TEST_CASE("encoder produces the expected bit stream", "[encoder]",
     (cpu_encoder<test_profile<2>>), (cpu_encoder<test_profile<3>>),
     (mt_cpu_encoder<test_profile<2>>), (mt_cpu_encoder<test_profile<3>>)
-#if HCDE_GPU_SUPPORT
-    , (gpu_encoder<test_profile<2>>), (gpu_encoder<test_profile<3>>)
-#endif
 ) {
     using profile = typename TestType::profile;
     using bits_type = typename profile::bits_type;
@@ -388,16 +381,13 @@ TEMPLATE_TEST_CASE("encoder produces the expected bit stream", "[encoder]",
         }
         n_border_elems += count;
     });
-    CHECK(n_border_elems == array.size().linear_offset() - ipow(border_start, dims));
+    CHECK(n_border_elems == num_elements(array.size()) - ipow(border_start, dims));
 }
 
 
 TEMPLATE_TEST_CASE("encoder reproduces the bit-identical array", "[encoder]",
     (cpu_encoder<test_profile<2>>), (cpu_encoder<test_profile<3>>),
     (mt_cpu_encoder<test_profile<2>>), (mt_cpu_encoder<test_profile<3>>)
-#if HCDE_GPU_SUPPORT
-    , (gpu_encoder<test_profile<2>>), (gpu_encoder<test_profile<3>>)
-#endif
 ) {
     using profile = typename TestType::profile;
 
@@ -418,3 +408,127 @@ TEMPLATE_TEST_CASE("encoder reproduces the bit-identical array", "[encoder]",
     CHECK(memcmp(input_data.data(), output_data.data(), input_data.size() * sizeof(float)) == 0);
 }
 
+
+template<unsigned Dims>
+struct trivial_profile {
+    using data_type = uint32_t;
+    using bits_type = uint32_t;
+
+    constexpr static unsigned dimensions = Dims;
+    constexpr static unsigned hypercube_side_length = 2;
+
+    bits_type load_value(const data_type *data) const {
+        return *data;
+    }
+
+    void store_value(data_type *data, bits_type bits) const {
+        *data = bits;
+    }
+};
+
+
+TEST_CASE("load superblock in GPU warp", "[gpu]") {
+    SECTION("1d array") {
+        std::vector<uint32_t> array{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12};
+        std::vector<uint32_t> hcs(8);
+        superblock<trivial_profile<1>> sb(extent{6}, 2);
+        trivial_profile<1> p;
+        for (unsigned tid = 0; tid < HCDE_WARP_SIZE; ++tid) {
+            load_superblock_warp(tid, sb, slice<uint32_t, 1>(array.data(), array.size()), hcs.data(), p);
+        }
+        for (unsigned i = 0; i < 8; ++i) {
+            CHECK(hcs[i] == array[i + 4]);
+        }
+    }
+
+    SECTION("2d array") {
+        std::vector<uint32_t> array{
+            10, 20, 30, 40, 50, 60, 70, 80, 90,
+            11, 21, 31, 41, 51, 61, 71, 81, 91,
+            12, 22, 32, 42, 52, 62, 72, 82, 92,
+            13, 23, 33, 43, 53, 63, 73, 83, 93,
+            14, 24, 34, 44, 54, 64, 74, 84, 94,
+            15, 25, 35, 45, 55, 65, 75, 85, 95,
+            16, 26, 36, 46, 56, 66, 76, 86, 96,
+            17, 27, 37, 47, 57, 67, 77, 87, 97,
+        };
+        std::vector<uint32_t> hcs(54);
+        superblock<trivial_profile<2>> sb(extent{16, 4}, 5);
+        trivial_profile<2> p;
+        for (unsigned tid = 0; tid < HCDE_WARP_SIZE; ++tid) {
+            load_superblock_warp(tid, sb, slice<uint32_t, 2>(array.data(), extent{8, 9}), hcs.data(), p);
+        }
+        std::vector<uint32_t> expected_hcs{
+            32, 42, 33, 43,
+            52, 62, 53, 63,
+            72, 82, 73, 83,
+            14, 24, 15, 25,
+            34, 44, 35, 45,
+            54, 64, 55, 65,
+            74, 84, 75, 85,
+            16, 26, 17, 27,
+            36, 46, 37, 47,
+            56, 66, 57, 67,
+            76, 86, 77, 87,
+        };
+        for (unsigned i = 0; i < 44; ++i) {
+            CHECK(hcs[i] == p.load_value(&expected_hcs[i]));
+        }
+        for (unsigned i = 44; i < 54; ++i) {
+            CHECK(hcs[i] == 0);
+        }
+    }
+
+    SECTION("3d array") {
+        std::vector<uint32_t> array{
+            111, 211, 311, 411, 511,
+            121, 221, 321, 421, 521,
+            131, 231, 331, 431, 531,
+            141, 241, 341, 441, 541,
+            151, 251, 351, 451, 551,
+
+            112, 212, 312, 412, 512,
+            122, 222, 322, 422, 522,
+            132, 232, 332, 432, 532,
+            142, 242, 342, 442, 542,
+            152, 252, 352, 452, 552,
+
+            113, 213, 313, 413, 513,
+            123, 223, 323, 423, 523,
+            133, 233, 333, 433, 533,
+            143, 243, 343, 443, 543,
+            153, 253, 353, 453, 553,
+
+            114, 214, 314, 414, 514,
+            124, 224, 324, 424, 524,
+            134, 234, 334, 434, 534,
+            144, 244, 344, 444, 544,
+            154, 254, 354, 454, 554,
+
+            115, 215, 315, 415, 515,
+            125, 225, 325, 425, 525,
+            135, 235, 335, 435, 535,
+            145, 245, 345, 445, 545,
+            155, 255, 355, 455, 555,
+        };
+        std::vector<uint32_t> hcs(50);
+        superblock<trivial_profile<3>> sb(extent{8, 4, 2}, 3);
+        trivial_profile<3> p;
+        for (unsigned tid = 0; tid < HCDE_WARP_SIZE; ++tid) {
+            load_superblock_warp(tid, sb, slice<uint32_t, 3>(array.data(), extent{5, 5, 5}), hcs.data(), p);
+        }
+        std::vector<uint32_t> expected_hcs{
+            331, 431, 341, 441, 332, 432, 342, 442,
+            113, 213, 123, 223, 114, 214, 124, 224,
+            313, 413, 323, 423, 314, 414, 324, 424,
+            133, 233, 143, 243, 134, 234, 144, 244,
+            333, 433, 343, 443, 334, 434, 344, 444,
+        };
+        for (unsigned i = 0; i < 40; ++i) {
+            CHECK(hcs[i] == p.load_value(&expected_hcs[i]));
+        }
+        for (unsigned i = 40; i < 50; ++i) {
+            CHECK(hcs[i] == 0);
+        }
+    }
+}

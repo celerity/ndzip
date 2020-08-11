@@ -35,7 +35,8 @@
 #   error "Unknown endianess"
 #endif
 
-#define HCDE_SUPERBLOCK_SIZE (size_t{32})
+#define HCDE_WARP_SIZE (size_t{32})
+#define HCDE_SUPERBLOCK_SIZE HCDE_WARP_SIZE
 
 
 namespace hcde::detail {
@@ -341,7 +342,7 @@ void for_each_border_slice(const extent<Dims> &size, unsigned side_length, const
     for (unsigned d = 0; d < Dims; ++d) {
         if (size[d] / side_length == 0) {
             // special case: the whole array is a border
-            fn(0, size.linear_offset());
+            fn(0, num_elements(size));
             return;
         }
         if (size[d] % side_length != 0) {
@@ -492,6 +493,10 @@ class superblock {
             return std::min(_hypercubes_per_dim[0] - _first_hc_index, HCDE_SUPERBLOCK_SIZE);
         }
 
+        size_t num_hypercubes_per_dim(size_t d) const {
+            return _hypercubes_per_dim[d];
+        }
+
         template<typename Fn>
         void for_each_hypercube(Fn &&fn) const {
             for (size_t index = 0; index < num_hypercubes(); ++index) {
@@ -562,5 +567,78 @@ class file {
         extent<Profile::dimensions> _size;
         extent<Profile::dimensions> _hypercubes_per_dim;
 };
+
+template<typename Profile>
+void load_superblock_warp(size_t tid, const superblock<Profile> &sb,
+    const slice<const typename Profile::data_type, Profile::dimensions> &src,
+    typename Profile::bits_type *dest, const Profile &p) {
+    const auto side_length = Profile::hypercube_side_length;
+    const auto hc_size = ipow(side_length, Profile::dimensions);
+    const auto warp_size = HCDE_WARP_SIZE;
+    auto global_offset = sb.hypercube_at(0).global_offset();
+    if constexpr (Profile::dimensions == 1) {
+        auto start = linear_offset(src.size(), global_offset);
+        auto width = std::min(warp_size * HCDE_SUPERBLOCK_SIZE, src.size()[0] - global_offset[0]);
+        auto src_ptr = src.data() + start;
+        for (size_t i = tid; i < width; i += warp_size) {
+            dest[i] = p.load_value(src_ptr + i);
+        }
+    } else if constexpr (Profile::dimensions == 2) {
+        const auto num_hcs = sb.num_hypercubes();
+        auto hcs_remaining = num_hcs;
+        while (hcs_remaining > 0) {
+            auto hcs_in_this_row = std::min(hcs_remaining,
+                (src.size()[1] - global_offset[1]) / side_length);
+            auto first_hc_index_in_this_row = num_hcs - hcs_remaining;
+            auto line_width = hcs_in_this_row * side_length;
+            auto src_pos = linear_offset(src.size(), global_offset);
+            for (size_t line_in_hc = 0; line_in_hc < side_length; ++line_in_hc) {
+                for (size_t j = tid; j < line_width; j += warp_size) {
+                    auto hc_index = first_hc_index_in_this_row + j / side_length;
+                    auto col_in_hc = j % side_length;
+                    dest[hc_index * hc_size + line_in_hc * side_length + col_in_hc]
+                        = p.load_value(src.data() + src_pos + j);
+                }
+                src_pos += src.size()[1];
+            }
+            global_offset[1] = 0;
+            global_offset[0] += Profile::hypercube_side_length;
+            hcs_remaining -= hcs_in_this_row;
+        }
+    } else if constexpr (Profile::dimensions == 3) {
+        const auto num_hcs = sb.num_hypercubes();
+        auto hcs_remaining = num_hcs;
+        while (hcs_remaining > 0) {
+            auto hcs_in_this_row = std::min(hcs_remaining,
+                (src.size()[2] - global_offset[2]) / side_length);
+            auto first_hc_index_in_this_row = num_hcs - hcs_remaining;
+            auto line_width = hcs_in_this_row * side_length;
+            auto local_offset = global_offset;
+            for (size_t plane_in_hc = 0; plane_in_hc < side_length; ++plane_in_hc) {
+                auto src_pos = linear_offset(src.size(), local_offset);
+                for (size_t line_in_hc = 0; line_in_hc < side_length; ++line_in_hc) {
+                    for (size_t j = tid; j < line_width; j += warp_size) {
+                        auto hc_index = first_hc_index_in_this_row + j / side_length;
+                        auto col_in_hc = j % side_length;
+                        dest[hc_index * hc_size + plane_in_hc * side_length * side_length
+                            + line_in_hc * side_length + col_in_hc] = p.load_value(src.data() + src_pos + j);
+                    }
+                    src_pos += src.size()[2];
+                }
+                ++local_offset[0];
+            }
+            global_offset[2] = 0;
+            global_offset[1] += Profile::hypercube_side_length;
+            if (global_offset[1] + Profile::hypercube_side_length > src.size()[1]) {
+                global_offset[1] = 0;
+                global_offset[0] += Profile::hypercube_side_length;
+            }
+            hcs_remaining -= hcs_in_this_row;
+        }
+    } else {
+        static_assert(Profile::dimensions != Profile::dimensions, "unimplemented");
+    }
+
+}
 
 } // namespace hcde::detail

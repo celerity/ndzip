@@ -90,14 +90,6 @@ class extent {
             return !operator==(left, right);
         }
 
-        size_t linear_offset() const {
-            size_t offset = 1;
-            for (unsigned d = 0; d < Dims; ++d) {
-                offset *= _components[d];
-            }
-            return offset;
-        }
-
         iterator begin() {
             return _components;
         }
@@ -121,7 +113,28 @@ class extent {
 template<typename ...Init>
 extent(const Init &...) -> extent<sizeof...(Init)>;
 
-} // namespace extent
+template<unsigned Dims>
+size_t num_elements(extent<Dims> size) {
+    size_t n = 1;
+    for (unsigned d = 0; d < Dims; ++d) {
+        n *= size[d];
+    }
+    return n;
+}
+
+template<unsigned Dims>
+size_t linear_offset(extent<Dims> space, extent<Dims> position) {
+    size_t offset = 0;
+    size_t stride = 1;
+    for (unsigned nd = 0; nd < Dims; ++nd) {
+        auto d = Dims - 1 - nd;
+        offset += stride * position[d];
+        stride *= space[d];
+    }
+    return offset;
+}
+
+} // namespace hcde
 
 namespace hcde::detail {
 

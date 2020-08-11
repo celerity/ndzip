@@ -1,3 +1,8 @@
+//
+#ifndef NDEBUG
+#   define NDEBUG 1
+#endif
+
 #include "gpu_encoder.inl"
 #include "fast_profile.inl"
 #include "strong_profile.inl"

@@ -56,8 +56,5 @@ endif ()
 
 if (Catch2_FOUND)
     add_executable(test src/test/test.cc)
-    if (hipSYCL_FOUND)
-        add_sycl_to_target(TARGET test SOURCES src/test/test.cc)
-    endif ()
     target_link_libraries(test PRIVATE hcde Catch2::Catch2)
 endif ()

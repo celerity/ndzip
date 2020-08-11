@@ -17,7 +17,7 @@ void compress_stream(const std::string &in, const std::string &out, const hcde::
     const Encoder &encoder, const io_factory &io) {
     using data_type = typename Encoder::data_type;
 
-    const auto array_chunk_length = static_cast<size_t>(size.linear_offset() * sizeof(data_type));
+    const auto array_chunk_length = static_cast<size_t>(num_elements(size) * sizeof(data_type));
     const auto max_compressed_chunk_length = encoder.compressed_size_bound(size);
 
     auto in_stream = io.create_input_stream(in, array_chunk_length);
@@ -51,7 +51,7 @@ void decompress_stream(const std::string &in, const std::string &out, const hcde
     const Encoder &encoder, const io_factory &io) {
     using data_type = typename Encoder::data_type;
     const auto max_compressed_chunk_length = encoder.compressed_size_bound(size);
-    const auto array_chunk_length = static_cast<size_t>(size.linear_offset() * sizeof(data_type));
+    const auto array_chunk_length = static_cast<size_t>(num_elements(size) * sizeof(data_type));
 
     const auto in_stream = io.create_input_stream(in, max_compressed_chunk_length);
     const auto out_stream = io.create_output_stream(out, array_chunk_length);

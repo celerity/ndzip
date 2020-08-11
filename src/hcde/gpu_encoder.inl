@@ -1,6 +1,7 @@
 #pragma once
 
 #include "common.hh"
+#include <cstdlib>
 
 #ifdef __GNUC__
 #   pragma GCC diagnostic push
@@ -59,16 +60,19 @@ template<typename Profile>
 size_t hcde::gpu_encoder<Profile>::compress(const slice<const data_type, dimensions> &data, void *stream) const {
     using bits_type = typename Profile::bits_type;
     using hypercube_offset_type = typename Profile::hypercube_offset_type;
+
     constexpr static auto side_length = Profile::hypercube_side_length;
+    const auto hc_size = detail::ipow(side_length, Profile::dimensions);
 
     sycl::queue q;
-    sycl::buffer<data_type> data_buffer(data.data(), sycl::range<1>(data.size().linear_offset()));
+    sycl::buffer<data_type> data_buffer(data.data(), sycl::range<1>(num_elements(data.size())));
 
     const detail::file<Profile> file(data.size());
     const auto superblocks = detail::collect_superblocks(file);
     sycl::buffer<detail::superblock<Profile>> superblock_buffer(superblocks.data(), sycl::range<1>(superblocks.size()));
 
     std::vector<uint64_t> sb_initial_offset_data;
+    sb_initial_offset_data.reserve(file.num_superblocks());
     uint64_t offset = file.file_header_length();
     for (auto &sb: superblocks) {
         sb_initial_offset_data.push_back(offset);
@@ -76,7 +80,7 @@ size_t hcde::gpu_encoder<Profile>::compress(const slice<const data_type, dimensi
     }
 
     sycl::buffer<uint64_t> sb_initial_offsets(static_cast<const uint64_t*>(sb_initial_offset_data.data()),
-        sycl::range<1>{file.num_superblocks()});
+        sycl::range<1>{sb_initial_offset_data.size()});
     sycl::buffer<std::byte> stream_buffer{sycl::range<1>(compressed_size_bound(data.size()))};
     sycl::buffer<uint64_t> sb_lengths(sycl::range<1>{superblocks.size()});
 
@@ -89,6 +93,8 @@ size_t hcde::gpu_encoder<Profile>::compress(const slice<const data_type, dimensi
         auto stream_access = stream_buffer.get_access<sycl::access::mode::discard_write>(cgh);
         auto sb_initial_offset_access = sb_initial_offsets.get_access<sycl::access::mode::read>(cgh);
         auto sb_length_access = sb_lengths.get_access<sycl::access::mode::discard_write>(cgh);
+        auto bits_access = sycl::accessor<bits_type, 1, sycl::access::mode::read_write,
+            sycl::access::target::local>(sycl::range<1>{file.max_num_hypercubes_per_superblock() * hc_size}, cgh);
         auto hc_length_access = sycl::accessor<hypercube_offset_type, 1, sycl::access::mode::read_write,
             sycl::access::target::local>(sycl::range<1>{file.max_num_hypercubes_per_superblock()}, cgh);
         auto hc_offset_access = sycl::accessor<hypercube_offset_type, 1, sycl::access::mode::read_write,
@@ -97,27 +103,27 @@ size_t hcde::gpu_encoder<Profile>::compress(const slice<const data_type, dimensi
         cgh.parallel_for<detail::encode_kernel<Profile>>(sycl::nd_range<1>{
             sycl::range<1>{superblocks.size() * file.max_num_hypercubes_per_superblock()},
             sycl::range<1>{file.max_num_hypercubes_per_superblock()}},
-            [file, superblock_access, data_access, stream_access, sb_length_access, sb_initial_offset_access,
-                hc_length_access, hc_offset_access, data_size = data.size()](sycl::nd_item<1> nd_item) {
+            [file, superblock_access, data_access, stream_access, bits_access, sb_length_access,
+                sb_initial_offset_access, hc_size, hc_length_access, hc_offset_access, data_size = data.size()](
+                    sycl::nd_item<1> nd_item) {
                 const auto sb_id = nd_item.get_group().get_id();
                 const auto sb = superblock_access[sb_id];
                 const auto hc_id = nd_item.get_local_id();
                 const auto hc_index = hc_id[0];
+                const auto n_hcs = sb.num_hypercubes();
 
                 slice<const data_type, dimensions> device_data(data_access.get_pointer(), data_size);
-
-                if (hc_index >= sb.num_hypercubes()) {
-                    return;
-                }
+                bits_type *bits = bits_access.get_pointer();
 
                 Profile p;
-                bits_type cube[detail::ipow(side_length, Profile::dimensions)];
-                auto hc = sb.hypercube_at(hc_index);
-                auto *cube_pos = cube;
-                hc.for_each_cell(device_data, [&](auto *cell) { *cube_pos++ = p.load_value(cell); });
+                detail::load_superblock_warp(hc_index, sb, device_data, bits, p);
+
+                nd_item.barrier();
 
                 std::byte hc_stream[Profile::compressed_block_size_bound + sizeof(bits_type)] = {};
-                hc_length_access[hc_id] = p.encode_block(cube, hc_stream);
+                if (hc_index < n_hcs) {
+                    hc_length_access[hc_id] = p.encode_block(bits + hc_size * hc_index, hc_stream);
+                }
 
                 nd_item.barrier();
 
@@ -133,12 +139,14 @@ size_t hcde::gpu_encoder<Profile>::compress(const slice<const data_type, dimensi
 
                 nd_item.barrier();
 
-                std::byte *sb_stream = stream_access.get_pointer() + sb_initial_offset_access[sb_id];
-                if (hc_index > 0) {
-                    detail::store_unaligned(sb_stream + sizeof(hypercube_offset_type) * (hc_index - 1),
-                        detail::endian_transform(hc_offset_access[hc_id]));
+                if (hc_index < n_hcs) {
+                    std::byte *sb_stream = stream_access.get_pointer() + sb_initial_offset_access[sb_id];
+                    if (hc_index > 0) {
+                        detail::store_unaligned(sb_stream + sizeof(hypercube_offset_type) * (hc_index - 1),
+                            detail::endian_transform(hc_offset_access[hc_id]));
+                    }
+                    memcpy(sb_stream + hc_offset_access[hc_id], hc_stream, hc_length_access[hc_id]);
                 }
-                memcpy(sb_stream + hc_offset_access[hc_id], hc_stream, hc_length_access[hc_id]);
             });
     });
 
@@ -181,7 +189,7 @@ size_t hcde::gpu_encoder<Profile>::decompress(const void *stream, size_t bytes,
 
     sycl::queue q;
     sycl::buffer<std::byte> stream_buffer(static_cast<const std::byte*>(stream), sycl::range<1>(bytes));
-    sycl::buffer<data_type> data_buffer(sycl::range<1>(data.size().linear_offset()));
+    sycl::buffer<data_type> data_buffer(sycl::range<1>(num_elements(data.size())));
 
     q.submit([&](sycl::handler &cgh) {
         auto stream_access = stream_buffer.get_access<sycl::access::mode::read>(cgh);
@@ -228,7 +236,7 @@ size_t hcde::gpu_encoder<Profile>::decompress(const void *stream, size_t bytes,
     q.wait();
 
     auto host_data = data_buffer.template get_access<sycl::access::mode::read>();
-    memcpy(data.data(), host_data.get_pointer(), data.size().linear_offset() * sizeof(data_type));
+    memcpy(data.data(), host_data.get_pointer(), num_elements(data.size()) * sizeof(data_type));
 
     auto border_pos_address = static_cast<const char *>(stream)
         + (file.num_superblocks() - 1) * sizeof(uint64_t);
