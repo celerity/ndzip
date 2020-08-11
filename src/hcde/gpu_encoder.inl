@@ -47,6 +47,23 @@ class decode_kernel;
 
 
 template<typename Profile>
+struct hcde::gpu_encoder<Profile>::impl {
+    sycl::queue q;
+};
+
+
+template<typename Profile>
+hcde::gpu_encoder<Profile>::gpu_encoder()
+    : _pimpl(std::make_unique<impl>())
+{
+}
+
+
+template<typename Profile>
+hcde::gpu_encoder<Profile>::~gpu_encoder() = default;
+
+
+template<typename Profile>
 size_t hcde::gpu_encoder<Profile>::compressed_size_bound(const extent<dimensions> &size) const {
     detail::file<Profile> file(size);
     size_t bound = file.combined_length_of_all_headers();
@@ -64,8 +81,6 @@ size_t hcde::gpu_encoder<Profile>::compress(const slice<const data_type, dimensi
     constexpr static auto side_length = Profile::hypercube_side_length;
     const auto hc_size = detail::ipow(side_length, Profile::dimensions);
 
-    sycl::exception_list exceptions;
-    sycl::queue q(sycl::async_handler([&](sycl::exception_list e) { exceptions = e; }));
     sycl::buffer<data_type> data_buffer(data.data(), sycl::range<1>(num_elements(data.size())));
 
     const detail::file<Profile> file(data.size());
@@ -88,7 +103,7 @@ size_t hcde::gpu_encoder<Profile>::compress(const slice<const data_type, dimensi
     static_assert(std::is_trivially_copyable_v<hcde::detail::superblock<Profile>>);
     static_assert(std::is_trivially_copyable_v<hcde::detail::file<Profile>>);
 
-    q.submit([&](sycl::handler &cgh) {
+    auto event = _pimpl->q.submit([&](sycl::handler &cgh) {
         auto data_access = data_buffer.template get_access<sycl::access::mode::read>(cgh);
         auto superblock_access = superblock_buffer.template get_access<sycl::access::mode::read>(cgh);
         auto stream_access = stream_buffer.get_access<sycl::access::mode::discard_write>(cgh);
@@ -166,10 +181,7 @@ size_t hcde::gpu_encoder<Profile>::compress(const slice<const data_type, dimensi
         file_pos += length;
     }
 
-    q.wait_and_throw();
-    for (auto &e: exceptions) {
-        std::rethrow_exception(e);
-    }
+    event.wait_and_throw();
 
     auto border_offset_address =
         static_cast<char *>(stream) + (file.num_superblocks() - 1) * sizeof(uint64_t);
@@ -191,12 +203,10 @@ size_t hcde::gpu_encoder<Profile>::decompress(const void *stream, size_t bytes,
     const auto superblocks = detail::collect_superblocks(file);
     sycl::buffer<detail::superblock<Profile>> superblock_buffer(superblocks.data(), sycl::range<1>(superblocks.size()));
 
-    sycl::exception_list exceptions;
-    sycl::queue q(sycl::async_handler([&](sycl::exception_list e) { exceptions = e; }));
     sycl::buffer<std::byte> stream_buffer(static_cast<const std::byte*>(stream), sycl::range<1>(bytes));
     sycl::buffer<data_type> data_buffer(sycl::range<1>(num_elements(data.size())));
 
-    q.submit([&](sycl::handler &cgh) {
+    auto event = _pimpl->q.submit([&](sycl::handler &cgh) {
         auto stream_access = stream_buffer.get_access<sycl::access::mode::read>(cgh);
         auto data_access = data_buffer.template get_access<sycl::access::mode::discard_write>(cgh);
         auto superblock_access = superblock_buffer.template get_access<sycl::access::mode::read>(cgh);
@@ -238,10 +248,7 @@ size_t hcde::gpu_encoder<Profile>::decompress(const void *stream, size_t bytes,
         });
     });
 
-    q.wait_and_throw();
-    for (auto &e: exceptions) {
-        std::rethrow_exception(e);
-    }
+    event.wait_and_throw();
 
     auto host_data = data_buffer.template get_access<sycl::access::mode::read>();
     memcpy(data.data(), host_data.get_pointer(), num_elements(data.size()) * sizeof(data_type));

@@ -1,6 +1,7 @@
 #include "io.hh"
 #include <hcde.hh>
 
+#include <chrono>
 #include <cstdlib>
 #include <iostream>
 #include <iomanip>
@@ -11,6 +12,8 @@
 namespace opts = boost::program_options;
 
 namespace hcde::detail {
+
+using duration = std::chrono::system_clock::duration;
 
 template<typename Encoder>
 void compress_stream(const std::string &in, const std::string &out, const hcde::extent<Encoder::dimensions> &size,
@@ -73,18 +76,22 @@ void decompress_stream(const std::string &in, const std::string &out, const hcde
 }
 
 template<typename Encoder>
-void process_stream(bool decompress, const std::string &in, const std::string &out,
-    const hcde::extent<Encoder::dimensions> &size, const Encoder &encoder, const io_factory &io) {
+duration process_stream(bool decompress, const std::string &in, const std::string &out,
+        const hcde::extent<Encoder::dimensions> &size, const Encoder &encoder, const io_factory &io)
+{
+    auto start = std::chrono::system_clock::now();
     if (decompress) {
-        return decompress_stream(in, out, size, encoder, io);
+        decompress_stream(in, out, size, encoder, io);
     } else {
-        return compress_stream(in, out, size, encoder, io);
+        compress_stream(in, out, size, encoder, io);
     }
+    auto end = std::chrono::system_clock::now();
+    return std::chrono::duration_cast<duration>(end - start);
 }
 
 template<template<typename> typename Encoder,
     template<typename, unsigned> typename Profile, typename Data>
-void process_stream(bool decompress, const std::vector<size_t> &size_components, const std::string &in,
+duration process_stream(bool decompress, const std::vector<size_t> &size_components, const std::string &in,
     const std::string &out, const io_factory &io) {
     switch (size_components.size()) {
         case 1:
@@ -105,7 +112,7 @@ void process_stream(bool decompress, const std::vector<size_t> &size_components,
 }
 
 template<template<typename> typename Encoder, typename Data>
-void process_stream(bool decompress, const std::vector<size_t> &size_components, const std::string &profile,
+duration process_stream(bool decompress, const std::vector<size_t> &size_components, const std::string &profile,
     const std::string &in, const std::string &out, const io_factory &io) {
     if (profile == "fast") {
         return process_stream<Encoder, hcde::fast_profile, Data>(decompress, size_components, in, out, io);
@@ -117,7 +124,7 @@ void process_stream(bool decompress, const std::vector<size_t> &size_components,
 }
 
 template<typename Data>
-void process_stream(bool decompress, const std::vector<size_t> &size_components, const std::string &profile,
+duration process_stream(bool decompress, const std::vector<size_t> &size_components, const std::string &profile,
     const std::string &encoder, const std::string &in, const std::string &out, const io_factory &io) {
     if (encoder == "cpu") {
         return process_stream<hcde::cpu_encoder, Data>(decompress, size_components, profile, in, out, io);
@@ -133,7 +140,7 @@ void process_stream(bool decompress, const std::vector<size_t> &size_components,
 }
 
 
-void process_stream(bool decompress, const std::vector<size_t> &size_components, const std::string &profile,
+duration process_stream(bool decompress, const std::vector<size_t> &size_components, const std::string &profile,
     const std::string &encoder, const std::string &data_type, const std::string &in, const std::string &out,
     const io_factory &io) {
     if (data_type == "float") {
@@ -208,8 +215,10 @@ int main(int argc, char **argv) {
     }
 
     try {
-        hcde::detail::process_stream(decompress, size_components, profile, encoder, data_type,
-            input, output, *io_factory);
+        auto duration = hcde::detail::process_stream(decompress, size_components, profile, encoder,
+                data_type, input, output, *io_factory);
+        std::cerr << "finished in " << std::setprecision(3) << std::fixed
+            << std::chrono::duration_cast<std::chrono::duration<double>>(duration).count() << "s\n";
         return EXIT_SUCCESS;
     } catch (hcde::detail::io_error &e) {
         std::cerr << e.what() << "\n";

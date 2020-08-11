@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <type_traits>
+#include <memory>
 
 
 namespace hcde::detail {
@@ -283,12 +284,21 @@ class gpu_encoder {
 
         constexpr static unsigned dimensions = Profile::dimensions;
 
+        gpu_encoder();
+        gpu_encoder(gpu_encoder &&) = default;
+        gpu_encoder &operator=(gpu_encoder &&) = default;
+        ~gpu_encoder();
+
         size_t compressed_size_bound(const extent<dimensions> &e) const;
 
         size_t compress(const slice<const data_type, dimensions> &data, void *stream) const;
 
         size_t decompress(const void *stream, size_t bytes,
                 const slice<data_type, dimensions> &data) const;
+
+    private:
+        struct impl;
+        std::unique_ptr<impl> _pimpl;
 };
 
 #endif // HCDE_GPU_SUPPORT
