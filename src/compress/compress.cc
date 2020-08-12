@@ -220,10 +220,11 @@ int main(int argc, char **argv) {
         std::cerr << "finished in " << std::setprecision(3) << std::fixed
             << std::chrono::duration_cast<std::chrono::duration<double>>(duration).count() << "s\n";
         return EXIT_SUCCESS;
-    } catch (hcde::detail::io_error &e) {
-        std::cerr << e.what() << "\n";
     } catch (opts::error &e) {
         std::cerr << e.what() << "\n\n" << usage << desc;
+        return EXIT_FAILURE;
+    } catch (std::exception &e) {
+        std::cerr << e.what() << "\n";
         return EXIT_FAILURE;
     }
 }

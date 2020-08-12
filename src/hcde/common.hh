@@ -189,6 +189,11 @@ POD load_aligned(const void *src) {
 }
 
 template<typename POD>
+POD load_aligned(const void *src) {
+    return load_aligned<alignof(POD), POD>(src);
+}
+
+template<typename POD>
 void store_unaligned(void *dest, POD a) {
     static_assert(std::is_trivially_copyable_v<POD>);
     memcpy(dest, &a, sizeof(POD));
@@ -198,6 +203,11 @@ template<size_t Align, typename POD>
 void store_aligned(void *dest, POD a) {
     assert(reinterpret_cast<uintptr_t>(dest) % Align == 0);
     store_unaligned(__builtin_assume_aligned(dest, Align), a);
+}
+
+template<typename POD>
+void store_aligned(void *dest, POD a) {
+    store_aligned<alignof(POD), POD>(dest, a);
 }
 
 template<typename Integer>
