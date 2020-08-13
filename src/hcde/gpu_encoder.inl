@@ -156,6 +156,7 @@ size_t hcde::gpu_encoder<Profile>::compress(const slice<const data_type, dimensi
 
                 std::byte *hc_stream = hc_stream_access.get_pointer()
                     + hc_index * (Profile::compressed_block_size_bound + sizeof(bits_type));
+                __builtin_memset(hc_stream, 0, Profile::compressed_block_size_bound + sizeof(bits_type));
                 if (hc_index < n_hcs) {
                     hc_length_access[hc_id] = p.encode_block(bits + hc_size * hc_index, hc_stream);
                 }
@@ -164,7 +165,7 @@ size_t hcde::gpu_encoder<Profile>::compress(const slice<const data_type, dimensi
 
                 if (hc_index == 0) {
                     auto offset = file.superblock_header_length();
-                    for (size_t i = 0; i < sb.num_hypercubes(); ++i) {
+                    for (size_t i = 0; i < n_hcs; ++i) {
                         hc_offset_access[sycl::id<1>{i}] = offset;
                         offset += static_cast<hypercube_offset_type>(hc_length_access[sycl::id<1>{i}]);
                     }
@@ -224,17 +225,15 @@ size_t hcde::gpu_encoder<Profile>::compress(const slice<const data_type, dimensi
                 const std::byte *const sb_stream = sb_stream_access.get_pointer();
                 std::byte *const file_stream = file_stream_access.get_pointer();
 
-                if (thread == 0) {
-                    printf("sb %lu src %lu dst %lu len %lu\n", sb_index, sb_initial_offset_access[sb_id],
-                    sb_offset_access[sb_id], sb_length_access[sb_id]);
-                    auto src = sb_stream + sb_initial_offset_access[sb_id];
-                    auto dest = file_stream + sb_offset_access[sb_id];
-                    auto length = sb_length_access[sb_id];
-                    //for (size_t j = 4 * thread; j < length; j += 4 * HCDE_WARP_SIZE) {
-                    /*for (size_t j = 0; j < length; j += 4) {
-                        detail::store_unaligned(dest + j, detail::load_unaligned<uint32_t>(src + j));
-                    }*/
-                    memcpy(dest, src, length);
+                auto src = sb_stream + sb_initial_offset_access[sb_id];
+                auto dest = file_stream + sb_offset_access[sb_id];
+                auto length = sb_length_access[sb_id];
+                const size_t copy_size = 4;
+                for (size_t j = copy_size * thread; j + copy_size <= length; j += copy_size * HCDE_WARP_SIZE) {
+                    __builtin_memcpy(dest + j, src + j, copy_size);
+                }
+                for (size_t j = length - length % copy_size + thread; j < length; ++j) {
+                    dest[j] = src[j];
                 }
                 if (thread == 0) {
                     auto dest = file_stream + sb_index * sizeof(uint64_t);
