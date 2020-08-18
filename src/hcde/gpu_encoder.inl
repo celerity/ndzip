@@ -323,10 +323,13 @@ size_t hcde::gpu_encoder<Profile>::decompress(const void *stream, size_t bytes,
     auto host_data = data_buffer.template get_access<sycl::access::mode::read>();
     memcpy(data.data(), host_data.get_pointer(), num_elements(data.size()) * sizeof(data_type));
 
-    auto border_pos_address = static_cast<const char *>(stream)
-        + (file.num_superblocks() - 1) * sizeof(uint64_t);
-    auto border_pos = static_cast<size_t>(detail::endian_transform(
-        detail::load_unaligned<uint64_t>(border_pos_address)));
+    auto border_pos = file.file_header_length();
+    if (file.num_superblocks() > 0) {
+        auto border_pos_address = static_cast<const char *>(stream)
+            + (file.num_superblocks() - 1) * sizeof(uint64_t);
+        border_pos = static_cast<size_t>(detail::endian_transform(
+            detail::load_unaligned<uint64_t>(border_pos_address)));
+    }
     auto border_length = detail::unpack_border(data, static_cast<const char *>(stream) + border_pos,
         side_length);
     return border_pos + border_length;

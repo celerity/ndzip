@@ -112,8 +112,10 @@ size_t hcde::cpu_encoder<Profile>::compress(const slice<const data_type, dimensi
         }
     });
 
-    auto border_offset_address = static_cast<char *>(stream) + (file.num_superblocks() - 1) * sizeof(uint64_t);
-    detail::store_unaligned(border_offset_address, detail::endian_transform(stream_pos));
+    if (file.num_superblocks() > 0) {
+        auto border_offset_address = static_cast<char *>(stream) + (file.num_superblocks() - 1) * sizeof(uint64_t);
+        detail::store_unaligned(border_offset_address, detail::endian_transform(stream_pos));
+    }
     stream_pos += detail::pack_border(static_cast<char *>(stream) + stream_pos, data, side_length);
     return stream_pos;
 }

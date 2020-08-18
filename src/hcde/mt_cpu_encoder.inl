@@ -116,10 +116,13 @@ size_t hcde::mt_cpu_encoder<Profile>::compress(
         t.join();
     }
 
-    size_t file_pos = file.file_header_length() + sb_lengths[0];
+    size_t file_pos = file.file_header_length();
+    if (num_sbs > 0) {
+        file_pos += sb_lengths[0];
+    }
+
     for (size_t sb_index = 1; sb_index < num_sbs; ++sb_index) {
-        auto file_offset_address = static_cast<char *>(stream)
-                + (sb_index - 1) * sizeof(uint64_t);
+        auto file_offset_address = static_cast<char *>(stream) + (sb_index - 1) * sizeof(uint64_t);
         auto file_offset = static_cast<uint64_t>(file_pos);
         detail::store_unaligned(file_offset_address, detail::endian_transform(file_offset));
         assert(file_pos <= initial_sb_offsets[sb_index]);
@@ -128,9 +131,11 @@ size_t hcde::mt_cpu_encoder<Profile>::compress(
         file_pos += sb_lengths[sb_index];
     }
 
-    auto border_offset_address =
+    if (num_sbs > 0) {
+        auto border_offset_address =
             static_cast<char *>(stream) + (file.num_superblocks() - 1) * sizeof(uint64_t);
-    detail::store_unaligned(border_offset_address, detail::endian_transform(file_pos));
+        detail::store_unaligned(border_offset_address, detail::endian_transform(file_pos));
+    }
     file_pos += detail::pack_border(static_cast<char *>(stream) + file_pos, data, side_length);
     return file_pos;
 }
@@ -173,10 +178,12 @@ size_t hcde::mt_cpu_encoder<Profile>::decompress(const void *stream, size_t byte
         });
     }
 
-    auto border_pos_address = static_cast<const char *>(stream)
-            + (file.num_superblocks() - 1) * sizeof(uint64_t);
-    auto border_pos = static_cast<size_t>(detail::endian_transform(
+    auto border_pos = file.file_header_length();
+    if (file.num_superblocks() > 0) {
+        auto border_pos_address = static_cast<const char *>(stream) + (file.num_superblocks() - 1) * sizeof(uint64_t);
+        border_pos = static_cast<size_t>(detail::endian_transform(
             detail::load_unaligned<uint64_t>(border_pos_address)));
+    }
     auto border_length = detail::unpack_border(data, static_cast<const char *>(stream) + border_pos,
             side_length);
 
