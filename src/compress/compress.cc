@@ -118,6 +118,8 @@ duration process_stream(bool decompress, const std::vector<size_t> &size_compone
         return process_stream<Encoder, hcde::fast_profile, Data>(decompress, size_components, in, out, io);
     } else if (profile == "strong") {
         return process_stream<Encoder, hcde::strong_profile, Data>(decompress, size_components, in, out, io);
+    } else if (profile == "xt") {
+        return process_stream<Encoder, hcde::xt_profile, Data>(decompress, size_components, in, out, io);
     } else {
         throw opts::error("Invalid profile \"" + profile + "\" in option -p / --profile");
     }

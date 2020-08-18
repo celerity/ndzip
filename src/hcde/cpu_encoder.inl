@@ -152,4 +152,7 @@ namespace hcde {
     extern template class cpu_encoder<strong_profile<float, 1>>;
     extern template class cpu_encoder<strong_profile<float, 2>>;
     extern template class cpu_encoder<strong_profile<float, 3>>;
+    extern template class cpu_encoder<xt_profile<float, 1>>;
+    extern template class cpu_encoder<xt_profile<float, 2>>;
+    extern template class cpu_encoder<xt_profile<float, 3>>;
 }

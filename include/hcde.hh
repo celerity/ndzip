@@ -224,6 +224,28 @@ class strong_profile {
         constexpr static unsigned hypercube_side_length = Dims == 1 ? 4096 : Dims == 2 ? 64 : 16;
         constexpr static size_t compressed_block_size_bound
                 = (detail::bitsof<data_type> + 4)  // TODO substitute generic constants
+                        * detail::ipow(hypercube_side_length, Dims) / CHAR_BIT;
+
+        size_t encode_block(const bits_type *bits, void *stream) const;
+
+        size_t decode_block(const void *stream, bits_type *bits) const;
+
+        bits_type load_value(const data_type *data) const;
+
+        void store_value(data_type *data, bits_type bits) const;
+};
+
+template<typename T, unsigned Dims>
+class xt_profile {
+    public:
+        using data_type = T;
+        using bits_type = detail::bits_type<T>;
+        using hypercube_offset_type = uint32_t;
+
+        constexpr static unsigned dimensions = Dims;
+        constexpr static unsigned hypercube_side_length = Dims == 1 ? 4096 : Dims == 2 ? 64 : 16;
+        constexpr static size_t compressed_block_size_bound
+                = (detail::bitsof<data_type> + 4)  // TODO substitute generic constants
                   * detail::ipow(hypercube_side_length, Dims) / CHAR_BIT;
 
         size_t encode_block(const bits_type *bits, void *stream) const;

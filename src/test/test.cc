@@ -1,6 +1,7 @@
 #include "../hcde/common.hh"
 #include "../hcde/fast_profile.inl"
 #include "../hcde/strong_profile.inl"
+#include "../hcde/xt_profile.inl"
 #include "../hcde/cpu_encoder.inl"
 #include "../hcde/mt_cpu_encoder.inl"
 
@@ -131,7 +132,7 @@ TEST_CASE("store_bits_linear") {
 
 
 TEMPLATE_TEST_CASE("value en-/decoding reproduces bit-identical values", "[profile]",
-    (fast_profile<float, 2>), (strong_profile<float, 2>))
+    (fast_profile<float, 2>), (strong_profile<float, 2>), (xt_profile<float, 2>))
 {
     const auto input = make_random_vector<float>(100);
 
@@ -150,7 +151,7 @@ TEMPLATE_TEST_CASE("value en-/decoding reproduces bit-identical values", "[profi
 
 
 TEMPLATE_TEST_CASE("block en-/decoding reproduces bit-identical values", "[profile]",
-    (fast_profile<float, 2>), (strong_profile<float, 2>))
+    (fast_profile<float, 2>), (strong_profile<float, 2>), (xt_profile<float, 2>))
 {
     const auto random = make_random_vector<uint32_t>(ipow(TestType::hypercube_side_length, 2));
     auto halves = random;
@@ -431,7 +432,7 @@ TEST_CASE("load superblock in GPU warp", "[gpu]") {
     SECTION("1d array") {
         std::vector<uint32_t> array{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12};
         std::vector<uint32_t> hcs(8);
-        superblock<trivial_profile<1>> sb(extent{6}, 2);
+        superblock<trivial_profile<1>> sb(extent<1>{6}, 2);
         trivial_profile<1> p;
         for (unsigned tid = 0; tid < HCDE_WARP_SIZE; ++tid) {
             load_superblock_warp(tid, sb, slice<uint32_t, 1>(array.data(), array.size()), hcs.data(), p);
@@ -453,7 +454,7 @@ TEST_CASE("load superblock in GPU warp", "[gpu]") {
             17, 27, 37, 47, 57, 67, 77, 87, 97,
         };
         std::vector<uint32_t> hcs(54);
-        superblock<trivial_profile<2>> sb(extent{16, 4}, 5);
+        superblock<trivial_profile<2>> sb(extent<2>{16, 4}, 5);
         trivial_profile<2> p;
         for (unsigned tid = 0; tid < HCDE_WARP_SIZE; ++tid) {
             load_superblock_warp(tid, sb, slice<uint32_t, 2>(array.data(), extent{8, 9}), hcs.data(), p);
@@ -512,7 +513,7 @@ TEST_CASE("load superblock in GPU warp", "[gpu]") {
             155, 255, 355, 455, 555,
         };
         std::vector<uint32_t> hcs(50);
-        superblock<trivial_profile<3>> sb(extent{8, 4, 2}, 3);
+        superblock<trivial_profile<3>> sb(extent<3>{8, 4, 2}, 3);
         trivial_profile<3> p;
         for (unsigned tid = 0; tid < HCDE_WARP_SIZE; ++tid) {
             load_superblock_warp(tid, sb, slice<uint32_t, 3>(array.data(), extent{5, 5, 5}), hcs.data(), p);

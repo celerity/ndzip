@@ -22,6 +22,7 @@ add_library(hcde STATIC
     src/hcde/common.hh
     src/hcde/fast_profile.inl
     src/hcde/strong_profile.inl
+    src/hcde/xt_profile.inl
     src/hcde/cpu_encoder.inl
     src/hcde/cpu_encoder.cc
     src/hcde/mt_cpu_encoder.inl
