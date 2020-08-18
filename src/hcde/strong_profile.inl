@@ -69,8 +69,8 @@ struct float_bits_traits<double> {
 template<typename T>
 struct positional_bits_repr<T, std::enable_if_t<std::is_floating_point_v<T>>> {
     constexpr static unsigned sign_bits = float_bits_traits<T>::sign_bits;
-    constexpr static unsigned exponent_bits = float_bits_traits<T>::exponent_bits;
-    constexpr static unsigned mantissa_bits = float_bits_traits<T>::mantissa_bits;
+    constexpr static unsigned exponent_bits = float_bits_traits<T>::exponent_bits - 3;
+    constexpr static unsigned mantissa_bits = float_bits_traits<T>::mantissa_bits + 3;
 
     using numeric_type = T;
     using bits_type = typename float_bits_traits<T>::bits_type;

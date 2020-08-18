@@ -100,7 +100,7 @@ size_t xt_profile<T, Dims>::encode_block(const bits_type *bits, void *stream) co
     auto dest = detail::bit_ptr<sizeof(bits_type)>::from_unaligned_pointer(stream);
     dest.advance(detail::bitsof<T>);
 
-    bits_type difference[detail::ipow(hypercube_side_length, Dims)];
+    bits_type difference[detail::ipow(hypercube_side_length, Dims)]; // TODO in-place
     memcpy(difference, bits, sizeof difference);
     detail::xt(difference, dimensions, hypercube_side_length);
 
