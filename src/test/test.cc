@@ -132,42 +132,60 @@ TEST_CASE("store_bits_linear") {
 
 
 TEMPLATE_TEST_CASE("value en-/decoding reproduces bit-identical values", "[profile]",
-    (fast_profile<float, 2>), (strong_profile<float, 2>), (xt_profile<float, 2>))
+    (fast_profile<float, 1>), (strong_profile<float, 1>), (xt_profile<float, 1>),
+    (fast_profile<float, 2>), (strong_profile<float, 2>), (xt_profile<float, 2>),
+    (fast_profile<float, 3>), (strong_profile<float, 3>), (xt_profile<float, 3>),
+    (fast_profile<double, 1>), (strong_profile<double, 1>), (xt_profile<double, 1>),
+    (fast_profile<double, 2>), (strong_profile<double, 2>), (xt_profile<double, 2>),
+    (fast_profile<double, 3>), (strong_profile<double, 3>), (xt_profile<double, 3>))
 {
-    const auto input = make_random_vector<float>(100);
+    using data_type = typename TestType::data_type;
+    using bits_type = typename TestType::bits_type;
+
+    const auto input = make_random_vector<data_type>(100);
 
     TestType p;
-    std::vector<uint32_t> bits(input.size());
+    std::vector<bits_type> bits(input.size());
     for (unsigned i = 0; i < input.size(); ++i) {
         bits[i] = p.load_value(&input[i]);
     }
 
-    std::vector<float> output(input.size());
+    std::vector<data_type> output(input.size());
     for (unsigned i = 0; i < output.size(); ++i) {
         p.store_value(&output[i], bits[i]);
     }
-    CHECK(memcmp(input.data(), output.data(), input.size() * sizeof(float)) == 0);
+    CHECK(memcmp(input.data(), output.data(), input.size() * sizeof(TestType)) == 0);
 }
 
 
 TEMPLATE_TEST_CASE("block en-/decoding reproduces bit-identical values", "[profile]",
-    (fast_profile<float, 2>), (strong_profile<float, 2>), (xt_profile<float, 2>))
+    (fast_profile<float, 1>), (strong_profile<float, 1>), (xt_profile<float, 1>),
+    (fast_profile<float, 2>), (strong_profile<float, 2>), (xt_profile<float, 2>),
+    (fast_profile<float, 3>), (strong_profile<float, 3>), (xt_profile<float, 3>),
+    /*(fast_profile<double, 1>), (strong_profile<double, 1>), */ (xt_profile<double, 1>),
+    /*(fast_profile<double, 2>), (strong_profile<double, 2>), */ (xt_profile<double, 2>),
+    /*(fast_profile<double, 3>), (strong_profile<double, 3>), */ (xt_profile<double, 3>))
 {
-    const auto random = make_random_vector<uint32_t>(ipow(TestType::hypercube_side_length, 2));
-    auto halves = random;
-    for (auto &h: halves) { h >>= 16u; };
-    const auto zeroes = std::vector<uint32_t>(random.size(), 0);
+    using data_type = typename TestType::data_type;
+    using bits_type = typename TestType::bits_type;
 
-    const auto test_vector = [](const std::vector<uint32_t> &input) {
+    const auto random = make_random_vector<bits_type>(
+        ipow(TestType::hypercube_side_length, TestType::dimensions));
+    auto halves = random;
+    for (auto &h: halves) { h >>= (bitsof<bits_type> / 2); };
+    const auto zeroes = std::vector<bits_type>(random.size(), 0);
+
+    const auto test_vector = [](const std::vector<bits_type> &input) {
         TestType p;
-        std::vector<uint32_t> output(input.size());
+        std::vector<bits_type> output(input.size());
         // stream buffer must be large enough for aligned stores. TODO can this be expressed generically?
-        std::byte stream[TestType::compressed_block_size_bound + sizeof(uint32_t)];
+        std::byte stream[TestType::compressed_block_size_bound + sizeof(bits_type)];
         memset(stream, 0, sizeof stream);
-        p.encode_block(input.data(), stream);
+        auto scratch = input;
+        p.encode_block(scratch.data(), stream);
         p.decode_block(stream, output.data());
 
-        CHECK(memcmp(input.data(), output.data(), input.size() * sizeof(uint32_t)) == 0);
+        CHECK(memcmp(input.data(), output.data(), input.size() * sizeof(bits_type)) == 0);
     };
 
     test_vector(random);

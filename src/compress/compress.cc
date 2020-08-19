@@ -147,8 +147,8 @@ duration process_stream(bool decompress, const std::vector<size_t> &size_compone
     const io_factory &io) {
     if (data_type == "float") {
         return process_stream<float>(decompress, size_components, profile, encoder, in, out, io);
-        // } else if (data_type == "double") {
-        //     return process_stream<double>(decompress, size_components, profile, encoder, in, out, io):
+    } else if (data_type == "double") {
+        return process_stream<double>(decompress, size_components, profile, encoder, in, out, io);
     } else {
         throw opts::error("Invalid option \"" + data_type + "\" in option -t / --data-type");
     }

@@ -257,7 +257,17 @@ bit_ptr<sizeof(typename Profile::bits_type)> encode_difference_bits(
     const typename Profile::bits_type *difference,
     bit_ptr<sizeof(typename Profile::bits_type)> dest) {
     using bits_type = typename Profile::bits_type;
-    constexpr unsigned width_width = 4;
+
+    unsigned width_width;
+    unsigned width_min;
+    if (sizeof(bits_type) <= 4) {
+        width_width = 4;
+        width_min = 19;
+    } else {
+        width_width = 5;
+        width_min = 35;
+    }
+
     auto remainder_dest = dest;
     remainder_dest.advance(width_width * (detail::ipow(Profile::hypercube_side_length, Profile::dimensions) - 1));
     for (unsigned i = 1; i < detail::ipow(Profile::hypercube_side_length, Profile::dimensions); ++i) {
@@ -265,8 +275,8 @@ bit_ptr<sizeof(typename Profile::bits_type)> encode_difference_bits(
         if (width == 0) {
             dest.advance(width_width);
         } else {
-            auto width_code = width < 19 ? bits_type{1} : width - 17;
-            auto verbatim_bits = width < 19 ? 18 : width - 1;
+            auto width_code = width < width_min ? bits_type{1} : width + 2 - width_min;
+            auto verbatim_bits = width < width_min ? width_min - 1 : width - 1;
             detail::store_bits_linear<bits_type>(dest, width_width, width_code);
             dest.advance(width_width);
             detail::store_bits_linear<bits_type>(remainder_dest, verbatim_bits,
@@ -283,7 +293,17 @@ const_bit_ptr<sizeof(typename Profile::bits_type)>
 decode_difference_bits(const_bit_ptr<sizeof(typename Profile::bits_type)> src,
     typename Profile::bits_type *difference) {
     using bits_type = typename Profile::bits_type;
-    constexpr unsigned width_width = 4;
+
+    unsigned width_width;
+    unsigned width_min;
+    if (sizeof(bits_type) <= 4) {
+        width_width = 4;
+        width_min = 19;
+    } else {
+        width_width = 5;
+        width_min = 35;
+    }
+
     auto remainder_src = src;
     remainder_src.advance(width_width * (detail::ipow(Profile::hypercube_side_length, Profile::dimensions) - 1));
     for (unsigned i = 1; i < detail::ipow(Profile::hypercube_side_length, Profile::dimensions); ++i) {
@@ -292,10 +312,10 @@ decode_difference_bits(const_bit_ptr<sizeof(typename Profile::bits_type)> src,
         if (width_code == 0) {
             difference[i] = 0;
         } else if (width_code == 1) {
-            difference[i] = detail::load_bits<bits_type>(remainder_src, 18);
-            remainder_src.advance(18);
+            difference[i] = detail::load_bits<bits_type>(remainder_src, width_min - 1);
+            remainder_src.advance(width_min - 1);
         } else {
-            auto width = width_code + 17;
+            auto width = width_code + width_min - 2;
             difference[i] = (1 << (width - 1)) | detail::load_bits<bits_type>(remainder_src, width - 1);
             remainder_src.advance(width - 1);
         }
@@ -321,7 +341,7 @@ void strong_profile<T, Dims>::store_value(data_type *data, bits_type bits) const
 
 template<typename T, unsigned Dims>
 [[gnu::noinline]]
-size_t strong_profile<T, Dims>::encode_block(const bits_type *bits, void *stream) const {
+size_t strong_profile<T, Dims>::encode_block(bits_type *bits, void *stream) const {
     assert((std::is_same_v<T, float>)); // TODO substitute generic constants below
 
     memcpy(stream, &bits[0], sizeof(bits_type));

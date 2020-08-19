@@ -204,7 +204,7 @@ class fast_profile {
         constexpr static size_t compressed_block_size_bound
             = 1 + sizeof(data_type) * detail::ipow(hypercube_side_length, Dims);
 
-        size_t encode_block(const bits_type *bits, void *stream) const;
+        size_t encode_block(bits_type *bits, void *stream) const;
 
         size_t decode_block(const void *stream, bits_type *bits) const;
 
@@ -226,7 +226,7 @@ class strong_profile {
                 = (detail::bitsof<data_type> + 4)  // TODO substitute generic constants
                         * detail::ipow(hypercube_side_length, Dims) / CHAR_BIT;
 
-        size_t encode_block(const bits_type *bits, void *stream) const;
+        size_t encode_block(bits_type *bits, void *stream) const;
 
         size_t decode_block(const void *stream, bits_type *bits) const;
 
@@ -245,10 +245,10 @@ class xt_profile {
         constexpr static unsigned dimensions = Dims;
         constexpr static unsigned hypercube_side_length = Dims == 1 ? 4096 : Dims == 2 ? 64 : 16;
         constexpr static size_t compressed_block_size_bound
-                = (detail::bitsof<data_type> + 4)  // TODO substitute generic constants
-                  * detail::ipow(hypercube_side_length, Dims) / CHAR_BIT;
+                = ((detail::bitsof<data_type> + (sizeof(T) <= 4 ? 2: 4))
+                  * detail::ipow(hypercube_side_length, Dims) + CHAR_BIT-1) / CHAR_BIT;
 
-        size_t encode_block(const bits_type *bits, void *stream) const;
+        size_t encode_block(bits_type *bits, void *stream) const;
 
         size_t decode_block(const void *stream, bits_type *bits) const;
 

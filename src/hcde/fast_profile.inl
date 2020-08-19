@@ -31,7 +31,7 @@ void fast_profile<T, Dims>::store_value(data_type *data, bits_type bits) const {
 
 template<typename T, unsigned Dims>
 [[gnu::noinline]]
-size_t fast_profile<T, Dims>::encode_block(const bits_type *bits, void *stream) const {
+size_t fast_profile<T, Dims>::encode_block(bits_type *bits, void *stream) const {
     auto ref = bits[0];
     bits_type domain = 0;
     for (size_t i = 1; i < detail::ipow(hypercube_side_length, Dims); ++i) {
