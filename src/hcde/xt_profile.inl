@@ -75,91 +75,78 @@ void ixt(T *x, unsigned dims, size_t n) {
     }
 }
 
-inline unsigned count_significant_bytes(uint32_t x) {
-    unsigned lz = x == 0 ? 32 : __builtin_clz(x);
-    return 4 - lz/8;
-}
-inline unsigned count_significant_bytes(uint64_t x) {
-    unsigned lz = x == 0 ? 64 : __builtin_clzl(x);
-    return 8 - lz/8;
-}
-
 template<typename Profile>
+[[gnu::noinline]]
 size_t encode_coefficients(const typename Profile::bits_type *coeffs, void *stream) {
     using bits_type = typename Profile::bits_type;
 
-    constexpr auto n_values = ipow(Profile::hypercube_side_length, Profile::dimensions);
-    constexpr auto header_density = sizeof(bits_type) <= 4 ? 4 : 2;
+    auto dest = detail::bit_ptr<sizeof(bits_type)>::from_unaligned_pointer(stream);
 
-    auto *byte_stream = static_cast<std::byte*>(stream);
-    static_assert(n_values % header_density == 0);
+    unsigned width_width;
+    unsigned width_min;
+    if (sizeof(bits_type) <= 4) {
+        width_width = 4;
+        width_min = 19;
+    } else {
+        width_width = 5;
+        width_min = 35;
+    }
 
-    auto header_pos = size_t{0};
-    auto body_pos = n_values / header_density;
-    for (unsigned i = 0; i < n_values; i += header_density) {
-        unsigned lengths[header_density];
-        unsigned length_code = 0;
-        for (unsigned j = 0; j < header_density; ++j) {
-            auto residual_bytes = count_significant_bytes(coeffs[i + j]);
-            auto header_encoded_length = residual_bytes;
-            if (sizeof(bits_type) == 4) {
-                if (residual_bytes == 1) {
-                    residual_bytes = 2;
-                }
-                if (header_encoded_length > 1) {
-                    header_encoded_length -= 1;
-                }
-            }
-            lengths[j] = residual_bytes;
-            length_code = (length_code << (8u/header_density)) | header_encoded_length;
-        }
-        store_unaligned(byte_stream + header_pos, static_cast<std::uint8_t>(length_code));
-        header_pos += 1;
-
-        for (unsigned j = 0; j < header_density; ++j) {
-            alignas(bits_type) std::byte coeff_bytes[2 * sizeof(bits_type)] = {};
-            store_aligned<sizeof(bits_type)>(coeff_bytes, endian_transform(coeffs[i + j]));
-            store_unaligned(byte_stream + body_pos,
-                load_unaligned<bits_type>(coeff_bytes + sizeof(bits_type) - lengths[j]));
-            body_pos += lengths[j];
+    auto remainder_dest = dest;
+    remainder_dest.advance(width_width * detail::ipow(Profile::hypercube_side_length, Profile::dimensions));
+    for (unsigned i = 0; i < detail::ipow(Profile::hypercube_side_length, Profile::dimensions); ++i) {
+        auto width = detail::significant_bits(coeffs[i]);
+        if (width == 0) {
+            dest.advance(width_width);
+        } else {
+            auto width_code = width < width_min ? bits_type{1} : width + 2 - width_min;
+            auto verbatim_bits = width < width_min ? width_min - 1 : width - 1;
+            detail::store_bits_linear<bits_type>(dest, width_width, width_code);
+            dest.advance(width_width);
+            detail::store_bits_linear<bits_type>(remainder_dest, verbatim_bits,
+                coeffs[i] & ~(~bits_type{} << (verbatim_bits)));
+            remainder_dest.advance(verbatim_bits);
         }
     }
 
-    return body_pos;
+    return ceil_byte_offset(stream, remainder_dest);
 }
 
 template<typename Profile>
+[[gnu::noinline]]
 size_t decode_coefficients(const void *stream, typename Profile::bits_type *coeffs) {
     using bits_type = typename Profile::bits_type;
 
-    constexpr auto n_values = ipow(Profile::hypercube_side_length, Profile::dimensions);
-    constexpr auto header_density = sizeof(bits_type) <= 4 ? 4 : 2;
-    constexpr auto header_length_bits = 8u/header_density;
+    auto src = detail::const_bit_ptr<sizeof(bits_type)>::from_unaligned_pointer(stream);
 
-    auto *byte_stream = static_cast<const std::byte*>(stream);
-    static_assert(n_values % header_density == 0);
+    unsigned width_width;
+    unsigned width_min;
+    if (sizeof(bits_type) <= 4) {
+        width_width = 4;
+        width_min = 19;
+    } else {
+        width_width = 5;
+        width_min = 35;
+    }
 
-    auto header_pos = size_t{0};
-    auto body_pos = n_values / header_density;
-    for (unsigned i = 0; i < n_values; i += header_density) {
-        unsigned length_code = load_unaligned<std::uint8_t>(byte_stream + header_pos);
-        header_pos += 1;
-        for (unsigned j = 0; j < header_density; ++j) {
-            auto header_encoded_length = (length_code >> (8u - (header_length_bits * (1 + j))))
-                & ~(~0u << header_length_bits);
-            auto residual_bytes = header_encoded_length;
-            if (sizeof(bits_type) == 4 && header_encoded_length > 0) {
-                residual_bytes += 1;
-            }
-            alignas(bits_type) std::byte coeff_bytes[2 * sizeof(bits_type)] = {};
-            store_unaligned(coeff_bytes + sizeof(bits_type) - residual_bytes,
-                load_aligned<bits_type>(byte_stream + body_pos));
-            coeffs[i + j] = endian_transform(load_aligned<bits_type>(coeff_bytes));
-            body_pos += residual_bytes;
+    auto remainder_src = src;
+    remainder_src.advance(width_width * detail::ipow(Profile::hypercube_side_length, Profile::dimensions));
+    for (unsigned i = 0; i < detail::ipow(Profile::hypercube_side_length, Profile::dimensions); ++i) {
+        auto width_code = detail::load_bits<bits_type>(src, width_width);
+        src.advance(width_width);
+        if (width_code == 0) {
+            coeffs[i] = 0;
+        } else if (width_code == 1) {
+            coeffs[i] = detail::load_bits<bits_type>(remainder_src, width_min - 1);
+            remainder_src.advance(width_min - 1);
+        } else {
+            auto width = width_code + width_min - 2;
+            coeffs[i] = (1 << (width - 1)) | detail::load_bits<bits_type>(remainder_src, width - 1);
+            remainder_src.advance(width - 1);
         }
     }
 
-    return body_pos;
+    return ceil_byte_offset(stream, remainder_src);
 }
 
 } // namespace hcde::detail
