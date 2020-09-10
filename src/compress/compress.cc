@@ -1,5 +1,5 @@
+#include <hcde/hcde.hh>
 #include "io.hh"
-#include <hcde.hh>
 
 #include <chrono>
 #include <cstdlib>
@@ -17,7 +17,7 @@ using duration = std::chrono::system_clock::duration;
 
 template<typename Encoder>
 void compress_stream(const std::string &in, const std::string &out, const hcde::extent<Encoder::dimensions> &size,
-    const Encoder &encoder, const io_factory &io) {
+    const Encoder &encoder, const hcde::detail::io_factory &io) {
     using data_type = typename Encoder::data_type;
 
     const auto array_chunk_length = static_cast<size_t>(num_elements(size) * sizeof(data_type));
@@ -51,7 +51,7 @@ void compress_stream(const std::string &in, const std::string &out, const hcde::
 
 template<typename Encoder>
 void decompress_stream(const std::string &in, const std::string &out, const hcde::extent<Encoder::dimensions> &size,
-    const Encoder &encoder, const io_factory &io) {
+    const Encoder &encoder, const hcde::detail::io_factory &io) {
     using data_type = typename Encoder::data_type;
     const auto max_compressed_chunk_length = encoder.compressed_size_bound(size);
     const auto array_chunk_length = static_cast<size_t>(num_elements(size) * sizeof(data_type));
@@ -77,7 +77,7 @@ void decompress_stream(const std::string &in, const std::string &out, const hcde
 
 template<typename Encoder>
 duration process_stream(bool decompress, const std::string &in, const std::string &out,
-        const hcde::extent<Encoder::dimensions> &size, const Encoder &encoder, const io_factory &io)
+        const hcde::extent<Encoder::dimensions> &size, const Encoder &encoder, const hcde::detail::io_factory &io)
 {
     auto start = std::chrono::system_clock::now();
     if (decompress) {
@@ -91,7 +91,7 @@ duration process_stream(bool decompress, const std::string &in, const std::strin
 
 template<template<typename, unsigned> typename Encoder, typename Data>
 duration process_stream(bool decompress, const std::vector<size_t> &size_components, const std::string &in,
-    const std::string &out, const io_factory &io) {
+    const std::string &out, const hcde::detail::io_factory &io) {
     switch (size_components.size()) {
         case 1:
             return process_stream(decompress, in, out, hcde::extent{size_components[0]}, Encoder<Data, 1>{}, io);
@@ -111,7 +111,7 @@ duration process_stream(bool decompress, const std::vector<size_t> &size_compone
 
 template<typename Data>
 duration process_stream(bool decompress, const std::vector<size_t> &size_components,
-    const std::string &encoder, const std::string &in, const std::string &out, const io_factory &io) {
+    const std::string &encoder, const std::string &in, const std::string &out, const hcde::detail::io_factory &io) {
     if (encoder == "cpu") {
         return process_stream<hcde::cpu_encoder, Data>(decompress, size_components, in, out, io);
     } else if (encoder == "cpu-mt") {
@@ -128,7 +128,7 @@ duration process_stream(bool decompress, const std::vector<size_t> &size_compone
 
 duration process_stream(bool decompress, const std::vector<size_t> &size_components,
     const std::string &encoder, const std::string &data_type, const std::string &in, const std::string &out,
-    const io_factory &io) {
+    const hcde::detail::io_factory &io) {
     if (data_type == "float") {
         return process_stream<float>(decompress, size_components, encoder, in, out, io);
     } else if (data_type == "double") {
@@ -189,7 +189,7 @@ int main(int argc, char **argv) {
     }
 
     std::unique_ptr<hcde::detail::io_factory> io_factory;
-#if HCDE_MMAP_SUPPORT
+#if HCDE_SUPPORT_MMAP
     if (!no_mmap) {
         io_factory = std::make_unique<hcde::detail::mmap_io_factory>();
     }

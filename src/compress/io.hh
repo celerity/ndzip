@@ -7,9 +7,9 @@
 
 
 #ifdef __unix__
-#   define HCDE_MMAP_SUPPORT 1
+#   define HCDE_SUPPORT_MMAP 1
 #else
-#   define HCDE_MMAP_SUPPORT 0
+#   define HCDE_SUPPORT_MMAP 0
 #endif
 
 
@@ -57,7 +57,7 @@ class stdio_io_factory
         create_output_stream(const std::string &file_name, size_t max_chunk_length) const override;
 };
 
-#if HCDE_MMAP_SUPPORT
+#if HCDE_SUPPORT_MMAP
 
 class mmap_io_factory
     : public io_factory {

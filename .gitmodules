@@ -1,0 +1,3 @@
+[submodule "contrib/fpzip"]
+	path = contrib/fpzip
+	url = https://github.com/LLNL/fpzip

@@ -1,30 +1,49 @@
 cmake_minimum_required(VERSION 3.10)
 
 project(hcde)
-set(CMAKE_CXX_STANDARD 17)
+
+option(HCDE_BUILD_TEST "Build unit tests" ON)
+option(HCDE_BUILD_BENCHMARK "Build benchmarks against other algorithms" ON)
+
 
 find_package(Threads REQUIRED)
 find_package(Boost REQUIRED COMPONENTS program_options)
-find_package(Catch2)
 find_package(hipSYCL CONFIG)
 
-set(COMPILE_FLAGS "-Wall -Wextra -Werror=return-type -Werror=init-self -Werror=undef")
+if (HCDE_BUILD_TEST)
+    find_package(Catch2)
+endif()
+
+if (HCDE_BUILD_BENCHMARK)
+    find_package(ZLIB QUIET)
+    find_package(PkgConfig)
+    pkg_check_modules(LZMA liblzma>=5.0.0 QUIET IMPORTED_TARGET)
+    pkg_check_modules(LZ4 liblz4>=1.0.0 QUIET IMPORTED_TARGET)
+endif ()
+
+
+set(CMAKE_CXX_STANDARD 17)
+set(HCDE_COMPILE_FLAGS -Wall -Wextra -Werror=return-type -Werror=init-self -Werror=undef)
 if(CMAKE_GENERATOR STREQUAL "Ninja")
     # Force colored warnings in Ninja's output, if the compiler has -fdiagnostics-color support.
     # Rationale in https://github.com/ninja-build/ninja/issues/814
-    set(COMPILE_FLAGS "${COMPILE_FLAGS} -fdiagnostics-color=always")
+    set(HCDE_COMPILE_FLAGS ${COMPILE_FLAGS} -fdiagnostics-color=always)
 endif()
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${COMPILE_FLAGS}")
-set(CMAKE_SYCL_FLAGS "${CMAKE_SYCL_FLAGS} ${COMPILE_FLAGS}")
+
 
 add_library(hcde STATIC
-    include/hcde.hh
+    include/hcde/hcde.hh
     src/hcde/common.hh
     src/hcde/cpu_encoder.inl
     src/hcde/cpu_encoder.cc
     src/hcde/mt_cpu_encoder.inl
     src/hcde/mt_cpu_encoder.cc
 )
+
+target_include_directories(hcde PUBLIC include)
+target_compile_options(hcde PRIVATE ${HCDE_COMPILE_FLAGS})
+target_link_libraries(hcde PRIVATE Threads::Threads)
+
 
 if (hipSYCL_FOUND)
     target_compile_definitions(hcde PUBLIC -DHCDE_GPU_SUPPORT=1)
@@ -37,14 +56,13 @@ else ()
     target_compile_definitions(hcde PUBLIC -DHCDE_GPU_SUPPORT=0)
 endif ()
 
-target_include_directories(hcde PUBLIC include)
-target_link_libraries(hcde PRIVATE ${CMAKE_THREAD_LIBS_INIT})
 
 add_executable(compress
     src/compress/compress.cc
     src/compress/io.cc
     src/compress/io.hh
 )
+target_compile_options(compress PRIVATE ${HCDE_COMPILE_FLAGS})
 target_link_libraries(compress PRIVATE hcde Boost::program_options)
 
 if (hipSYCL_FOUND)
@@ -52,7 +70,40 @@ if (hipSYCL_FOUND)
     add_sycl_to_target(TARGET compress)
 endif ()
 
-if (Catch2_FOUND)
+
+if (HCDE_BUILD_TEST AND Catch2_FOUND)
     add_executable(test src/test/test.cc)
+    target_include_directories(test PRIVATE src)
+    target_compile_options(test PRIVATE ${HCDE_COMPILE_FLAGS})
     target_link_libraries(test PRIVATE hcde Catch2::Catch2)
+endif ()
+
+
+if (HCDE_BUILD_BENCHMARK)
+    set(BUILD_UTILITIES OFF CACHE BOOL "Build command-line utilities for fpzip")
+    set(BUILD_TESTING OFF CACHE BOOL "Build tests")
+    add_subdirectory(contrib/fpzip)
+
+    add_executable(benchmark src/benchmark/benchmark.cc)
+    target_compile_options(benchmark PRIVATE ${HCDE_COMPILE_FLAGS})
+    target_link_libraries(benchmark PRIVATE hcde Boost::program_options fpzip::fpzip)
+    target_compile_definitions(benchmark PRIVATE
+        "-DHCDE_BENCHMARK_HAVE_ZLIB=$<BOOL:ZLIB_FOUND>"
+        "-DHCDE_BENCHMARK_HAVE_LZ4=$<BOOL:LZ4_FOUND>"
+        "-DHCDE_BENCHMARK_HAVE_LZMA=$<BOOL:LZMA_FOUND>"
+    )
+
+    if (hipSYCL_FOUND)
+        add_sycl_to_target(TARGET benchmark)
+    endif ()
+
+    if (ZLIB_FOUND)
+        target_link_libraries(benchmark PRIVATE ZLIB::ZLIB)
+    endif ()
+    if (LZ4_FOUND)
+        target_link_libraries(benchmark PRIVATE PkgConfig::LZ4)
+    endif ()
+    if (LZMA_FOUND)
+        target_link_libraries(benchmark PRIVATE PkgConfig::LZMA)
+    endif ()
 endif ()

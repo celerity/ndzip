@@ -4,7 +4,7 @@
 #include <cstddef>
 #include <cstring>
 
-#if HCDE_MMAP_SUPPORT
+#if HCDE_SUPPORT_MMAP
 #   include <fcntl.h>
 #   include <sys/mman.h>
 #   include <sys/stat.h>
@@ -137,7 +137,7 @@ class stdio_output_stream final
         bool _should_zero_buffer = false;
 };
 
-#if HCDE_MMAP_SUPPORT
+#if HCDE_SUPPORT_MMAP
 
 class mmap_input_stream final
     : public input_stream {
@@ -289,7 +289,7 @@ class mmap_output_stream final
         }
 };
 
-#endif // HCDE_MMAP_SUPPORT
+#endif // HCDE_SUPPORT_MMAP
 
 std::unique_ptr<input_stream>
 stdio_io_factory::create_input_stream(const std::string &file_name, size_t chunk_length) const {
@@ -301,7 +301,7 @@ stdio_io_factory::create_output_stream(const std::string &file_name, size_t max_
     return std::make_unique<stdio_output_stream>(file_name, max_chunk_length);
 }
 
-#if HCDE_MMAP_SUPPORT
+#if HCDE_SUPPORT_MMAP
 
 std::unique_ptr<input_stream>
 mmap_io_factory::create_input_stream(const std::string &file_name, size_t chunk_length) const {
@@ -313,6 +313,6 @@ mmap_io_factory::create_output_stream(const std::string &file_name, size_t max_c
     return std::make_unique<mmap_output_stream>(file_name, max_chunk_length);
 }
 
-#endif // HCDE_MMAP_SUPPORT
+#endif // HCDE_SUPPORT_MMAP
 
 }

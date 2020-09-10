@@ -1,6 +1,6 @@
 #pragma once
 
-#include <hcde.hh>
+#include <hcde/hcde.hh>
 
 #include <algorithm>
 #include <cassert>

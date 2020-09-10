@@ -190,7 +190,7 @@ size_t hcde::gpu_encoder<T, Dims>::compress(const slice<const data_type, dimensi
 
     auto compress_duration = compress_event.template get_profiling_info<sycl::info::event_profiling::command_end>()
         - compress_event.template get_profiling_info<sycl::info::event_profiling::command_start>();
-    printf("compression %g ms\n", 1e-6*compress_duration);
+    // fprintf(stderr, "compression %g ms\n", 1e-6*compress_duration);
 
     sycl::buffer<uint64_t> sb_offsets(sycl::range<1>{superblocks.size() + 1});
 
@@ -254,7 +254,7 @@ size_t hcde::gpu_encoder<T, Dims>::compress(const slice<const data_type, dimensi
 
     auto compact_duration = compact_event.template get_profiling_info<sycl::info::event_profiling::command_end>()
         - compact_event.template get_profiling_info<sycl::info::event_profiling::command_start>();
-    printf("compaction %g ms\n", 1e-6*compact_duration);
+    //  fprintf(stderr, "compaction %g ms\n", 1e-6*compact_duration);
 
     uint64_t file_pos = sb_offsets.get_access<sycl::access::mode::read>()[sycl::id<1>{superblocks.size()}];
     file_pos += detail::pack_border(static_cast<char *>(stream) + file_pos, data, side_length);

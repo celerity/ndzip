@@ -1,6 +1,6 @@
-#include "../hcde/common.hh"
-#include "../hcde/cpu_encoder.inl"
-#include "../hcde/mt_cpu_encoder.inl"
+#include <hcde/common.hh>
+#include <hcde/cpu_encoder.inl>
+#include <hcde/mt_cpu_encoder.inl>
 
 #define CATCH_CONFIG_MAIN
 #include <catch2/catch.hpp>
