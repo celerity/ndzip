@@ -20,9 +20,6 @@ set(CMAKE_SYCL_FLAGS "${CMAKE_SYCL_FLAGS} ${COMPILE_FLAGS}")
 add_library(hcde STATIC
     include/hcde.hh
     src/hcde/common.hh
-    src/hcde/fast_profile.inl
-    src/hcde/strong_profile.inl
-    src/hcde/xt_profile.inl
     src/hcde/cpu_encoder.inl
     src/hcde/cpu_encoder.cc
     src/hcde/mt_cpu_encoder.inl

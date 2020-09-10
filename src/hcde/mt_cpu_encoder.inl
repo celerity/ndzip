@@ -10,14 +10,14 @@
 
 namespace hcde::detail {
 
-template<typename Profile>
-using superblock_group = std::vector<std::tuple<size_t, detail::superblock<Profile>>>;
+template<typename T, unsigned Dims>
+using superblock_group = std::vector<std::tuple<size_t, detail::superblock<profile<T, Dims>>>>;
 
-template<typename Profile>
-std::vector<superblock_group<Profile>> collect_superblock_groups(
-        const file<Profile> &f, size_t n_groups)
+template<typename T, unsigned Dims>
+std::vector<superblock_group<T, Dims>> collect_superblock_groups(
+        const file<profile<T, Dims>> &f, size_t n_groups)
 {
-    std::vector<superblock_group<Profile>> groups(n_groups);
+    std::vector<superblock_group<T, Dims>> groups(n_groups);
     size_t count = 0;
     f.for_each_superblock([&](auto sb) {
         groups[count % n_groups].emplace_back(count, sb);
@@ -29,37 +29,40 @@ std::vector<superblock_group<Profile>> collect_superblock_groups(
 }
 
 
-template<typename Profile>
-hcde::mt_cpu_encoder<Profile>::mt_cpu_encoder()
+template<typename T, unsigned Dims>
+hcde::mt_cpu_encoder<T, Dims>::mt_cpu_encoder()
     : mt_cpu_encoder(std::thread::hardware_concurrency())
 {
 }
 
 
-template<typename Profile>
-hcde::mt_cpu_encoder<Profile>::mt_cpu_encoder(size_t num_threads)
+template<typename T, unsigned Dims>
+hcde::mt_cpu_encoder<T, Dims>::mt_cpu_encoder(size_t num_threads)
     : _num_threads(num_threads) {
 }
 
 
-template<typename Profile>
-size_t hcde::mt_cpu_encoder<Profile>::compressed_size_bound(
+template<typename T, unsigned Dims>
+size_t hcde::mt_cpu_encoder<T, Dims>::compressed_size_bound(
         const extent<dimensions> &size) const {
-    detail::file<Profile> file(size);
+    using profile = detail::profile<T, Dims>;
+
+    detail::file<profile> file(size);
     size_t bound = file.combined_length_of_all_headers();
-    bound += file.num_hypercubes() * Profile::compressed_block_size_bound;
-    bound += detail::border_element_count(size, Profile::hypercube_side_length) * sizeof(data_type);
+    bound += file.num_hypercubes() * profile::compressed_block_size_bound;
+    bound += detail::border_element_count(size, profile::hypercube_side_length) * sizeof(data_type);
     return bound;
 }
 
 
-template<typename Profile>
-size_t hcde::mt_cpu_encoder<Profile>::compress(
+template<typename T, unsigned Dims>
+size_t hcde::mt_cpu_encoder<T, Dims>::compress(
         const slice<const data_type, dimensions> &data, void *stream) const {
-    using bits_type = typename Profile::bits_type;
+    using profile = detail::profile<T, Dims>;
+    using bits_type = typename profile::bits_type;
 
-    constexpr static auto side_length = Profile::hypercube_side_length;
-    detail::file<Profile> file(data.size());
+    constexpr static auto side_length = profile::hypercube_side_length;
+    detail::file<profile> file(data.size());
 
     auto num_sbs = file.num_superblocks();
     auto sb_groups = detail::collect_superblock_groups(file, _num_threads);
@@ -72,7 +75,7 @@ size_t hcde::mt_cpu_encoder<Profile>::compress(
         file.for_each_superblock([&](auto sb, auto sb_index) {
             initial_sb_offsets[sb_index] = offset;
             offset += file.superblock_header_length()
-                + sb.num_hypercubes() * Profile::compressed_block_size_bound;
+                + sb.num_hypercubes() * profile::compressed_block_size_bound;
         });
     }
 
@@ -87,24 +90,25 @@ size_t hcde::mt_cpu_encoder<Profile>::compress(
                 auto sb_stream = static_cast<std::byte*>(stream) + initial_sb_offsets[index];
                 size_t sb_stream_pos = file.superblock_header_length();
 
-                Profile p;
-                cube.resize(detail::ipow(side_length, Profile::dimensions)
+                cube.resize(detail::ipow(side_length, profile::dimensions)
                         * sb.num_hypercubes());
                 bits_type *cube_pos = cube.data();
                 sb.for_each_hypercube([&](auto hc) {
-                    hc.for_each_cell(data, [&](auto *element) { *cube_pos++ = p.load_value(element); });
+                    hc.for_each_cell(data, [&](auto *element) {
+                        *cube_pos++ = detail::load_value<profile>(element);
+                    });
                 });
 
                 cube_pos = cube.data();
                 sb.for_each_hypercube([&](auto, auto hc_index) {
                     if (hc_index > 0) {
                         auto offset_address = sb_stream + (hc_index - 1)
-                                * sizeof(typename Profile::hypercube_offset_type);
-                        auto offset = static_cast<typename Profile::hypercube_offset_type>(sb_stream_pos);
+                                * sizeof(typename profile::hypercube_offset_type);
+                        auto offset = static_cast<typename profile::hypercube_offset_type>(sb_stream_pos);
                         detail::store_unaligned(offset_address, detail::endian_transform(offset));
                     }
-                    sb_stream_pos += p.encode_block(cube_pos, sb_stream + sb_stream_pos);
-                    cube_pos += detail::ipow(side_length, Profile::dimensions);
+                    sb_stream_pos += detail::encode_block<profile>(cube_pos, sb_stream + sb_stream_pos);
+                    cube_pos += detail::ipow(side_length, profile::dimensions);
                 });
 
                 sb_lengths[index] = sb_stream_pos;
@@ -141,13 +145,14 @@ size_t hcde::mt_cpu_encoder<Profile>::compress(
 }
 
 
-template<typename Profile>
-size_t hcde::mt_cpu_encoder<Profile>::decompress(const void *stream, size_t bytes,
+template<typename T, unsigned Dims>
+size_t hcde::mt_cpu_encoder<T, Dims>::decompress(const void *stream, size_t bytes,
         const slice<data_type, dimensions> &data) const {
-    using bits_type = typename Profile::bits_type;
-    constexpr static auto side_length = Profile::hypercube_side_length;
+    using profile = detail::profile<T, Dims>;
+    using bits_type = typename profile::bits_type;
+    constexpr static auto side_length = profile::hypercube_side_length;
 
-    detail::file<Profile> file(data.size());
+    detail::file<profile> file(data.size());
     auto sb_groups = detail::collect_superblock_groups(file, _num_threads);
 
     std::vector<std::thread> threads;
@@ -167,12 +172,13 @@ size_t hcde::mt_cpu_encoder<Profile>::decompress(const void *stream, size_t byte
                 stream_pos += file.superblock_header_length(); // simply skip the header
 
                 sb.for_each_hypercube([&](auto hc) {
-                    Profile p;
-                    bits_type cube[detail::ipow(side_length, Profile::dimensions)] = {};
-                    stream_pos += p.decode_block(
+                    bits_type cube[detail::ipow(side_length, profile::dimensions)] = {};
+                    stream_pos += detail::decode_block<profile>(
                             static_cast<const char *>(stream) + stream_pos, cube);
                     bits_type *cube_ptr = cube;
-                    hc.for_each_cell(data, [&](auto *cell) { p.store_value(cell, *cube_ptr++); });
+                    hc.for_each_cell(data, [&](auto *cell) {
+                        detail::store_value<profile>(cell, *cube_ptr++);
+                    });
                 });
             }
         });
@@ -196,22 +202,10 @@ size_t hcde::mt_cpu_encoder<Profile>::decompress(const void *stream, size_t byte
 
 
 namespace hcde {
-    extern template class mt_cpu_encoder<fast_profile<float, 1>>;
-    extern template class mt_cpu_encoder<fast_profile<float, 2>>;
-    extern template class mt_cpu_encoder<fast_profile<float, 3>>;
-    extern template class mt_cpu_encoder<fast_profile<double, 1>>;
-    extern template class mt_cpu_encoder<fast_profile<double, 2>>;
-    extern template class mt_cpu_encoder<fast_profile<double, 3>>;
-    extern template class mt_cpu_encoder<strong_profile<float, 1>>;
-    extern template class mt_cpu_encoder<strong_profile<float, 2>>;
-    extern template class mt_cpu_encoder<strong_profile<float, 3>>;
-    extern template class mt_cpu_encoder<strong_profile<double, 1>>;
-    extern template class mt_cpu_encoder<strong_profile<double, 2>>;
-    extern template class mt_cpu_encoder<strong_profile<double, 3>>;
-    extern template class mt_cpu_encoder<xt_profile<float, 1>>;
-    extern template class mt_cpu_encoder<xt_profile<float, 2>>;
-    extern template class mt_cpu_encoder<xt_profile<float, 3>>;
-    extern template class mt_cpu_encoder<xt_profile<double, 1>>;
-    extern template class mt_cpu_encoder<xt_profile<double, 2>>;
-    extern template class mt_cpu_encoder<xt_profile<double, 3>>;
+    extern template class mt_cpu_encoder<float, 1>;
+    extern template class mt_cpu_encoder<float, 2>;
+    extern template class mt_cpu_encoder<float, 3>;
+    extern template class mt_cpu_encoder<double, 1>;
+    extern template class mt_cpu_encoder<double, 2>;
+    extern template class mt_cpu_encoder<double, 3>;
 }

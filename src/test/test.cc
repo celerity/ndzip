@@ -1,7 +1,4 @@
 #include "../hcde/common.hh"
-#include "../hcde/fast_profile.inl"
-#include "../hcde/strong_profile.inl"
-#include "../hcde/xt_profile.inl"
 #include "../hcde/cpu_encoder.inl"
 #include "../hcde/mt_cpu_encoder.inl"
 
@@ -132,65 +129,66 @@ TEST_CASE("store_bits_linear") {
 
 
 TEMPLATE_TEST_CASE("value en-/decoding reproduces bit-identical values", "[profile]",
-    (fast_profile<float, 1>), (strong_profile<float, 1>), (xt_profile<float, 1>),
-    (fast_profile<float, 2>), (strong_profile<float, 2>), (xt_profile<float, 2>),
-    (fast_profile<float, 3>), (strong_profile<float, 3>), (xt_profile<float, 3>),
-    (fast_profile<double, 1>), (strong_profile<double, 1>), (xt_profile<double, 1>),
-    (fast_profile<double, 2>), (strong_profile<double, 2>), (xt_profile<double, 2>),
-    (fast_profile<double, 3>), (strong_profile<double, 3>), (xt_profile<double, 3>))
+    (profile<float, 1>), (profile<float, 2>), (profile<float, 3>),
+    (profile<double, 1>), (profile<double, 2>), (profile<double, 3>))
 {
     using data_type = typename TestType::data_type;
     using bits_type = typename TestType::bits_type;
 
     const auto input = make_random_vector<data_type>(100);
 
-    TestType p;
     std::vector<bits_type> bits(input.size());
     for (unsigned i = 0; i < input.size(); ++i) {
-        bits[i] = p.load_value(&input[i]);
+        bits[i] = detail::load_value<TestType>(&input[i]);
     }
 
     std::vector<data_type> output(input.size());
     for (unsigned i = 0; i < output.size(); ++i) {
-        p.store_value(&output[i], bits[i]);
+        detail::store_value<TestType>(&output[i], bits[i]);
     }
     CHECK(memcmp(input.data(), output.data(), input.size() * sizeof(TestType)) == 0);
 }
 
 
-TEMPLATE_TEST_CASE("block en-/decoding reproduces bit-identical values", "[profile]",
-    (fast_profile<float, 1>), (strong_profile<float, 1>), (xt_profile<float, 1>),
-    (fast_profile<float, 2>), (strong_profile<float, 2>), (xt_profile<float, 2>),
-    (fast_profile<float, 3>), (strong_profile<float, 3>), (xt_profile<float, 3>),
-    /*(fast_profile<double, 1>), (strong_profile<double, 1>), */ (xt_profile<double, 1>),
-    /*(fast_profile<double, 2>), (strong_profile<double, 2>), */ (xt_profile<double, 2>),
-    /*(fast_profile<double, 3>), (strong_profile<double, 3>), */ (xt_profile<double, 3>))
+TEMPLATE_TEST_CASE("block transform is reversible", "[profile]",
+    (profile<float, 1>), (profile<float, 2>), (profile<float, 3>),
+    (profile<double, 1>), (profile<double, 2>), (profile<double, 3>))
 {
-    using data_type = typename TestType::data_type;
     using bits_type = typename TestType::bits_type;
 
-    const auto random = make_random_vector<bits_type>(
+    const auto input = make_random_vector<bits_type>(
         ipow(TestType::hypercube_side_length, TestType::dimensions));
-    auto halves = random;
-    for (auto &h: halves) { h >>= (bitsof<bits_type> / 2); };
-    const auto zeroes = std::vector<bits_type>(random.size(), 0);
 
-    const auto test_vector = [](const std::vector<bits_type> &input) {
-        TestType p;
-        std::vector<bits_type> output(input.size());
-        // stream buffer must be large enough for aligned stores. TODO can this be expressed generically?
-        std::byte stream[TestType::compressed_block_size_bound + sizeof(bits_type)];
-        memset(stream, 0, sizeof stream);
-        auto scratch = input;
-        p.encode_block(scratch.data(), stream);
-        p.decode_block(stream, output.data());
+    auto transformed = input;
+    detail::block_transform(transformed.data(), TestType::dimensions, TestType::hypercube_side_length);
 
-        CHECK(memcmp(input.data(), output.data(), input.size() * sizeof(bits_type)) == 0);
-    };
+    detail::inverse_block_transform(transformed.data(), TestType::dimensions, TestType::hypercube_side_length);
 
-    test_vector(random);
-    test_vector(halves);
-    test_vector(zeroes);
+    CHECK(input == transformed);
+}
+
+
+TEMPLATE_TEST_CASE("run-length encoding is reversible", "[profile]",
+    (profile<float, 1>), (profile<float, 2>), (profile<float, 3>),
+    (profile<double, 1>), (profile<double, 2>), (profile<double, 3>))
+{
+    using bits_type = typename TestType::bits_type;
+
+    std::vector<bits_type> input(detail::ipow(TestType::hypercube_side_length, TestType::dimensions));
+    auto rng = std::minstd_rand(1);
+    auto bit_dist = std::uniform_int_distribution<bits_type>();
+    auto shift_dist = std::uniform_int_distribution<unsigned>(0, bitsof<bits_type>-1);
+    for (auto &value: input) {
+        value = bit_dist(rng) >> shift_dist(rng);
+    }
+
+    std::vector<std::byte> stream(TestType::compressed_block_size_bound + sizeof(bits_type));
+    detail::run_length_encode<TestType>(input.data(), stream.data());
+
+    std::vector<bits_type> output(detail::ipow(TestType::hypercube_side_length, TestType::dimensions));
+    detail::run_length_decode<TestType>(stream.data(), output.data());
+
+    CHECK(input == output);
 }
 
 
@@ -225,46 +223,11 @@ TEST_CASE("for_each_border_slice iterates correctly") {
 }
 
 
-template<unsigned Dims>
-struct test_profile {
-    using data_type = float;
-    using bits_type = uint32_t;
-    using hypercube_offset_type = uint32_t;
-
-    constexpr static unsigned dimensions = Dims;
-    constexpr static unsigned hypercube_side_length = 4;
-    constexpr static size_t compressed_block_size_bound
-        = sizeof(bits_type) * ipow(hypercube_side_length, dimensions);
-
-    size_t encode_block(const bits_type *bits, void *stream) const {
-        size_t n_bytes = ipow(hypercube_side_length, dimensions) * sizeof(bits_type);
-        memcpy(stream, bits, n_bytes);
-        return n_bytes;
-    }
-
-    size_t decode_block(const void *stream, bits_type *bits) const {
-        size_t n_bytes = ipow(hypercube_side_length, dimensions) * sizeof(bits_type);
-        memcpy(bits, stream, n_bytes);
-        return n_bytes;
-    }
-
-    bits_type load_value(const data_type *data) const {
-        bits_type bits;
-        memcpy(&bits, data, sizeof bits);
-        return bits;
-    }
-
-    void store_value(data_type *data, bits_type bits) const {
-        memcpy(data, &bits, sizeof bits);
-    }
-};
-
-
 TEMPLATE_TEST_CASE("file produces a sane superblock / hypercube / header layout", "[file]",
     (std::integral_constant<unsigned, 1>), (std::integral_constant<unsigned, 2>),
     (std::integral_constant<unsigned, 3>), (std::integral_constant<unsigned, 4>)) {
     constexpr unsigned dims = TestType::value;
-    using profile = test_profile<dims>;
+    using profile = detail::profile<float, dims>;
     const size_t n = 100;
     const auto n_hypercubes_per_dim = n / profile::hypercube_side_length;
     const auto side_length = profile::hypercube_side_length;
@@ -321,10 +284,10 @@ TEMPLATE_TEST_CASE("file produces a sane superblock / hypercube / header layout"
 
 
 TEMPLATE_TEST_CASE("encoder produces the expected bit stream", "[encoder]",
-    (cpu_encoder<test_profile<2>>), (cpu_encoder<test_profile<3>>),
-    (mt_cpu_encoder<test_profile<2>>), (mt_cpu_encoder<test_profile<3>>)
+    (cpu_encoder<float, 2>), (cpu_encoder<float, 3>),
+    (mt_cpu_encoder<float, 2>), (mt_cpu_encoder<float, 3>)
 ) {
-    using profile = typename TestType::profile;
+    using profile = detail::profile<typename TestType::data_type, TestType::dimensions>;
     using bits_type = typename profile::bits_type;
     using hc_offset_type = typename profile::hypercube_offset_type;
 
@@ -378,7 +341,7 @@ TEMPLATE_TEST_CASE("encoder produces the expected bit stream", "[encoder]",
             for (size_t i = 0; i < ipow(profile::hypercube_side_length, dims); ++i) {
                 float value;
                 const void *value_offset_address = superblock_header + f.superblock_header_length() + i * sizeof value;
-                profile{}.store_value(&value, load_unaligned<bits_type>(value_offset_address));
+                detail::store_value<profile>(&value, load_unaligned<bits_type>(value_offset_address));
                 CHECK(memcmp(&value, &cell, sizeof value) == 0);
             }
             ++hypercube_index;
@@ -395,7 +358,7 @@ TEMPLATE_TEST_CASE("encoder produces the expected bit stream", "[encoder]",
             float value;
             const void *value_offset_address = stream.data() + current_superblock_offset
                 + (n_border_elems + i) * sizeof value;
-            profile{}.store_value(&value, load_unaligned<bits_type>(value_offset_address));
+            detail::store_value<profile>(&value, load_unaligned<bits_type>(value_offset_address));
             CHECK(memcmp(&value, &border, sizeof value) == 0);
         }
         n_border_elems += count;
@@ -405,10 +368,10 @@ TEMPLATE_TEST_CASE("encoder produces the expected bit stream", "[encoder]",
 
 
 TEMPLATE_TEST_CASE("encoder reproduces the bit-identical array", "[encoder]",
-    (cpu_encoder<test_profile<2>>), (cpu_encoder<test_profile<3>>),
-    (mt_cpu_encoder<test_profile<2>>), (mt_cpu_encoder<test_profile<3>>)
+    (cpu_encoder<float, 2>), (cpu_encoder<float, 3>),
+    (mt_cpu_encoder<float, 2>), (mt_cpu_encoder<float, 3>)
 ) {
-    using profile = typename TestType::profile;
+    using profile = detail::profile<typename TestType::data_type, TestType::dimensions>;
 
     constexpr auto dims = profile::dimensions;
     const size_t n = 199;
@@ -451,9 +414,8 @@ TEST_CASE("load superblock in GPU warp", "[gpu]") {
         std::vector<uint32_t> array{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12};
         std::vector<uint32_t> hcs(8);
         superblock<trivial_profile<1>> sb(extent<1>{6}, 2);
-        trivial_profile<1> p;
         for (unsigned tid = 0; tid < HCDE_WARP_SIZE; ++tid) {
-            load_superblock_warp(tid, sb, slice<uint32_t, 1>(array.data(), array.size()), hcs.data(), p);
+            load_superblock_warp(tid, sb, slice<uint32_t, 1>(array.data(), array.size()), hcs.data());
         }
         for (unsigned i = 0; i < 8; ++i) {
             CHECK(hcs[i] == array[i + 4]);
@@ -475,7 +437,7 @@ TEST_CASE("load superblock in GPU warp", "[gpu]") {
         superblock<trivial_profile<2>> sb(extent<2>{16, 4}, 5);
         trivial_profile<2> p;
         for (unsigned tid = 0; tid < HCDE_WARP_SIZE; ++tid) {
-            load_superblock_warp(tid, sb, slice<uint32_t, 2>(array.data(), extent{8, 9}), hcs.data(), p);
+            load_superblock_warp(tid, sb, slice<uint32_t, 2>(array.data(), extent{8, 9}), hcs.data());
         }
         std::vector<uint32_t> expected_hcs{
             32, 42, 33, 43,
@@ -534,7 +496,7 @@ TEST_CASE("load superblock in GPU warp", "[gpu]") {
         superblock<trivial_profile<3>> sb(extent<3>{8, 4, 2}, 3);
         trivial_profile<3> p;
         for (unsigned tid = 0; tid < HCDE_WARP_SIZE; ++tid) {
-            load_superblock_warp(tid, sb, slice<uint32_t, 3>(array.data(), extent{5, 5, 5}), hcs.data(), p);
+            load_superblock_warp(tid, sb, slice<uint32_t, 3>(array.data(), extent{5, 5, 5}), hcs.data());
         }
         std::vector<uint32_t> expected_hcs{
             331, 431, 341, 441, 332, 432, 342, 442,

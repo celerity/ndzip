@@ -89,52 +89,36 @@ duration process_stream(bool decompress, const std::string &in, const std::strin
     return std::chrono::duration_cast<duration>(end - start);
 }
 
-template<template<typename> typename Encoder,
-    template<typename, unsigned> typename Profile, typename Data>
+template<template<typename, unsigned> typename Encoder, typename Data>
 duration process_stream(bool decompress, const std::vector<size_t> &size_components, const std::string &in,
     const std::string &out, const io_factory &io) {
     switch (size_components.size()) {
         case 1:
-            return process_stream(decompress, in, out, hcde::extent{size_components[0]},
-                Encoder<Profile<Data, 1>>{}, io);
+            return process_stream(decompress, in, out, hcde::extent{size_components[0]}, Encoder<Data, 1>{}, io);
         case 2:
             return process_stream(decompress, in, out, hcde::extent{size_components[0], size_components[1]},
-                Encoder<Profile<Data, 2>>{}, io);
+                Encoder<Data, 2>{}, io);
         case 3:
             return process_stream(decompress, in, out, hcde::extent{size_components[0], size_components[1],
-                size_components[2]}, Encoder<Profile<Data, 3>>{}, io);
-            // case 4:
-            //     return process_stream(decompress, in, out, hcde::extent{size_components[0], size_components[1],
-            //             size_components[2], size_components[3]}, Encoder<Profile<Data, 4>>{}, io);
+                size_components[2]}, Encoder<Data, 3>{}, io);
+        // case 4:
+        //     return process_stream(decompress, in, out, hcde::extent{size_components[0], size_components[1],
+        //             size_components[2], size_components[3]}, Encoder<Profile<Data, 4>>{}, io);
         default:
             throw opts::error("Invalid number of dimensions in -n / --array-size");
     }
 }
 
-template<template<typename> typename Encoder, typename Data>
-duration process_stream(bool decompress, const std::vector<size_t> &size_components, const std::string &profile,
-    const std::string &in, const std::string &out, const io_factory &io) {
-    if (profile == "fast") {
-        return process_stream<Encoder, hcde::fast_profile, Data>(decompress, size_components, in, out, io);
-    } else if (profile == "strong") {
-        return process_stream<Encoder, hcde::strong_profile, Data>(decompress, size_components, in, out, io);
-    } else if (profile == "xt") {
-        return process_stream<Encoder, hcde::xt_profile, Data>(decompress, size_components, in, out, io);
-    } else {
-        throw opts::error("Invalid profile \"" + profile + "\" in option -p / --profile");
-    }
-}
-
 template<typename Data>
-duration process_stream(bool decompress, const std::vector<size_t> &size_components, const std::string &profile,
+duration process_stream(bool decompress, const std::vector<size_t> &size_components,
     const std::string &encoder, const std::string &in, const std::string &out, const io_factory &io) {
     if (encoder == "cpu") {
-        return process_stream<hcde::cpu_encoder, Data>(decompress, size_components, profile, in, out, io);
+        return process_stream<hcde::cpu_encoder, Data>(decompress, size_components, in, out, io);
     } else if (encoder == "cpu-mt") {
-        return process_stream<hcde::mt_cpu_encoder, Data>(decompress, size_components, profile, in, out, io);
+        return process_stream<hcde::mt_cpu_encoder, Data>(decompress, size_components, in, out, io);
 #if HCDE_GPU_SUPPORT
     } else if (encoder == "gpu") {
-        return process_stream<hcde::gpu_encoder, Data>(decompress, size_components, profile, in, out, io);
+        return process_stream<hcde::gpu_encoder, Data>(decompress, size_components, in, out, io);
 #endif
     } else {
         throw opts::error("Invalid encoder \"" + encoder + "\" in option -e / --encoder");
@@ -142,13 +126,13 @@ duration process_stream(bool decompress, const std::vector<size_t> &size_compone
 }
 
 
-duration process_stream(bool decompress, const std::vector<size_t> &size_components, const std::string &profile,
+duration process_stream(bool decompress, const std::vector<size_t> &size_components,
     const std::string &encoder, const std::string &data_type, const std::string &in, const std::string &out,
     const io_factory &io) {
     if (data_type == "float") {
-        return process_stream<float>(decompress, size_components, profile, encoder, in, out, io);
+        return process_stream<float>(decompress, size_components, encoder, in, out, io);
     } else if (data_type == "double") {
-        return process_stream<double>(decompress, size_components, profile, encoder, in, out, io);
+        return process_stream<double>(decompress, size_components, encoder, in, out, io);
     } else {
         throw opts::error("Invalid option \"" + data_type + "\" in option -t / --data-type");
     }
@@ -165,7 +149,6 @@ int main(int argc, char **argv) {
     std::string input = "-";
     std::string output = "-";
     std::string data_type = "float";
-    std::string profile = "strong";
     std::string encoder = "cpu-mt";
 
     auto usage = "Usage: "s + argv[0] + " [options]\n\n";
@@ -177,7 +160,6 @@ int main(int argc, char **argv) {
         ("array-size,n", opts::value(&size_components)->required()->multitoken(),
             "array size (one value per dimension, first-major)")
         ("data-type,t", opts::value(&data_type), "float|double (default float)")
-        ("profile,p", opts::value(&profile), "fast|strong (default strong)")
 #if HCDE_GPU_SUPPORT
         ("encoder,e", opts::value(&encoder), "cpu|cpu-mt|gpu (default cpu-mt)")
 #else
@@ -217,7 +199,7 @@ int main(int argc, char **argv) {
     }
 
     try {
-        auto duration = hcde::detail::process_stream(decompress, size_components, profile, encoder,
+        auto duration = hcde::detail::process_stream(decompress, size_components, encoder,
                 data_type, input, output, *io_factory);
         std::cerr << "finished in " << std::setprecision(3) << std::fixed
             << std::chrono::duration_cast<std::chrono::duration<double>>(duration).count() << "s\n";

@@ -193,77 +193,11 @@ class slice {
 };
 
 template<typename T, unsigned Dims>
-class fast_profile {
-    public:
-        using data_type = T;
-        using bits_type = detail::bits_type<T>;
-        using hypercube_offset_type = uint16_t;
-
-        constexpr static unsigned dimensions = Dims;
-        constexpr static unsigned hypercube_side_length = 4;
-        constexpr static size_t compressed_block_size_bound
-            = 1 + sizeof(data_type) * detail::ipow(hypercube_side_length, Dims);
-
-        size_t encode_block(bits_type *bits, void *stream) const;
-
-        size_t decode_block(const void *stream, bits_type *bits) const;
-
-        bits_type load_value(const data_type *data) const;
-
-        void store_value(data_type *data, bits_type bits) const;
-};
-
-template<typename T, unsigned Dims>
-class strong_profile {
-    public:
-        using data_type = T;
-        using bits_type = detail::bits_type<T>;
-        using hypercube_offset_type = uint32_t;
-
-        constexpr static unsigned dimensions = Dims;
-        constexpr static unsigned hypercube_side_length = Dims == 1 ? 4096 : Dims == 2 ? 64 : 16;
-        constexpr static size_t compressed_block_size_bound
-                = (detail::bitsof<data_type> + 4)  // TODO substitute generic constants
-                        * detail::ipow(hypercube_side_length, Dims) / CHAR_BIT;
-
-        size_t encode_block(bits_type *bits, void *stream) const;
-
-        size_t decode_block(const void *stream, bits_type *bits) const;
-
-        bits_type load_value(const data_type *data) const;
-
-        void store_value(data_type *data, bits_type bits) const;
-};
-
-template<typename T, unsigned Dims>
-class xt_profile {
-    public:
-        using data_type = T;
-        using bits_type = detail::bits_type<T>;
-        using hypercube_offset_type = uint32_t;
-
-        constexpr static unsigned dimensions = Dims;
-        constexpr static unsigned hypercube_side_length = Dims == 1 ? 4096 : Dims == 2 ? 64 : 16;
-        constexpr static size_t compressed_block_size_bound
-                = ((detail::bitsof<data_type> + (sizeof(T) <= 4 ? 2: 4))
-                  * detail::ipow(hypercube_side_length, Dims) + CHAR_BIT-1) / CHAR_BIT;
-
-        size_t encode_block(bits_type *bits, void *stream) const;
-
-        size_t decode_block(const void *stream, bits_type *bits) const;
-
-        bits_type load_value(const data_type *data) const;
-
-        void store_value(data_type *data, bits_type bits) const;
-};
-
-template<typename Profile>
 class cpu_encoder {
 public:
-    using profile = Profile;
-    using data_type = typename Profile::data_type;
+    using data_type = T;
 
-    constexpr static unsigned dimensions = Profile::dimensions;
+    constexpr static unsigned dimensions = Dims;
 
     size_t compressed_size_bound(const extent<dimensions> &e) const;
 
@@ -272,13 +206,12 @@ public:
     size_t decompress(const void *stream, size_t bytes, const slice<data_type, dimensions> &data) const;
 };
 
-template<typename Profile>
+template<typename T, unsigned Dims>
 class mt_cpu_encoder {
     public:
-        using profile = Profile;
-        using data_type = typename Profile::data_type;
+        using data_type = T;
 
-        constexpr static unsigned dimensions = Profile::dimensions;
+        constexpr static unsigned dimensions = Dims;
 
         mt_cpu_encoder();
 
@@ -298,17 +231,16 @@ class mt_cpu_encoder {
 
 #if HCDE_GPU_SUPPORT
 
-template<typename Profile>
+template<typename T, unsigned Dims>
 class gpu_encoder {
     public:
-        using profile = Profile;
-        using data_type = typename Profile::data_type;
+        using data_type = T;
 
-        constexpr static unsigned dimensions = Profile::dimensions;
+        constexpr static unsigned dimensions = Dims;
 
         gpu_encoder();
-        gpu_encoder(gpu_encoder &&) = default;
-        gpu_encoder &operator=(gpu_encoder &&) = default;
+        gpu_encoder(gpu_encoder &&) noexcept = default;
+        gpu_encoder &operator=(gpu_encoder &&) noexcept = default;
         ~gpu_encoder();
 
         size_t compressed_size_bound(const extent<dimensions> &e) const;
