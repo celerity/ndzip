@@ -19,6 +19,12 @@ if (HCDE_BUILD_BENCHMARK)
     find_package(PkgConfig)
     pkg_check_modules(LZMA liblzma>=5.0.0 QUIET IMPORTED_TARGET)
     pkg_check_modules(LZ4 liblz4>=1.0.0 QUIET IMPORTED_TARGET)
+
+    if (EXISTS "${CMAKE_SOURCE_DIR}/contrib/fpzip/CMakeLists.txt")
+        set(FPZIP_FOUND TRUE)
+    else ()
+        message(WARNING "Building without fpzip benchmark, perform git submodule step to enable")
+    endif ()
 endif ()
 
 
@@ -80,17 +86,20 @@ endif ()
 
 
 if (HCDE_BUILD_BENCHMARK)
-    set(BUILD_UTILITIES OFF CACHE BOOL "Build command-line utilities for fpzip")
-    set(BUILD_TESTING OFF CACHE BOOL "Build tests")
-    add_subdirectory(contrib/fpzip)
+    if (FPZIP_FOUND)
+        set(BUILD_UTILITIES OFF CACHE BOOL "Build command-line utilities for fpzip")
+        set(BUILD_TESTING OFF CACHE BOOL "Build tests")
+        add_subdirectory(contrib/fpzip)
+    endif ()
 
     add_executable(benchmark src/benchmark/benchmark.cc)
     target_compile_options(benchmark PRIVATE ${HCDE_COMPILE_FLAGS})
-    target_link_libraries(benchmark PRIVATE hcde Boost::program_options fpzip::fpzip)
+    target_link_libraries(benchmark PRIVATE hcde Boost::program_options)
     target_compile_definitions(benchmark PRIVATE
         "-DHCDE_BENCHMARK_HAVE_ZLIB=$<BOOL:ZLIB_FOUND>"
         "-DHCDE_BENCHMARK_HAVE_LZ4=$<BOOL:LZ4_FOUND>"
         "-DHCDE_BENCHMARK_HAVE_LZMA=$<BOOL:LZMA_FOUND>"
+        "-DHCDE_BENCHMARK_HAVE_FPZIP=$<BOOL:FPZIP_FOUND>"
     )
 
     if (hipSYCL_FOUND)
@@ -105,5 +114,8 @@ if (HCDE_BUILD_BENCHMARK)
     endif ()
     if (LZMA_FOUND)
         target_link_libraries(benchmark PRIVATE PkgConfig::LZMA)
+    endif ()
+    if (FPZIP_FOUND)
+        target_link_libraries(benchmark PRIVATE fpzip::fpzip)
     endif ()
 endif ()
