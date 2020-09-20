@@ -42,8 +42,6 @@ add_library(hcde STATIC
     src/hcde/common.hh
     src/hcde/cpu_encoder.inl
     src/hcde/cpu_encoder.cc
-    src/hcde/mt_cpu_encoder.inl
-    src/hcde/mt_cpu_encoder.cc
 )
 
 target_include_directories(hcde PUBLIC include)
@@ -53,10 +51,6 @@ target_link_libraries(hcde PRIVATE Threads::Threads)
 
 if (hipSYCL_FOUND)
     target_compile_definitions(hcde PUBLIC -DHCDE_GPU_SUPPORT=1)
-    target_sources(hcde PRIVATE
-        src/hcde/gpu_encoder.inl
-        src/hcde/gpu_encoder.cc
-    )
     add_sycl_to_target(TARGET hcde SOURCES src/hcde/gpu_encoder.cc)
 else ()
     target_compile_definitions(hcde PUBLIC -DHCDE_GPU_SUPPORT=0)

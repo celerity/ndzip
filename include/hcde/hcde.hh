@@ -201,59 +201,18 @@ public:
 
     size_t compressed_size_bound(const extent<dimensions> &e) const;
 
-    size_t compress(const slice<const data_type, dimensions> &data, void *stream) const;
+    size_t compress(const slice<const data_type, dimensions> &hc, void *hc_index) const;
 
     size_t decompress(const void *stream, size_t bytes, const slice<data_type, dimensions> &data) const;
 };
 
 template<typename T, unsigned Dims>
-class mt_cpu_encoder {
-    public:
-        using data_type = T;
-
-        constexpr static unsigned dimensions = Dims;
-
-        mt_cpu_encoder();
-
-        explicit mt_cpu_encoder(size_t num_threads);
-
-        size_t compressed_size_bound(const extent<dimensions> &e) const;
-
-        size_t compress(const slice<const data_type, dimensions> &data, void *stream) const;
-
-        size_t decompress(const void *stream, size_t bytes,
-                const slice<data_type, dimensions> &data) const;
-
-    private:
-        size_t _num_threads;
-};
-
+using mt_cpu_encoder = cpu_encoder<T, Dims>;
 
 #if HCDE_GPU_SUPPORT
 
 template<typename T, unsigned Dims>
-class gpu_encoder {
-    public:
-        using data_type = T;
-
-        constexpr static unsigned dimensions = Dims;
-
-        gpu_encoder();
-        gpu_encoder(gpu_encoder &&) noexcept = default;
-        gpu_encoder &operator=(gpu_encoder &&) noexcept = default;
-        ~gpu_encoder();
-
-        size_t compressed_size_bound(const extent<dimensions> &e) const;
-
-        size_t compress(const slice<const data_type, dimensions> &data, void *stream) const;
-
-        size_t decompress(const void *stream, size_t bytes,
-                const slice<data_type, dimensions> &data) const;
-
-    private:
-        struct impl;
-        std::unique_ptr<impl> _pimpl;
-};
+using gpu_encoder = cpu_encoder<T, Dims>;
 
 #endif // HCDE_GPU_SUPPORT
 

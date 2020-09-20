@@ -1,6 +1,5 @@
 #include <hcde/common.hh>
 #include <hcde/cpu_encoder.inl>
-#include <hcde/mt_cpu_encoder.inl>
 
 #define CATCH_CONFIG_MAIN
 #include <catch2/catch.hpp>
@@ -241,48 +240,37 @@ TEMPLATE_TEST_CASE("file produces a sane superblock / hypercube / header layout"
     std::vector<bool> visited(ipow(n_hypercubes_per_dim, dims));
 
     file<profile> f(size);
-    size_t superblock_index = 0;
-    f.for_each_superblock([&](auto sb, auto sb_index) {
-        CHECK(sb_index == superblock_index);
+    std::vector<extent<dims>> blocks;
+    size_t hypercube_index = 0;
+    f.for_each_hypercube([&](auto hc, auto hc_index) {
+        CHECK(hc_index == hypercube_index);
 
-        std::vector<extent<dims>> blocks;
-        size_t hypercube_index = 0;
-        sb.for_each_hypercube([&](auto hc, auto hc_index) {
-            CHECK(hc_index == hypercube_index);
+        auto off = hc.global_offset();
+        for (unsigned d = 0; d < dims; ++d) {
+            CHECK(off[d] < n);
+            CHECK(off[d] % side_length == 0);
+        }
 
-            auto off = hc.global_offset();
-            for (unsigned d = 0; d < dims; ++d) {
-                CHECK(off[d] < n);
-                CHECK(off[d] % side_length == 0);
-            }
+        auto cell_index = off[0] / side_length;
+        for (unsigned d = 1; d < dims; ++d) {
+            cell_index = cell_index * n_hypercubes_per_dim + off[d] / side_length;
+        }
+        CHECK(!visited[cell_index]);
+        visited[cell_index] = true;
 
-            auto cell_index = off[0] / side_length;
-            for (unsigned d = 1; d < dims; ++d) {
-                cell_index = cell_index * n_hypercubes_per_dim + off[d] / side_length;
-            }
-            CHECK(!visited[cell_index]);
-            visited[cell_index] = true;
-
-            blocks.push_back(off);
-
-            CHECK(sb.hypercube_at(hypercube_index).global_offset() == off);
-            ++hypercube_index;
-        });
-        CHECK(blocks.size() == sb.num_hypercubes());
-        superblocks.push_back(std::move(blocks));
-        ++superblock_index;
+        blocks.push_back(off);
+        ++hypercube_index;
     });
+    CHECK(blocks.size() == f.num_hypercubes());
 
     CHECK(std::all_of(visited.begin(), visited.end(), [](auto b) { return b; }));
 
-    CHECK(superblocks.size() == f.num_superblocks());
-    CHECK(!superblocks.empty());
-
-    CHECK(f.file_header_length() == f.num_superblocks() * sizeof(uint64_t));
+    CHECK(f.file_header_length() == f.num_hypercubes() * sizeof(detail::file_offset_type));
     CHECK(f.num_hypercubes() == ipow(n_hypercubes_per_dim, dims));
 }
 
 
+/* requires Profile parameters
 TEMPLATE_TEST_CASE("encoder produces the expected bit stream", "[encoder]",
     (cpu_encoder<float, 2>), (cpu_encoder<float, 3>),
     (mt_cpu_encoder<float, 2>), (mt_cpu_encoder<float, 3>)
@@ -309,7 +297,7 @@ TEMPLATE_TEST_CASE("encoder produces the expected bit stream", "[encoder]",
     });
 
     file<profile> f(array.size());
-    REQUIRE(f.num_superblocks() > 1);
+    REQUIRE(f.num_hypercubes() > 1);
 
     TestType encoder;
     std::vector<std::byte> stream(encoder.compressed_size_bound(array.size()));
@@ -318,45 +306,32 @@ TEMPLATE_TEST_CASE("encoder produces the expected bit stream", "[encoder]",
     CHECK(size <= stream.size());
     stream.resize(size);
 
-    const size_t hypercube_size = sizeof(float) * ipow(profile::hypercube_side_length, dims);
+    const size_t hc_size = sizeof(float) * ipow(profile::hypercube_side_length, dims);
 
     const auto *file_header = stream.data();
-    size_t current_superblock_offset = f.file_header_length();
-    f.for_each_superblock([&](auto sb, auto sb_index) {
-        if (sb_index > 0) {
-            const void *file_offset_address = file_header + (sb_index - 1) * sizeof(uint64_t);
-            CHECK(endian_transform(load_unaligned<uint64_t>(file_offset_address)) == current_superblock_offset);
+    f.for_each_hypercube([&](auto hc, auto hc_index) {
+        const auto hc_offset = hc_index * hc_size;
+        if (hc_index > 0) {
+            const void *hc_offset_address = file_header + (hc_index - 1) * sizeof(hc_offset_type);
+            CHECK(endian_transform(load_unaligned<hc_offset_type>(hc_offset_address))
+                == hc_offset);
         }
-
-        const auto *superblock_header = stream.data() + current_superblock_offset;
-        size_t hypercube_index = 0;
-        sb.for_each_hypercube([&](auto) {
-            const auto hypercube_offset = f.superblock_header_length() + hypercube_index * hypercube_size;
-            if (hypercube_index > 0) {
-                const void *superblock_offset_address = superblock_header
-                    + (hypercube_index - 1) * sizeof(hc_offset_type);
-                CHECK(endian_transform(load_unaligned<hc_offset_type>(superblock_offset_address))
-                    == hypercube_offset);
-            }
-            for (size_t i = 0; i < ipow(profile::hypercube_side_length, dims); ++i) {
-                float value;
-                const void *value_offset_address = superblock_header + f.superblock_header_length() + i * sizeof value;
-                detail::store_value<profile>(&value, load_unaligned<bits_type>(value_offset_address));
-                CHECK(memcmp(&value, &cell, sizeof value) == 0);
-            }
-            ++hypercube_index;
-        });
-
-        current_superblock_offset += f.superblock_header_length() + sb.num_hypercubes() * hypercube_size;
+        for (size_t i = 0; i < ipow(profile::hypercube_side_length, dims); ++i) {
+            float value;
+            const void *value_offset_address = file_header + hc_offset + i * sizeof value;
+            detail::store_value<profile>(&value, load_unaligned<bits_type>(value_offset_address));
+            CHECK(memcmp(&value, &cell, sizeof value) == 0);
+        }
     });
 
-    const void *border_offset_address = file_header + (f.num_superblocks() - 1) * sizeof(uint64_t);
-    CHECK(endian_transform(load_unaligned<uint64_t>(border_offset_address)) == current_superblock_offset);
+    const auto border_offset = f.file_header_length() + f.num_hypercubes() * hc_size;
+    const void *border_offset_address = file_header + (f.num_hypercubes() - 1) * sizeof(uint64_t);
+    CHECK(endian_transform(load_unaligned<uint64_t>(border_offset_address)) == border_offset);
     size_t n_border_elems = 0;
     for_each_border_slice(array.size(), profile::hypercube_side_length, [&](auto, auto count) {
         for (unsigned i = 0; i < count; ++i) {
             float value;
-            const void *value_offset_address = stream.data() + current_superblock_offset
+            const void *value_offset_address = stream.data() + border_offset
                 + (n_border_elems + i) * sizeof value;
             detail::store_value<profile>(&value, load_unaligned<bits_type>(value_offset_address));
             CHECK(memcmp(&value, &border, sizeof value) == 0);
@@ -365,6 +340,7 @@ TEMPLATE_TEST_CASE("encoder produces the expected bit stream", "[encoder]",
     });
     CHECK(n_border_elems == num_elements(array.size()) - ipow(border_start, dims));
 }
+*/
 
 
 TEMPLATE_TEST_CASE("encoder reproduces the bit-identical array", "[encoder]",
@@ -390,36 +366,17 @@ TEMPLATE_TEST_CASE("encoder reproduces the bit-identical array", "[encoder]",
     CHECK(memcmp(input_data.data(), output_data.data(), input_data.size() * sizeof(float)) == 0);
 }
 
-
-template<unsigned Dims>
-struct trivial_profile {
-    using data_type = uint32_t;
-    using bits_type = uint32_t;
-
-    constexpr static unsigned dimensions = Dims;
-    constexpr static unsigned hypercube_side_length = 2;
-
-    bits_type load_value(const data_type *data) const {
-        return *data;
-    }
-
-    void store_value(data_type *data, bits_type bits) const {
-        *data = bits;
-    }
-};
-
-
-TEST_CASE("load superblock in GPU warp", "[gpu]") {
+/* requires Profile parameters
+TEST_CASE("load hypercube in GPU warp", "[gpu]") {
     SECTION("1d array") {
         std::vector<uint32_t> array{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12};
-        std::vector<uint32_t> hcs(8);
-        superblock<trivial_profile<1>> sb(extent<1>{6}, 2);
+        std::vector<uint32_t> buffer(4);
+        hypercube<profile<uint32_t, 1>> hc(extent<1>{2});
         for (unsigned tid = 0; tid < HCDE_WARP_SIZE; ++tid) {
-            load_superblock_warp(tid, sb, slice<uint32_t, 1>(array.data(), array.size()), hcs.data());
+            load_hypercube_warp(tid, hc, slice<uint32_t, 1>(array.data(), array.size()),
+                    buffer.data());
         }
-        for (unsigned i = 0; i < 8; ++i) {
-            CHECK(hcs[i] == array[i + 4]);
-        }
+        CHECK(buffer == std::vector<uint32_t>{3, 4, 0, 0});
     }
 
     SECTION("2d array") {
@@ -433,31 +390,13 @@ TEST_CASE("load superblock in GPU warp", "[gpu]") {
             16, 26, 36, 46, 56, 66, 76, 86, 96,
             17, 27, 37, 47, 57, 67, 77, 87, 97,
         };
-        std::vector<uint32_t> hcs(54);
-        superblock<trivial_profile<2>> sb(extent<2>{16, 4}, 5);
-        trivial_profile<2> p;
+        std::vector<uint32_t> buffer(6);
+        hypercube<profile<uint32_t, 2>> hc(extent<2>{2, 3});
         for (unsigned tid = 0; tid < HCDE_WARP_SIZE; ++tid) {
-            load_superblock_warp(tid, sb, slice<uint32_t, 2>(array.data(), extent{8, 9}), hcs.data());
+            load_hypercube_warp(tid, hc, slice<uint32_t, 2>(array.data(), extent{8, 9}),
+                    buffer.data());
         }
-        std::vector<uint32_t> expected_hcs{
-            32, 42, 33, 43,
-            52, 62, 53, 63,
-            72, 82, 73, 83,
-            14, 24, 15, 25,
-            34, 44, 35, 45,
-            54, 64, 55, 65,
-            74, 84, 75, 85,
-            16, 26, 17, 27,
-            36, 46, 37, 47,
-            56, 66, 57, 67,
-            76, 86, 77, 87,
-        };
-        for (unsigned i = 0; i < 44; ++i) {
-            CHECK(hcs[i] == p.load_value(&expected_hcs[i]));
-        }
-        for (unsigned i = 44; i < 54; ++i) {
-            CHECK(hcs[i] == 0);
-        }
+        CHECK(buffer == std::vector<uint32_t>{42, 52, 43, 53, 0, 0});
     }
 
     SECTION("3d array") {
@@ -492,24 +431,13 @@ TEST_CASE("load superblock in GPU warp", "[gpu]") {
             145, 245, 345, 445, 545,
             155, 255, 355, 455, 555,
         };
-        std::vector<uint32_t> hcs(50);
-        superblock<trivial_profile<3>> sb(extent<3>{8, 4, 2}, 3);
-        trivial_profile<3> p;
+        std::vector<uint32_t> buffer(10);
+        hypercube<profile<uint32_t, 3>> hc(extent<3>{1, 2, 3});
         for (unsigned tid = 0; tid < HCDE_WARP_SIZE; ++tid) {
-            load_superblock_warp(tid, sb, slice<uint32_t, 3>(array.data(), extent{5, 5, 5}), hcs.data());
+            load_hypercube_warp(tid, hc, slice<uint32_t, 3>(array.data(), extent{5, 5, 5}),
+                    buffer.data());
         }
-        std::vector<uint32_t> expected_hcs{
-            331, 431, 341, 441, 332, 432, 342, 442,
-            113, 213, 123, 223, 114, 214, 124, 224,
-            313, 413, 323, 423, 314, 414, 324, 424,
-            133, 233, 143, 243, 134, 234, 144, 244,
-            333, 433, 343, 443, 334, 434, 344, 444,
-        };
-        for (unsigned i = 0; i < 40; ++i) {
-            CHECK(hcs[i] == p.load_value(&expected_hcs[i]));
-        }
-        for (unsigned i = 40; i < 50; ++i) {
-            CHECK(hcs[i] == 0);
-        }
+        CHECK(buffer == std::vector<uint32_t>{332, 432, 532, 342, 442, 542, 352, 452, 552, 0, 0});
     }
 }
+*/

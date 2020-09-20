@@ -487,45 +487,22 @@ class hypercube {
         extent<Profile::dimensions> _offset;
 };
 
-template<typename Profile>
-class superblock {
-    public:
-        superblock(extent<Profile::dimensions> hypercubes_per_dim, size_t first_hc_index)
-            : _hypercubes_per_dim(hypercubes_per_dim)
-            , _first_hc_index(first_hc_index)
+template<typename Profile, unsigned ThisDim, typename F>
+void iter_hypercubes(const extent<Profile::dimensions> &size,
+        extent<Profile::dimensions> &off, size_t &i, F &f)
+{
+    if constexpr (ThisDim == Profile::dimensions) {
+        invoke_for_element(f, i, hypercube<Profile>(off));
+        ++i;
+    } else {
+        for (off[ThisDim] = 0;
+                off[ThisDim] + Profile::hypercube_side_length <= size[ThisDim];
+                off[ThisDim] += Profile::hypercube_side_length)
         {
+            iter_hypercubes<Profile, ThisDim+1>(size, off, i, f);
         }
-
-        size_t num_hypercubes() const {
-            // For some bizarre reason, replacing HCDE_SUPERBLOCK_SIZE with detail::superblock_size
-            // causes a miscompilation with hipSYCL where superblock_size is treated as containing
-            // zero.
-            return std::min(_hypercubes_per_dim[0] - _first_hc_index, HCDE_SUPERBLOCK_SIZE);
-        }
-
-        size_t num_hypercubes_per_dim(size_t d) const {
-            return _hypercubes_per_dim[d];
-        }
-
-        template<typename Fn>
-        void for_each_hypercube(Fn &&fn) const {
-            for (size_t index = 0; index < num_hypercubes(); ++index) {
-                invoke_for_element(fn, index, hypercube<Profile>{global_hypercube_offset(
-                    _hypercubes_per_dim, Profile::hypercube_side_length, _first_hc_index + index)});
-            }
-        }
-
-        hypercube<Profile> hypercube_at(size_t hc_offset_index) const {
-            // less-or-equal: Allow generating one-past-end offset
-            assert(hc_offset_index <= HCDE_SUPERBLOCK_SIZE);
-            return hypercube<Profile>{global_hypercube_offset(_hypercubes_per_dim, Profile::hypercube_side_length,
-                _first_hc_index + hc_offset_index)};
-        }
-
-    private:
-        extent<Profile::dimensions> _hypercubes_per_dim;
-        size_t _first_hc_index;
-};
+    }
+}
 
 template<typename Profile>
 class file {
@@ -533,49 +510,29 @@ class file {
         explicit file(extent<Profile::dimensions> size)
             : _size(size)
         {
-            size_t hypercubes = 1;
-            for (unsigned nd = 0; nd < Profile::dimensions; ++nd) {
-                auto d = Profile::dimensions - 1 - nd;
-                hypercubes *= _size[d] / Profile::hypercube_side_length;
-                _hypercubes_per_dim[d] = hypercubes;
-            }
         }
 
-        size_t num_superblocks() const {
-            return (_hypercubes_per_dim[0] + superblock_size - 1) / superblock_size;
+        size_t num_hypercubes() const {
+            size_t num = 1;
+            for (unsigned d = 0; d < Profile::dimensions; ++d) {
+                num *= _size[d] / Profile::hypercube_side_length;
+            }
+            return num;
         }
 
         template<typename Fn>
-        void for_each_superblock(Fn &&fn) const {
-            for (size_t start = 0; start < _hypercubes_per_dim[0]; start += superblock_size) {
-                invoke_for_element(fn, start / superblock_size, superblock<Profile>(_hypercubes_per_dim, start));
-            }
-        }
-
-        constexpr size_t num_hypercubes() const {
-            return _hypercubes_per_dim[0];
-        }
-
-        constexpr size_t max_num_hypercubes_per_superblock() const {
-            return superblock_size;
+        void for_each_hypercube(Fn &&f) const {
+            size_t i = 0;
+            extent<Profile::dimensions> off{};
+            iter_hypercubes<Profile, 0>(_size, off, i, f);
         }
 
         constexpr size_t file_header_length() const {
-            return std::max(size_t{1}, num_superblocks()) * sizeof(file_offset_type);
-        }
-
-        constexpr size_t superblock_header_length() const {
-            return max_num_hypercubes_per_superblock()
-                * sizeof(typename Profile::hypercube_offset_type);
-        }
-
-        constexpr size_t combined_length_of_all_headers() const {
-            return file_header_length() + num_superblocks() * superblock_header_length();
+            return num_hypercubes() * sizeof(file_offset_type);
         }
 
     private:
         extent<Profile::dimensions> _size;
-        extent<Profile::dimensions> _hypercubes_per_dim;
 };
 
 template<typename T, typename Enable=void>
@@ -852,72 +809,43 @@ void store_value(typename Profile::data_type *data, typename Profile::bits_type 
 }
 
 template<typename Profile>
-void load_superblock_warp(size_t tid, const superblock<Profile> &sb,
+void load_hypercube_warp(size_t tid, const hypercube<Profile> &hc,
     const slice<const typename Profile::data_type, Profile::dimensions> &src,
     typename Profile::bits_type *dest) {
     const auto side_length = Profile::hypercube_side_length;
     const auto hc_size = ipow(side_length, Profile::dimensions);
     const auto warp_size = HCDE_WARP_SIZE;
-    auto global_offset = sb.hypercube_at(0).global_offset();
     if constexpr (Profile::dimensions == 1) {
-        auto start = linear_offset(src.size(), global_offset);
-        auto width = std::min(warp_size * HCDE_SUPERBLOCK_SIZE, src.size()[0] - global_offset[0]);
+        auto start = linear_offset(src.size(), hc.global_offset());
         auto src_ptr = src.data() + start;
-        for (size_t i = tid; i < width; i += warp_size) {
+        for (size_t i = tid; i < Profile::hypercube_side_length; i += warp_size) {
             dest[i] = load_value<Profile>(src_ptr + i);
         }
     } else if constexpr (Profile::dimensions == 2) {
-        const auto num_hcs = sb.num_hypercubes();
-        auto hcs_remaining = num_hcs;
-        while (hcs_remaining > 0) {
-            auto hcs_in_this_row = std::min(hcs_remaining,
-                (src.size()[1] - global_offset[1]) / side_length);
-            auto first_hc_index_in_this_row = num_hcs - hcs_remaining;
-            auto line_width = hcs_in_this_row * side_length;
-            auto src_pos = linear_offset(src.size(), global_offset);
-            for (size_t line_in_hc = 0; line_in_hc < side_length; ++line_in_hc) {
-                for (size_t j = tid; j < line_width; j += warp_size) {
-                    auto hc_index = first_hc_index_in_this_row + j / side_length;
-                    auto col_in_hc = j % side_length;
-                    dest[hc_index * hc_size + line_in_hc * side_length + col_in_hc]
-                        = load_value<Profile>(src.data() + src_pos + j);
-                }
-                src_pos += src.size()[1];
+        auto start = linear_offset(src.size(), hc.global_offset());
+        auto dest_ptr = dest;
+        for (size_t i = 0; i < side_length; ++i) {
+            auto src_ptr = src.data() + start;
+            for (size_t j = tid; j < side_length; j += warp_size) {
+                dest_ptr[j] = load_value<Profile>(src_ptr + j);
             }
-            global_offset[1] = 0;
-            global_offset[0] += Profile::hypercube_side_length;
-            hcs_remaining -= hcs_in_this_row;
+            start += src.size()[1];
+            dest_ptr += side_length;
         }
     } else if constexpr (Profile::dimensions == 3) {
-        const auto num_hcs = sb.num_hypercubes();
-        auto hcs_remaining = num_hcs;
-        while (hcs_remaining > 0) {
-            auto hcs_in_this_row = std::min(hcs_remaining,
-                (src.size()[2] - global_offset[2]) / side_length);
-            auto first_hc_index_in_this_row = num_hcs - hcs_remaining;
-            auto line_width = hcs_in_this_row * side_length;
-            auto local_offset = global_offset;
-            for (size_t plane_in_hc = 0; plane_in_hc < side_length; ++plane_in_hc) {
-                auto src_pos = linear_offset(src.size(), local_offset);
-                for (size_t line_in_hc = 0; line_in_hc < side_length; ++line_in_hc) {
-                    for (size_t j = tid; j < line_width; j += warp_size) {
-                        auto hc_index = first_hc_index_in_this_row + j / side_length;
-                        auto col_in_hc = j % side_length;
-                        dest[hc_index * hc_size + plane_in_hc * side_length * side_length
-                            + line_in_hc * side_length + col_in_hc]
-                            = load_value<Profile>(src.data() + src_pos + j);
-                    }
-                    src_pos += src.size()[2];
+        auto src_off = hc.global_offset();
+        auto dest_ptr = dest;
+        for (size_t i = 0; i < side_length; ++i) {
+            auto start = linear_offset(src.size(), src_off);
+            for (size_t j = 0; j < side_length; ++j) {
+                auto src_ptr = src.data() + start;
+                for (size_t j = tid; j < side_length; j += warp_size) {
+                    dest_ptr[j] = load_value<Profile>(src_ptr + j);
                 }
-                ++local_offset[0];
+                start += src.size()[2];
+                dest_ptr += side_length;
             }
-            global_offset[2] = 0;
-            global_offset[1] += Profile::hypercube_side_length;
-            if (global_offset[1] + Profile::hypercube_side_length > src.size()[1]) {
-                global_offset[1] = 0;
-                global_offset[0] += Profile::hypercube_side_length;
-            }
-            hcs_remaining -= hcs_in_this_row;
+            src_off[0] += 1;
         }
     } else {
         static_assert(Profile::dimensions != Profile::dimensions, "unimplemented");
