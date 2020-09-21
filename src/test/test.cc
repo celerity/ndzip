@@ -9,42 +9,6 @@ using namespace hcde;
 using namespace hcde::detail;
 
 
-template<unsigned Dims, typename Fn>
-static void for_each_in_hyperslab(extent<Dims> size, const Fn &fn) {
-    if constexpr (Dims == 1) {
-        for (unsigned i = 0; i < size[0]; ++i) {
-            fn(extent{i});
-        }
-    } else if constexpr (Dims == 2) {
-        for (unsigned i = 0; i < size[0]; ++i) {
-            for (unsigned j = 0; j < size[1]; ++j) {
-                fn(extent{i, j});
-            }
-        }
-    } else if constexpr (Dims == 3) {
-        for (unsigned i = 0; i < size[0]; ++i) {
-            for (unsigned j = 0; j < size[1]; ++j) {
-                for (unsigned k = 0; k < size[2]; ++k) {
-                    fn(extent{i, j, k});
-                }
-            }
-        }
-    } else if constexpr (Dims == 4) {
-        for (unsigned i = 0; i < size[0]; ++i) {
-            for (unsigned j = 0; j < size[1]; ++j) {
-                for (unsigned k = 0; k < size[2]; ++k) {
-                    for (unsigned l = 0; l < size[3]; ++l) {
-                        fn(extent{i, j, k, l});
-                    }
-                }
-            }
-        }
-    } else {
-        static_assert(Dims != Dims);
-    }
-}
-
-
 template<typename Arithmetic>
 static std::vector<Arithmetic> make_random_vector(size_t size) {
     std::vector<Arithmetic> vector(size);
@@ -57,73 +21,6 @@ static std::vector<Arithmetic> make_random_vector(size_t size) {
         std::generate(vector.begin(), vector.end(), [&] { return dist(gen); });
     }
     return vector;
-}
-
-
-TEST_CASE("load_bits") {
-    SECTION("for 8-bit integers") {
-        alignas(uint8_t) const uint8_t bits[2] = {0b1010'0100, 0b1000'0000};
-        CHECK(load_bits<uint8_t>(const_bit_ptr<1>(bits, 0), 2) == 0b10);
-        CHECK(load_bits<uint8_t>(const_bit_ptr<1>(bits, 2), 3) == 0b100);
-        CHECK(load_bits<uint8_t>(const_bit_ptr<1>(bits, 5), 4) == 0b1001);
-    }
-    SECTION("for 16-bit integers") {
-        alignas(uint16_t) const uint8_t bits[4] = {0b1010'0100, 0b1000'0000};
-        CHECK(load_bits<uint16_t>(const_bit_ptr<2>(bits, 0), 2) == 0b10);
-        CHECK(load_bits<uint16_t>(const_bit_ptr<2>(bits, 2), 3) == 0b100);
-        CHECK(load_bits<uint16_t>(const_bit_ptr<2>(bits, 5), 4) == 0b1001);
-    }
-    SECTION("for 32-bit integers") {
-        alignas(uint32_t) const uint8_t bits[8] = {0b1010'0100, 0b1100'0000};
-        CHECK(load_bits<uint32_t>(const_bit_ptr<4>(bits, 0), 2) == 0b10);
-        CHECK(load_bits<uint32_t>(const_bit_ptr<4>(bits, 2), 3) == 0b100);
-        CHECK(load_bits<uint32_t>(const_bit_ptr<4>(bits, 5), 4) == 0b1001);
-        CHECK(load_bits<uint32_t>(const_bit_ptr<4>(bits, 9), 27) == 0b100000000000000000000000000);
-    }
-    SECTION("for 64-bit integers") {
-        alignas(uint64_t) const uint8_t bits[16] = {0b1010'0100, 0b1100'0000};
-        CHECK(load_bits<uint64_t>(const_bit_ptr<8>(bits, 0), 2) == 0b10);
-        CHECK(load_bits<uint64_t>(const_bit_ptr<8>(bits, 2), 3) == 0b100);
-        CHECK(load_bits<uint64_t>(const_bit_ptr<8>(bits, 5), 4) == 0b1001);
-        CHECK(load_bits<uint64_t>(const_bit_ptr<8>(bits, 9), 27) == 0b100000000000000000000000000);
-    }
-}
-
-TEST_CASE("store_bits_linear") {
-    SECTION("for 8-bit integers") {
-        alignas(uint8_t) const uint8_t expected_bits[2] = {0b1010'0100, 0b1000'0000};
-        alignas(uint8_t) uint8_t bits[2] = {0};
-        store_bits_linear<uint8_t>(bit_ptr<1>(bits, 0), 2, 0b10);
-        store_bits_linear<uint8_t>(bit_ptr<1>(bits, 2), 3, 0b100);
-        store_bits_linear<uint8_t>(bit_ptr<1>(bits, 5), 4, 0b1001);
-        CHECK(memcmp(bits, expected_bits, sizeof bits) == 0);
-    }
-    SECTION("for 32-bit integers") {
-        alignas(uint16_t) const uint8_t expected_bits[4] = {0b1010'0100, 0b1000'0000};
-        alignas(uint16_t) uint8_t bits[4] = {0};
-        store_bits_linear<uint16_t>(bit_ptr<2>(bits, 0), 2, 0b10);
-        store_bits_linear<uint16_t>(bit_ptr<2>(bits, 2), 3, 0b100);
-        store_bits_linear<uint16_t>(bit_ptr<2>(bits, 5), 4, 0b1001);
-        CHECK(memcmp(bits, expected_bits, sizeof bits) == 0);
-    }
-    SECTION("for 32-bit integers") {
-        alignas(uint32_t) const uint8_t expected_bits[8] = {0b1010'0100, 0b1100'0000};
-        alignas(uint32_t) uint8_t bits[8] = {0};
-        store_bits_linear<uint32_t>(bit_ptr<4>(bits, 0), 2, 0b10);
-        store_bits_linear<uint32_t>(bit_ptr<4>(bits, 2), 3, 0b100);
-        store_bits_linear<uint32_t>(bit_ptr<4>(bits, 5), 4, 0b1001);
-        store_bits_linear<uint32_t>(bit_ptr<4>(bits, 9), 27, 0b100000000000000000000000000);
-        CHECK(memcmp(bits, expected_bits, sizeof bits) == 0);
-    }
-    SECTION("for 32-bit integers") {
-        alignas(uint64_t) const uint8_t expected_bits[16] = {0b1010'0100, 0b1100'0000};
-        alignas(uint64_t) uint8_t bits[16] = {0};
-        store_bits_linear<uint64_t>(bit_ptr<8>(bits, 0), 2, 0b10);
-        store_bits_linear<uint64_t>(bit_ptr<8>(bits, 2), 3, 0b100);
-        store_bits_linear<uint64_t>(bit_ptr<8>(bits, 5), 4, 0b1001);
-        store_bits_linear<uint64_t>(bit_ptr<8>(bits, 9), 27, 0b100000000000000000000000000);
-        CHECK(memcmp(bits, expected_bits, sizeof bits) == 0);
-    }
 }
 
 

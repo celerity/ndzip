@@ -35,21 +35,10 @@
 #   error "Unknown endianess"
 #endif
 
-#define HCDE_WARP_SIZE (size_t{32})
-#define HCDE_SUPERBLOCK_SIZE HCDE_WARP_SIZE
-
 
 namespace hcde::detail {
 
 using file_offset_type = uint64_t;
-
-
-#ifdef __SIZEOF_INT128__
-using native_uint128_t = unsigned __int128;
-#   define HCDE_HAVE_NATIVE_UINT128_T 1
-#else
-#   define HCDE_HAVE_NATIVE_UINT128_T 0
-#endif
 
 
 template<typename Fn, typename Index, typename T>
@@ -61,96 +50,10 @@ template<typename Fn, typename Index, typename T>
     }
 }
 
-
-template<typename Integer>
-Integer endian_transform(Integer value);
-
-class alignas(16) emulated_uint128 {
-    public:
-        constexpr emulated_uint128() noexcept = default;
-
-        constexpr explicit emulated_uint128(uint64_t v)
-            : _c{0, v} {
-        }
-
-        constexpr emulated_uint128 operator>>(unsigned shift) const {
-            assert(shift < 128);
-            if (shift == 0) {
-                return *this;
-            } else if (shift < 64) {
-                return {_c[0] >> shift, (_c[0] << (64 - shift)) | (_c[1] >> shift)};
-            } else {
-                return {0, _c[0] >> (shift - 64)};
-            }
-        }
-
-        constexpr emulated_uint128 operator<<(unsigned shift) const {
-            assert(shift < 128);
-            if (shift == 0) {
-                return *this;
-            } else if (shift < 64) {
-                return {(_c[0] << shift) | (_c[1] >> (64 - shift)), _c[1] << shift};
-            } else {
-                return {_c[1] << (shift - 64), 0};
-            }
-        }
-
-        constexpr emulated_uint128 operator~() const {
-            return {~_c[0], ~_c[1]};
-        }
-
-        constexpr emulated_uint128 operator|(emulated_uint128 other) const {
-            return {_c[0] | other._c[0], _c[1] | other._c[1]};
-        }
-
-        constexpr emulated_uint128 operator&(emulated_uint128 other) const {
-            return {_c[0] & other._c[0], _c[1] & other._c[1]};
-        }
-
-        constexpr explicit operator uint64_t() const {
-            return _c[1];
-        }
-
-    private:
-        friend emulated_uint128 endian_transform<emulated_uint128>(emulated_uint128);
-
-        constexpr emulated_uint128(uint64_t hi, uint64_t lo)
-            : _c{hi, lo} {
-        }
-
-        uint64_t _c[2]{};
-};
-
-template<typename Integer>
-unsigned significant_bits(Integer value) {
-    static_assert(std::is_integral_v<Integer> && std::is_unsigned_v<Integer>);
-    // On x86, this is branchless `bitsof<Integer> - lzcnt(x)`, but __builtin_clz has UB for x == 0.
-    // Hoisting the zero-check out of the `if constexpr` causes both Clang 10 and GCC 10 to
-    // mis-optimize this and emit a branch / cmove. This version is correctly optimized by Clang.
-    if constexpr (std::is_same_v<Integer, unsigned long long>) {
-        return bitsof<unsigned long long>
-            - (value ? __builtin_clzll(value) : bitsof<unsigned long long>);
-    } else if constexpr (std::is_same_v<Integer, unsigned long>) {
-        return bitsof<unsigned long> - (value ? __builtin_clzl(value) : bitsof<unsigned long>);
-    } else if constexpr (std::is_same_v<Integer, unsigned int>) {
-        return bitsof<unsigned int> - (value ? __builtin_clz(value) : bitsof<unsigned int>);
-    } else {
-        static_assert(sizeof(Integer) <= sizeof(unsigned int));
-        return significant_bits(static_cast<unsigned int>(value));
-    }
-}
-
 template<typename Integer>
 Integer endian_transform(Integer value) {
     if constexpr (HCDE_ENDIAN == HCDE_LITTLE_ENDIAN) {
-        if constexpr (std::is_same_v<Integer, emulated_uint128>) {
-            return {__builtin_bswap64(value._c[0]), __builtin_bswap64(value._c[1])};
-#if HCDE_HAVE_NATIVE_UINT128_T
-        } else if constexpr (std::is_same_v<Integer, native_uint128_t>) {
-            return (native_uint128_t{__builtin_bswap64(value)} << 64u)
-                | (native_uint128_t{__builtin_bswap64(value >> 64u)});
-#endif
-        } else if constexpr (std::is_same_v<Integer, uint64_t>) {
+        if constexpr (std::is_same_v<Integer, uint64_t>) {
             return __builtin_bswap64(value);
         } else if constexpr (std::is_same_v<Integer, uint32_t>) {
             return __builtin_bswap32(value);
@@ -165,11 +68,6 @@ Integer endian_transform(Integer value) {
     }
 }
 
-#if HCDE_HAVE_NATIVE_UINT128_T
-using uint128_t = native_uint128_t;
-#else
-using uint128_t = emulated_uint128;
-#endif
 
 template<typename POD>
 POD load_unaligned(const void *src) {
@@ -205,118 +103,6 @@ void store_aligned(void *dest, POD a) {
 template<typename POD>
 void store_aligned(void *dest, POD a) {
     store_aligned<alignof(POD), POD>(dest, a);
-}
-
-template<typename Integer>
-using next_larger_uint = std::conditional_t<std::is_same_v<Integer, uint8_t>, uint16_t,
-    std::conditional_t<std::is_same_v<Integer, uint16_t>, uint32_t,
-        std::conditional_t<std::is_same_v<Integer, uint32_t>, uint64_t,
-            std::conditional_t<std::is_same_v<Integer, uint64_t>, uint128_t, void>>>>;
-
-template<typename Void, size_t Align>
-class basic_bit_ptr {
-        static_assert(std::is_void_v<Void>);
-
-    public:
-        using address_type = Void *;
-        using bit_offset_type = size_t;
-        constexpr static size_t byte_alignment = Align;
-        constexpr static size_t bit_alignment = Align * CHAR_BIT;
-
-        constexpr basic_bit_ptr(std::nullptr_t) noexcept {}
-
-        constexpr basic_bit_ptr() noexcept = default;
-
-        basic_bit_ptr(address_type aligned_address, size_t bit_offset)
-            : _aligned_address(aligned_address)
-            , _bit_offset(bit_offset) {
-            assert(reinterpret_cast<uintptr_t>(aligned_address) % byte_alignment == 0);
-            assert(bit_offset < bit_alignment);
-        }
-
-        template<typename OtherVoid,
-            std::enable_if_t<std::is_const_v<Void> && !std::is_const_v<OtherVoid>, int> = 0>
-        basic_bit_ptr(const basic_bit_ptr<OtherVoid, Align> &other)
-            : _aligned_address(other._aligned_address)
-            , _bit_offset(other._bit_offset) {
-        }
-
-        static basic_bit_ptr from_unaligned_pointer(address_type unaligned) {
-            auto misalign = reinterpret_cast<uintptr_t>(unaligned) % byte_alignment;
-            return basic_bit_ptr(reinterpret_cast<byte_address_type>(unaligned) - misalign,
-                misalign * CHAR_BIT);
-        }
-
-        address_type aligned_address() const {
-            return _aligned_address;
-        }
-
-        size_t bit_offset() const {
-            return _bit_offset;
-        }
-
-        void advance(size_t n_bits) {
-            _aligned_address = reinterpret_cast<byte_address_type>(_aligned_address)
-                + (_bit_offset + n_bits) / bit_alignment * byte_alignment;
-            _bit_offset = (_bit_offset + n_bits) % bit_alignment;
-
-            assert(reinterpret_cast<uintptr_t>(_aligned_address) % byte_alignment == 0);
-            assert(_bit_offset < bit_alignment);
-        }
-
-        friend bool operator==(basic_bit_ptr lhs, basic_bit_ptr rhs) {
-            return lhs._aligned_address == rhs._aligned_address && lhs._bit_offset == rhs._bit_offset;
-        }
-
-        friend bool operator!=(basic_bit_ptr lhs, basic_bit_ptr rhs) {
-            return !operator==(lhs, rhs);
-        }
-
-    private:
-        using byte_address_type = std::conditional_t<std::is_const_v<Void>, const char, char> *;
-
-        Void *_aligned_address = nullptr;
-        size_t _bit_offset = 0;
-
-        friend class basic_bit_ptr<std::add_const_t<Void>, Align>;
-};
-
-template<size_t Align>
-using bit_ptr = basic_bit_ptr<void, Align>;
-
-template<size_t Align>
-using const_bit_ptr = basic_bit_ptr<const void, Align>;
-
-template<typename Void, size_t Align>
-size_t ceil_byte_offset(const void *from, basic_bit_ptr<Void, Align> to) {
-    return reinterpret_cast<const char *>(to.aligned_address())
-        - reinterpret_cast<const char *>(from) + (to.bit_offset() + (CHAR_BIT - 1)) / CHAR_BIT;
-}
-
-template<typename Integer>
-Integer load_bits(const_bit_ptr<sizeof(Integer)> src, size_t n_bits) {
-    static_assert(std::is_integral_v<Integer> && std::is_unsigned_v<Integer>);
-    using word = next_larger_uint<Integer>;
-    assert(n_bits > 0 && n_bits <= bitsof<Integer>);
-    auto a = endian_transform<word>(
-        load_aligned<sizeof(Integer), word>(src.aligned_address()));
-    auto shift = bitsof<word> - src.bit_offset() - n_bits;
-    return static_cast<Integer>((a >> shift) & ~(~word{} << n_bits));
-}
-
-template<typename Integer>
-void store_bits_linear(bit_ptr<sizeof(Integer)> dest, size_t n_bits, Integer value) {
-    static_assert(std::is_integral_v<Integer> && std::is_unsigned_v<Integer>);
-    using word = next_larger_uint<Integer>;
-    assert(n_bits > 0 && n_bits <= bitsof<Integer>);
-    assert((word{value} >> n_bits) == 0);
-    assert(load_bits<Integer>(dest, n_bits) == 0);
-    auto a = load_aligned<sizeof(Integer), word>(dest.aligned_address());
-    auto shift = bitsof<word> - dest.bit_offset() - n_bits;
-    // TODO This is a read-modify-write op. We can probably eliminate the entire transfer
-    // from memory by keeping the last word in a register. This might incur a branch.
-    a = a | endian_transform(static_cast<word>(static_cast<word>(value) << shift));
-    store_aligned<sizeof(Integer)>(dest.aligned_address(), a);
 }
 
 template<unsigned Dims, typename Fn>
@@ -620,6 +406,8 @@ void inverse_block_transform(T *x, unsigned dims, size_t n) {
 }
 
 
+#define HCDE_WARP_SIZE (size_t{32})
+
 template<typename Profile>
 void load_hypercube_warp(size_t tid, const hypercube<Profile> &hc,
     const slice<const typename Profile::data_type, Profile::dimensions> &src,
@@ -664,6 +452,7 @@ void load_hypercube_warp(size_t tid, const hypercube<Profile> &hc,
         static_assert(Profile::dimensions != Profile::dimensions, "unimplemented");
     }
 }
+
 
 template<typename Profile, typename SliceDataType, typename CubeDataType, typename F>
 [[gnu::always_inline]]
