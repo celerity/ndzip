@@ -569,6 +569,7 @@ void inverse_block_transform_step(T *x, size_t n, size_t s) {
 }
 
 template<typename T>
+[[gnu::noinline]]
 void block_transform(T *x, unsigned dims, size_t n) {
     if (dims == 1) {
         block_transform_step(x, n, 1);
@@ -595,6 +596,7 @@ void block_transform(T *x, unsigned dims, size_t n) {
 }
 
 template<typename T>
+[[gnu::noinline]]
 void inverse_block_transform(T *x, unsigned dims, size_t n) {
     if (dims == 1) {
         inverse_block_transform_step(x, n, 1);

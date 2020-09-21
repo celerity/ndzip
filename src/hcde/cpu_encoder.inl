@@ -57,12 +57,41 @@ constexpr static const size_t simd_width = 32;
 template<typename T>
 using simd_aligned_buffer = aligned_buffer<T, simd_width>;
 
-template<typename profile>
+template<typename Profile>
 [[gnu::noinline]]
-void load_hypercube(const hypercube<profile> &hc,
-    const slice<const typename profile::data_type, profile::dimensions> &data,
-    detail::simd_aligned_buffer<typename profile::bits_type> &cube) {
+void load_hypercube(const hypercube<Profile> &hc,
+    const slice<const typename Profile::data_type, Profile::dimensions> &data,
+    detail::simd_aligned_buffer<typename Profile::bits_type> &cube)
+{
+    constexpr auto side_length = Profile::hypercube_side_length;
+    constexpr auto side_bytes = Profile::hypercube_side_length * sizeof(typename Profile::data_type);
 
+    auto dest_ptr = cube.data();
+    auto src_ptr = &data[hc.global_offset()];
+    if constexpr (Profile::dimensions == 1) {
+        memcpy(dest_ptr, src_ptr, side_bytes);
+    } else if constexpr (Profile::dimensions == 2) {
+        const auto stride = data.size()[1];
+        for (size_t i = 0; i < side_length; ++i) {
+            memcpy(dest_ptr, src_ptr, side_bytes);
+            src_ptr += stride;
+            dest_ptr += side_length;
+        }
+    } else if constexpr (Profile::dimensions == 3) {
+        const auto stride0 = data.size()[1] * data.size()[2];
+        const auto stride1 = data.size()[2];
+        for (size_t i = 0; i < side_length; ++i) {
+            auto src_ptr1 = src_ptr;
+            for (size_t j = 0; j < side_length; ++j) {
+                memcpy(dest_ptr, src_ptr1, side_bytes);
+                src_ptr1 += stride1;
+                dest_ptr += side_length;
+            }
+            src_ptr += stride0;
+        }
+    } else {
+        static_assert(Profile::dimensions != Profile::dimensions, "unimplemented");
+    }
 }
 
 template<typename T>
@@ -196,6 +225,41 @@ size_t expand_zero_words(const std::byte *in0, T *shifted) {
     return in - in0;
 }
 
+template<typename Profile>
+[[gnu::noinline]]
+size_t zero_bit_encode(const typename Profile::bits_type *cube, std::byte *stream) {
+    using bits_type = typename Profile::bits_type;
+
+    constexpr static auto side_length = Profile::hypercube_side_length;
+    constexpr static auto hc_size = detail::ipow(side_length, Profile::dimensions);
+
+    size_t pos = 0;
+    for (size_t i = 0; i < hc_size; i += detail::bitsof<bits_type>) {
+        bits_type transposed[detail::bitsof<bits_type>];
+        detail::transpose_bits(cube + i, transposed);
+        pos += detail::compact_zero_words(transposed, stream + pos);
+    }
+
+    return pos;
+}
+
+template<typename Profile>
+[[gnu::always_inline]]
+size_t zero_bit_decode(const std::byte *stream, typename Profile::bits_type *cube) {
+    using bits_type = typename Profile::bits_type;
+
+    constexpr static auto side_length = Profile::hypercube_side_length;
+    constexpr static auto hc_size = detail::ipow(side_length, Profile::dimensions);
+
+    size_t pos = 0;
+    for (size_t i = 0; i < hc_size; i += detail::bitsof<bits_type>) {
+        bits_type transposed[detail::bitsof<bits_type>];
+        pos += detail::expand_zero_words(stream + pos, transposed);
+        detail::transpose_bits(transposed, cube + i);
+    }
+    return pos;
+}
+
 }
 
 
@@ -229,17 +293,10 @@ size_t hcde::cpu_encoder<T, Dims>::compress(const slice<const data_type, dimensi
     file.for_each_hypercube([&](auto hc, auto hc_index) {
         auto header_pos = stream_pos;
 
-        hc.for_each_cell(data, [&](auto *cell, size_t i) {
-            memcpy(&cube[i], cell, sizeof(T));
-        });
+        detail::load_hypercube(hc, data, cube);
 
         detail::block_transform(cube.data(), Dims, profile::hypercube_side_length);
-
-        for (size_t i = 0; i < hc_size; i += detail::bitsof<bits_type>) {
-            bits_type transposed[detail::bitsof<bits_type>];
-            detail::transpose_bits(cube.data() + i, transposed);
-            stream_pos += detail::compact_zero_words(transposed, static_cast<std::byte *>(stream) + stream_pos);
-        }
+        stream_pos += detail::zero_bit_encode<profile>(cube.data(), static_cast<std::byte *>(stream) + stream_pos);
 
         if (hc_index > 0) {
             auto file_offset_address = static_cast<std::byte *>(stream)
@@ -277,12 +334,7 @@ size_t hcde::cpu_encoder<T, Dims>::decompress(
     detail::simd_aligned_buffer<bits_type> cube(hc_size);
     size_t stream_pos = file.file_header_length(); // simply skip the header
     file.for_each_hypercube([&](auto hc) {
-        for (size_t i = 0; i < hc_size; i += detail::bitsof<bits_type>) {
-            bits_type transposed[detail::bitsof<bits_type>];
-            stream_pos += detail::expand_zero_words(static_cast<const std::byte*>(stream) + stream_pos, transposed);
-            detail::transpose_bits(transposed, cube.data() + i);
-        }
-
+        stream_pos += detail::zero_bit_decode<profile>(static_cast<const std::byte*>(stream), cube.data());
         detail::inverse_block_transform(cube.data(), Dims, profile::hypercube_side_length);
 
         hc.for_each_cell(data, [&](auto *cell, size_t i) {
