@@ -127,28 +127,6 @@ TEST_CASE("store_bits_linear") {
 }
 
 
-TEMPLATE_TEST_CASE("value en-/decoding reproduces bit-identical values", "[profile]",
-    (profile<float, 1>), (profile<float, 2>), (profile<float, 3>),
-    (profile<double, 1>), (profile<double, 2>), (profile<double, 3>))
-{
-    using data_type = typename TestType::data_type;
-    using bits_type = typename TestType::bits_type;
-
-    const auto input = make_random_vector<data_type>(100);
-
-    std::vector<bits_type> bits(input.size());
-    for (unsigned i = 0; i < input.size(); ++i) {
-        bits[i] = detail::load_value<TestType>(&input[i]);
-    }
-
-    std::vector<data_type> output(input.size());
-    for (unsigned i = 0; i < output.size(); ++i) {
-        detail::store_value<TestType>(&output[i], bits[i]);
-    }
-    CHECK(memcmp(input.data(), output.data(), input.size() * sizeof(TestType)) == 0);
-}
-
-
 TEMPLATE_TEST_CASE("block transform is reversible", "[profile]",
     (profile<float, 1>), (profile<float, 2>), (profile<float, 3>),
     (profile<double, 1>), (profile<double, 2>), (profile<double, 3>))
@@ -167,25 +145,20 @@ TEMPLATE_TEST_CASE("block transform is reversible", "[profile]",
 }
 
 
-TEMPLATE_TEST_CASE("run-length encoding is reversible", "[profile]",
-    (profile<float, 1>), (profile<float, 2>), (profile<float, 3>),
-    (profile<double, 1>), (profile<double, 2>), (profile<double, 3>))
-{
-    using bits_type = typename TestType::bits_type;
-
-    std::vector<bits_type> input(detail::ipow(TestType::hypercube_side_length, TestType::dimensions));
+TEMPLATE_TEST_CASE("bit transposition is reversible", "[profile]", uint32_t, uint64_t) {
+    std::vector<TestType> input(bitsof<TestType>);
     auto rng = std::minstd_rand(1);
-    auto bit_dist = std::uniform_int_distribution<bits_type>();
-    auto shift_dist = std::uniform_int_distribution<unsigned>(0, bitsof<bits_type>-1);
+    auto bit_dist = std::uniform_int_distribution<TestType>();
+    auto shift_dist = std::uniform_int_distribution<unsigned>(0, bitsof<TestType>-1);
     for (auto &value: input) {
         value = bit_dist(rng) >> shift_dist(rng);
     }
 
-    std::vector<std::byte> stream(TestType::compressed_block_size_bound + sizeof(bits_type));
-    detail::run_length_encode<TestType>(input.data(), stream.data());
+    std::vector<TestType> transposed(bitsof<TestType>);
+    detail::transpose_bits(input.data(), transposed.data());
 
-    std::vector<bits_type> output(detail::ipow(TestType::hypercube_side_length, TestType::dimensions));
-    detail::run_length_decode<TestType>(stream.data(), output.data());
+    std::vector<TestType> output(bitsof<TestType>);
+    detail::transpose_bits(transposed.data(), output.data());
 
     CHECK(input == output);
 }

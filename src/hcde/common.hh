@@ -488,6 +488,7 @@ class hypercube {
 };
 
 template<typename Profile, unsigned ThisDim, typename F>
+[[gnu::always_inline]]
 void iter_hypercubes(const extent<Profile::dimensions> &size,
         extent<Profile::dimensions> &off, size_t &i, F &f)
 {
@@ -535,104 +536,11 @@ class file {
         extent<Profile::dimensions> _size;
 };
 
-template<typename T, typename Enable=void>
-struct positional_bits_repr;
-
-template<typename T>
-struct positional_bits_repr<T, std::enable_if_t<std::is_integral_v<T> && std::is_unsigned_v<T>>> {
-    using numeric_type = T;
-    using bits_type = T;
-
-    static bits_type to_bits(numeric_type x) {
-        return x;
-    }
-
-    static numeric_type from_bits(bits_type x) {
-        return x;
-    }
-};
-
-template<typename T>
-struct positional_bits_repr<T, std::enable_if_t<std::is_integral_v<T> && std::is_signed_v<T>>> {
-    using numeric_type = T;
-    using bits_type = std::make_unsigned_t<T>;
-
-    static bits_type to_bits(numeric_type x) {
-        return static_cast<bits_type>(x)
-            - static_cast<bits_type>(std::numeric_limits<numeric_type>::min());
-    }
-
-    static numeric_type from_bits(bits_type x) {
-        return static_cast<numeric_type>(
-            x + static_cast<bits_type>(std::numeric_limits<numeric_type>::min()));
-    }
-};
-
-
-template<typename T>
-struct float_bits_traits;
-
-template<>
-struct float_bits_traits<float> {
-    static_assert(sizeof(float) == 4);
-    static_assert(std::numeric_limits<float>::is_iec559); // IEE 754
-
-    using bits_type = uint32_t;
-
-    constexpr static unsigned sign_bits = 1;
-    constexpr static unsigned exponent_bits = 8;
-    constexpr static unsigned mantissa_bits = 23;
-};
-
-template<>
-struct float_bits_traits<double> {
-    static_assert(sizeof(double) == 8);
-    static_assert(std::numeric_limits<double>::is_iec559); // IEE 754
-
-    using bits_type = uint64_t;
-
-    constexpr static unsigned sign_bits = 1;
-    constexpr static unsigned exponent_bits = 11;
-    constexpr static unsigned mantissa_bits = 52;
-};
-
-
-template<typename T>
-struct positional_bits_repr<T, std::enable_if_t<std::is_floating_point_v<T>>> {
-    constexpr static unsigned sign_bits = float_bits_traits<T>::sign_bits;
-    constexpr static unsigned exponent_bits = float_bits_traits<T>::exponent_bits - 3;
-    constexpr static unsigned mantissa_bits = float_bits_traits<T>::mantissa_bits + 3;
-
-    using numeric_type = T;
-    using bits_type = typename float_bits_traits<T>::bits_type;
-
-    static bits_type to_bits(numeric_type x) {
-        bits_type bits;
-        memcpy(&bits, &x, sizeof bits);
-        auto exponent = (bits << 1u) & ~(~bits_type{0} >> exponent_bits);
-        auto sign = (bits & ~(~bits_type{0} >> sign_bits)) >> exponent_bits;
-        auto mantissa = bits & ~(~bits_type{0} << mantissa_bits);
-        return exponent | sign | mantissa;
-    }
-
-    static numeric_type from_bits(bits_type bits) {
-        auto sign = (bits << exponent_bits) & ~(~bits_type{0} >> sign_bits);
-        auto exponent = (bits & ~(~bits_type{0} >> exponent_bits)) >> sign_bits;
-        auto mantissa = bits & ~(~bits_type{0} << mantissa_bits);
-        bits = sign | exponent | mantissa;
-        numeric_type x;
-        memcpy(&x, &bits, sizeof bits);
-        return x;
-    }
-};
-
-
 template<typename T, unsigned Dims>
 class profile {
     public:
         using data_type = T;
         using bits_type = detail::bits_type<T>;
-        using hypercube_offset_type = uint32_t;
 
         constexpr static unsigned dimensions = Dims;
         constexpr static unsigned hypercube_side_length = Dims == 1 ? 4096 : Dims == 2 ? 64 : 16;
@@ -712,106 +620,12 @@ void inverse_block_transform(T *x, unsigned dims, size_t n) {
     }
 }
 
-template<typename Profile>
-size_t run_length_encode(const typename Profile::bits_type *coeffs, void *stream) {
-    using bits_type = typename Profile::bits_type;
-
-    auto dest = detail::bit_ptr<sizeof(bits_type)>::from_unaligned_pointer(stream);
-
-    unsigned width_width;
-    unsigned width_min;
-    if (sizeof(bits_type) <= 4) {
-        width_width = 4;
-        width_min = 19;
-    } else {
-        width_width = 5;
-        width_min = 35;
-    }
-
-    auto remainder_dest = dest;
-    remainder_dest.advance(width_width * detail::ipow(Profile::hypercube_side_length, Profile::dimensions));
-    for (unsigned i = 0; i < detail::ipow(Profile::hypercube_side_length, Profile::dimensions); ++i) {
-        auto width = detail::significant_bits(coeffs[i]);
-        if (width == 0) {
-            dest.advance(width_width);
-        } else {
-            auto width_code = width < width_min ? bits_type{1} : width + 2 - width_min;
-            auto verbatim_bits = width < width_min ? width_min - 1 : width - 1;
-            detail::store_bits_linear<bits_type>(dest, width_width, width_code);
-            dest.advance(width_width);
-            detail::store_bits_linear<bits_type>(remainder_dest, verbatim_bits,
-                coeffs[i] & ~(~bits_type{} << (verbatim_bits)));
-            remainder_dest.advance(verbatim_bits);
-        }
-    }
-
-    return ceil_byte_offset(stream, remainder_dest);
-}
-
-template<typename Profile>
-size_t run_length_decode(const void *stream, typename Profile::bits_type *coeffs) {
-    using bits_type = typename Profile::bits_type;
-
-    auto src = detail::const_bit_ptr<sizeof(bits_type)>::from_unaligned_pointer(stream);
-
-    unsigned width_width;
-    unsigned width_min;
-    if (sizeof(bits_type) <= 4) {
-        width_width = 4;
-        width_min = 19;
-    } else {
-        width_width = 5;
-        width_min = 35;
-    }
-
-    auto remainder_src = src;
-    remainder_src.advance(width_width * detail::ipow(Profile::hypercube_side_length, Profile::dimensions));
-    for (unsigned i = 0; i < detail::ipow(Profile::hypercube_side_length, Profile::dimensions); ++i) {
-        auto width_code = detail::load_bits<bits_type>(src, width_width);
-        src.advance(width_width);
-        if (width_code == 0) {
-            coeffs[i] = 0;
-        } else if (width_code == 1) {
-            coeffs[i] = detail::load_bits<bits_type>(remainder_src, width_min - 1);
-            remainder_src.advance(width_min - 1);
-        } else {
-            auto width = width_code + width_min - 2;
-            coeffs[i] = (bits_type{1} << (width - 1)) | detail::load_bits<bits_type>(remainder_src, width - 1);
-            remainder_src.advance(width - 1);
-        }
-    }
-
-    return ceil_byte_offset(stream, remainder_src);
-}
-
-
-template<typename Profile>
-size_t encode_block(typename Profile::bits_type *bits, void *stream) {
-    detail::block_transform(bits, Profile::dimensions, Profile::hypercube_side_length);
-    return detail::run_length_encode<Profile>(bits, stream);
-}
-
-template<typename Profile>
-size_t decode_block(const void *stream, typename Profile::bits_type *bits) {
-    auto end = detail::run_length_decode<Profile>(stream, bits);
-    detail::inverse_block_transform(bits, Profile::dimensions, Profile::hypercube_side_length);
-    return end;
-}
-
-template<typename Profile>
-typename Profile::bits_type load_value(const typename Profile::data_type *data) {
-    return detail::positional_bits_repr<typename Profile::data_type>::to_bits(*data);
-}
-
-template<typename Profile>
-void store_value(typename Profile::data_type *data, typename Profile::bits_type bits) {
-    *data = detail::positional_bits_repr<typename Profile::data_type>::from_bits(bits);
-}
 
 template<typename Profile>
 void load_hypercube_warp(size_t tid, const hypercube<Profile> &hc,
     const slice<const typename Profile::data_type, Profile::dimensions> &src,
     typename Profile::bits_type *dest) {
+    using bits_type = typename Profile::bits_type;
     const auto side_length = Profile::hypercube_side_length;
     const auto hc_size = ipow(side_length, Profile::dimensions);
     const auto warp_size = HCDE_WARP_SIZE;
@@ -819,7 +633,7 @@ void load_hypercube_warp(size_t tid, const hypercube<Profile> &hc,
         auto start = linear_offset(src.size(), hc.global_offset());
         auto src_ptr = src.data() + start;
         for (size_t i = tid; i < Profile::hypercube_side_length; i += warp_size) {
-            dest[i] = load_value<Profile>(src_ptr + i);
+            memcpy(&dest[i], src_ptr + i, sizeof(bits_type));
         }
     } else if constexpr (Profile::dimensions == 2) {
         auto start = linear_offset(src.size(), hc.global_offset());
@@ -827,7 +641,7 @@ void load_hypercube_warp(size_t tid, const hypercube<Profile> &hc,
         for (size_t i = 0; i < side_length; ++i) {
             auto src_ptr = src.data() + start;
             for (size_t j = tid; j < side_length; j += warp_size) {
-                dest_ptr[j] = load_value<Profile>(src_ptr + j);
+                memcpy(&dest[j], src_ptr + j, sizeof(bits_type));
             }
             start += src.size()[1];
             dest_ptr += side_length;
@@ -840,7 +654,7 @@ void load_hypercube_warp(size_t tid, const hypercube<Profile> &hc,
             for (size_t j = 0; j < side_length; ++j) {
                 auto src_ptr = src.data() + start;
                 for (size_t j = tid; j < side_length; j += warp_size) {
-                    dest_ptr[j] = load_value<Profile>(src_ptr + j);
+                    memcpy(&dest[j], src_ptr + j, sizeof(bits_type));
                 }
                 start += src.size()[2];
                 dest_ptr += side_length;

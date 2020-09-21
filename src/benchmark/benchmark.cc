@@ -356,7 +356,7 @@ using algorithm_map = std::unordered_map<std::string, std::function<benchmark_re
 static const algorithm_map available_algorithms {
         {"hcde/cpu", benchmark_hcde<hcde::cpu_encoder>},
         {"hcde/cpu-mt", benchmark_hcde<hcde::mt_cpu_encoder>},
-#ifdef HCDE_GPU_SUPPORT
+#if HCDE_GPU_SUPPORT
         {"hcde/gpu", benchmark_hcde<hcde::gpu_encoder>},
 #endif
 #if HCDE_BENCHMARK_HAVE_FPZIP
