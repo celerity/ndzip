@@ -42,9 +42,6 @@
 namespace hcde::detail {
 
 using file_offset_type = uint64_t;
-using superblock_offset_type = uint32_t;
-
-constexpr auto superblock_size = HCDE_SUPERBLOCK_SIZE;
 
 
 #ifdef __SIZEOF_INT128__
@@ -662,6 +659,41 @@ void load_hypercube_warp(size_t tid, const hypercube<Profile> &hc,
                 dest_ptr += side_length;
             }
             src_off[0] += 1;
+        }
+    } else {
+        static_assert(Profile::dimensions != Profile::dimensions, "unimplemented");
+    }
+}
+
+template<typename Profile, typename SliceDataType, typename CubeDataType, typename F>
+[[gnu::always_inline]]
+void map_hypercube_slices(const hypercube<Profile> &hc,
+                          const slice<SliceDataType, Profile::dimensions> &data,
+                          CubeDataType *cube_ptr, F &&f)
+{
+    constexpr auto side_length = Profile::hypercube_side_length;
+
+    auto slice_ptr = &data[hc.global_offset()];
+    if constexpr (Profile::dimensions == 1) {
+        f(slice_ptr, cube_ptr, side_length);
+    } else if constexpr (Profile::dimensions == 2) {
+        const auto stride = data.size()[1];
+        for (size_t i = 0; i < side_length; ++i) {
+            f(slice_ptr, cube_ptr, side_length);
+            slice_ptr += stride;
+            cube_ptr += side_length;
+        }
+    } else if constexpr (Profile::dimensions == 3) {
+        const auto stride0 = data.size()[1] * data.size()[2];
+        const auto stride1 = data.size()[2];
+        for (size_t i = 0; i < side_length; ++i) {
+            auto slice_ptr1 = slice_ptr;
+            for (size_t j = 0; j < side_length; ++j) {
+                f(slice_ptr1, cube_ptr, side_length);
+                slice_ptr1 += stride1;
+                cube_ptr += side_length;
+            }
+            slice_ptr += stride0;
         }
     } else {
         static_assert(Profile::dimensions != Profile::dimensions, "unimplemented");

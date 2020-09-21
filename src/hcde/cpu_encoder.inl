@@ -10,7 +10,7 @@
 #endif
 
 
-namespace hcde::detail {
+namespace hcde::detail::cpu {
 
 template<typename T, size_t Align>
 class aligned_buffer {
@@ -60,38 +60,31 @@ using simd_aligned_buffer = aligned_buffer<T, simd_width>;
 template<typename Profile>
 [[gnu::noinline]]
 void load_hypercube(const hypercube<Profile> &hc,
-    const slice<const typename Profile::data_type, Profile::dimensions> &data,
-    detail::simd_aligned_buffer<typename Profile::bits_type> &cube)
+                    const slice<const typename Profile::data_type, Profile::dimensions> &data,
+                    typename Profile::bits_type *cube)
 {
-    constexpr auto side_length = Profile::hypercube_side_length;
-    constexpr auto side_bytes = Profile::hypercube_side_length * sizeof(typename Profile::data_type);
+    using data_type = typename Profile::data_type;
+    using bits_type = typename Profile::bits_type;
 
-    auto dest_ptr = cube.data();
-    auto src_ptr = &data[hc.global_offset()];
-    if constexpr (Profile::dimensions == 1) {
-        memcpy(dest_ptr, src_ptr, side_bytes);
-    } else if constexpr (Profile::dimensions == 2) {
-        const auto stride = data.size()[1];
-        for (size_t i = 0; i < side_length; ++i) {
-            memcpy(dest_ptr, src_ptr, side_bytes);
-            src_ptr += stride;
-            dest_ptr += side_length;
-        }
-    } else if constexpr (Profile::dimensions == 3) {
-        const auto stride0 = data.size()[1] * data.size()[2];
-        const auto stride1 = data.size()[2];
-        for (size_t i = 0; i < side_length; ++i) {
-            auto src_ptr1 = src_ptr;
-            for (size_t j = 0; j < side_length; ++j) {
-                memcpy(dest_ptr, src_ptr1, side_bytes);
-                src_ptr1 += stride1;
-                dest_ptr += side_length;
-            }
-            src_ptr += stride0;
-        }
-    } else {
-        static_assert(Profile::dimensions != Profile::dimensions, "unimplemented");
-    }
+    cube = static_cast<typename Profile::bits_type*>(__builtin_assume_aligned(cube, sizeof *cube * simd_width));
+    map_hypercube_slices(hc, data, cube, [](const data_type *src, bits_type *dest, size_t n_elems) {
+        memcpy(dest, src, n_elems * sizeof(data_type));
+    });
+}
+
+template<typename Profile>
+[[gnu::noinline]]
+void store_hypercube(const hypercube<Profile> &hc,
+                     const typename Profile::bits_type *cube,
+                     const slice<typename Profile::data_type, Profile::dimensions> &data)
+{
+    using data_type = typename Profile::data_type;
+    using bits_type = typename Profile::bits_type;
+
+    cube = static_cast<const typename Profile::bits_type*>(__builtin_assume_aligned(cube, sizeof *cube * simd_width));
+    map_hypercube_slices(hc, data, cube, [](data_type *dest, const bits_type *src, size_t n_elems) {
+        memcpy(dest, src, n_elems * sizeof(data_type));
+    });
 }
 
 template<typename T>
@@ -102,15 +95,6 @@ void transpose_bits_trivial(const T *__restrict vs, T *__restrict out) {
         for (unsigned j = 0; j < bitsof<T>; ++j) {
             out[i] |= ((vs[j] >> (bitsof<T>-1-i)) & 1u) << (bitsof<T>-1-j);
         }
-    }
-    if (sizeof(T) == 4) {
-        puts("out:");
-        for (unsigned i = 0; i < 32; ++i) {
-            printf("%08x ", out[i]);
-            if (i % 8 == 7)
-                puts("");
-        }
-        puts("");
     }
 }
 
@@ -144,7 +128,6 @@ inline void transpose_bits_32_avx2(const uint32_t *__restrict vs, uint32_t *__re
     {
         // interleave doublewords within each 256-bit vector
         // quadword i will contain elements {i, i+4, i+8, ... i+28}
-        // uint32_t idx32[] = {0, 4, 1, 5, 2, 6, 3, 7};
         uint32_t idx32[] = {7, 3, 6, 2, 5, 1, 4, 0};
         __m256i idx;
         __builtin_memcpy(&idx, idx32, sizeof idx);
@@ -200,7 +183,7 @@ size_t compact_zero_words(const T *shifted, std::byte *out0) {
     T head = 0;
     for (unsigned i = 0; i < bitsof<T>; ++i) {
         if (shifted[i] != 0) {
-            head |= 1u << i;
+            head |= T{1} << i;
             store_aligned(out, shifted[i]);
             out += sizeof(T);
         }
@@ -215,7 +198,7 @@ size_t expand_zero_words(const std::byte *in0, T *shifted) {
     auto in = in0 + sizeof(T);
     auto head = load_aligned<T>(in0);
     for (unsigned i = 0; i < bitsof<T>; ++i) {
-        if ((head >> i) & 1u) {
+        if ((head >> i) & T{1}) {
             shifted[i] = load_aligned<T>(in);
             in += sizeof(T);
         } else {
@@ -236,15 +219,15 @@ size_t zero_bit_encode(const typename Profile::bits_type *cube, std::byte *strea
     size_t pos = 0;
     for (size_t i = 0; i < hc_size; i += detail::bitsof<bits_type>) {
         bits_type transposed[detail::bitsof<bits_type>];
-        detail::transpose_bits(cube + i, transposed);
-        pos += detail::compact_zero_words(transposed, stream + pos);
+        detail::cpu::transpose_bits(cube + i, transposed);
+        pos += detail::cpu::compact_zero_words(transposed, stream + pos);
     }
 
     return pos;
 }
 
 template<typename Profile>
-[[gnu::always_inline]]
+[[gnu::noinline]]
 size_t zero_bit_decode(const std::byte *stream, typename Profile::bits_type *cube) {
     using bits_type = typename Profile::bits_type;
 
@@ -254,8 +237,8 @@ size_t zero_bit_decode(const std::byte *stream, typename Profile::bits_type *cub
     size_t pos = 0;
     for (size_t i = 0; i < hc_size; i += detail::bitsof<bits_type>) {
         bits_type transposed[detail::bitsof<bits_type>];
-        pos += detail::expand_zero_words(stream + pos, transposed);
-        detail::transpose_bits(transposed, cube + i);
+        pos += detail::cpu::expand_zero_words(stream + pos, transposed);
+        detail::cpu::transpose_bits(transposed, cube + i);
     }
     return pos;
 }
@@ -289,14 +272,12 @@ size_t hcde::cpu_encoder<T, Dims>::compress(const slice<const data_type, dimensi
     detail::file<profile> file(data.size());
     size_t stream_pos = file.file_header_length();
 
-    detail::simd_aligned_buffer<bits_type> cube(hc_size);
+    detail::cpu::simd_aligned_buffer<bits_type> cube(hc_size);
     file.for_each_hypercube([&](auto hc, auto hc_index) {
         auto header_pos = stream_pos;
-
-        detail::load_hypercube(hc, data, cube);
-
+        detail::cpu::load_hypercube(hc, data, cube.data());
         detail::block_transform(cube.data(), Dims, profile::hypercube_side_length);
-        stream_pos += detail::zero_bit_encode<profile>(cube.data(), static_cast<std::byte *>(stream) + stream_pos);
+        stream_pos += detail::cpu::zero_bit_encode<profile>(cube.data(), static_cast<std::byte *>(stream) + stream_pos);
 
         if (hc_index > 0) {
             auto file_offset_address = static_cast<std::byte *>(stream)
@@ -331,15 +312,13 @@ size_t hcde::cpu_encoder<T, Dims>::decompress(
 
     detail::file<profile> file(data.size());
 
-    detail::simd_aligned_buffer<bits_type> cube(hc_size);
+    detail::cpu::simd_aligned_buffer<bits_type> cube(hc_size);
     size_t stream_pos = file.file_header_length(); // simply skip the header
     file.for_each_hypercube([&](auto hc) {
-        stream_pos += detail::zero_bit_decode<profile>(static_cast<const std::byte*>(stream), cube.data());
+        stream_pos += detail::cpu::zero_bit_decode<profile>(static_cast<const std::byte*>(stream) + stream_pos,
+                                                            cube.data());
         detail::inverse_block_transform(cube.data(), Dims, profile::hypercube_side_length);
-
-        hc.for_each_cell(data, [&](auto *cell, size_t i) {
-            memcpy(cell, &cube[i], sizeof(T));
-        });
+        detail::cpu::store_hypercube(hc, cube.data(), data);
     });
     stream_pos += detail::unpack_border(data, static_cast<const std::byte *>(stream) + stream_pos, side_length);
     return stream_pos;

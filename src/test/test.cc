@@ -134,7 +134,7 @@ TEMPLATE_TEST_CASE("block transform is reversible", "[profile]",
     using bits_type = typename TestType::bits_type;
 
     const auto input = make_random_vector<bits_type>(
-        ipow(TestType::hypercube_side_length, TestType::dimensions));
+            ipow(TestType::hypercube_side_length, TestType::dimensions));
 
     auto transformed = input;
     detail::block_transform(transformed.data(), TestType::dimensions, TestType::hypercube_side_length);
@@ -145,7 +145,33 @@ TEMPLATE_TEST_CASE("block transform is reversible", "[profile]",
 }
 
 
-TEMPLATE_TEST_CASE("bit transposition is reversible", "[profile]", uint32_t, uint64_t) {
+TEMPLATE_TEST_CASE("CPU zero-word compaction is reversible", "[cpu]", uint32_t, uint64_t) {
+    std::vector<TestType> input(bitsof<TestType>);
+    auto gen = std::minstd_rand(); // NOLINT(cert-msc51-cpp)
+    auto dist = std::uniform_int_distribution<TestType>();
+    size_t zeroes = 0;
+    for (auto &v: input) {
+        auto r = dist(gen);
+        if (r % 5 == 2) {
+            v = 0;
+            zeroes++;
+        } else {
+            v = r;
+        }
+    }
+
+    std::vector<std::byte> compact((bitsof<TestType> + 1) * sizeof(TestType));
+    auto bytes_written = detail::cpu::compact_zero_words(input.data(), compact.data());
+    CHECK(bytes_written == (bitsof<TestType> + 1 - zeroes) * sizeof(TestType));
+
+    std::vector<TestType> output(bitsof<TestType>);
+    auto bytes_read = detail::cpu::expand_zero_words(compact.data(), output.data());
+    CHECK(bytes_read == bytes_written);
+    CHECK(output == input);
+}
+
+
+TEMPLATE_TEST_CASE("CPU bit transposition is reversible", "[cpu]", uint32_t, uint64_t) {
     std::vector<TestType> input(bitsof<TestType>);
     auto rng = std::minstd_rand(1);
     auto bit_dist = std::uniform_int_distribution<TestType>();
@@ -155,10 +181,10 @@ TEMPLATE_TEST_CASE("bit transposition is reversible", "[profile]", uint32_t, uin
     }
 
     std::vector<TestType> transposed(bitsof<TestType>);
-    detail::transpose_bits(input.data(), transposed.data());
+    detail::cpu::transpose_bits(input.data(), transposed.data());
 
     std::vector<TestType> output(bitsof<TestType>);
-    detail::transpose_bits(transposed.data(), output.data());
+    detail::cpu::transpose_bits(transposed.data(), output.data());
 
     CHECK(input == output);
 }
@@ -195,7 +221,7 @@ TEST_CASE("for_each_border_slice iterates correctly") {
 }
 
 
-TEMPLATE_TEST_CASE("file produces a sane superblock / hypercube / header layout", "[file]",
+TEMPLATE_TEST_CASE("file produces a sane hypercube / header layout", "[file]",
     (std::integral_constant<unsigned, 1>), (std::integral_constant<unsigned, 2>),
     (std::integral_constant<unsigned, 3>), (std::integral_constant<unsigned, 4>)) {
     constexpr unsigned dims = TestType::value;
