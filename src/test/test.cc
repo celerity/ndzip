@@ -69,7 +69,7 @@ TEMPLATE_TEST_CASE("CPU zero-word compaction is reversible", "[cpu]", uint32_t, 
 
 
 TEMPLATE_TEST_CASE("CPU bit transposition is reversible", "[cpu]", uint32_t, uint64_t) {
-    std::vector<TestType> input(bitsof<TestType>);
+    alignas(cpu::simd_width_bytes) TestType input[bitsof<TestType>];
     auto rng = std::minstd_rand(1);
     auto bit_dist = std::uniform_int_distribution<TestType>();
     auto shift_dist = std::uniform_int_distribution<unsigned>(0, bitsof<TestType>-1);
@@ -77,13 +77,13 @@ TEMPLATE_TEST_CASE("CPU bit transposition is reversible", "[cpu]", uint32_t, uin
         value = bit_dist(rng) >> shift_dist(rng);
     }
 
-    std::vector<TestType> transposed(bitsof<TestType>);
-    detail::cpu::transpose_bits(input.data(), transposed.data());
+    alignas(cpu::simd_width_bytes) TestType transposed[bitsof<TestType>];
+    detail::cpu::transpose_bits(input, transposed);
 
-    std::vector<TestType> output(bitsof<TestType>);
-    detail::cpu::transpose_bits(transposed.data(), output.data());
+    alignas(cpu::simd_width_bytes) TestType output[bitsof<TestType>];
+    detail::cpu::transpose_bits(transposed, output);
 
-    CHECK(input == output);
+    CHECK(memcmp(input, output, sizeof input) == 0);
 }
 
 

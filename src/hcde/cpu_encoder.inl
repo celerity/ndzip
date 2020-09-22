@@ -12,32 +12,40 @@
 
 namespace hcde::detail::cpu {
 
-template<typename T, size_t Align>
-class aligned_buffer {
-    static_assert(Align >= alignof(T) && Align % alignof(T) == 0);
+constexpr static const size_t simd_width_bytes = 32;
+
+template<typename T>
+[[gnu::always_inline]] T *assume_simd_aligned(T *x) {
+    assert(reinterpret_cast<uintptr_t>(x) % simd_width_bytes == 0);
+    return static_cast<T *>(__builtin_assume_aligned(x, simd_width_bytes));
+}
+
+template<typename T>
+class simd_aligned_buffer {
+    static_assert(simd_width_bytes >= alignof(T) && simd_width_bytes % alignof(T) == 0);
 
     public:
-        explicit aligned_buffer(size_t size) {
-            assert(size % Align == 0);
-            _memory = std::aligned_alloc(Align, size * sizeof(T));
+        explicit simd_aligned_buffer(size_t size) {
+            assert(size % simd_width_bytes == 0);
+            _memory = std::aligned_alloc(simd_width_bytes, size * sizeof(T));
             if (!_memory) {
                 throw std::bad_alloc();
             }
         }
 
-        aligned_buffer(const aligned_buffer &) = delete;
-        aligned_buffer &operator=(const aligned_buffer &) = delete;
+        simd_aligned_buffer(const simd_aligned_buffer &) = delete;
+        simd_aligned_buffer &operator=(const simd_aligned_buffer &) = delete;
 
-        ~aligned_buffer() {
+        ~simd_aligned_buffer() {
             std::free(_memory);
         }
 
         T *data() {
-            return static_cast<T*>(__builtin_assume_aligned(_memory, Align));
+            return assume_simd_aligned(static_cast<T*>(_memory));
         }
 
         const T *data() const {
-            return static_cast<const T*>(__builtin_assume_aligned(_memory, Align));
+            return assume_simd_aligned(static_cast<const T*>(_memory));
         }
 
         T &operator[](size_t i) {
@@ -52,11 +60,6 @@ class aligned_buffer {
         void *_memory;
 };
 
-constexpr static const size_t simd_width = 32;
-
-template<typename T>
-using simd_aligned_buffer = aligned_buffer<T, simd_width>;
-
 template<typename Profile>
 [[gnu::noinline]]
 void load_hypercube(const hypercube<Profile> &hc,
@@ -66,9 +69,8 @@ void load_hypercube(const hypercube<Profile> &hc,
     using data_type = typename Profile::data_type;
     using bits_type = typename Profile::bits_type;
 
-    cube = static_cast<typename Profile::bits_type*>(__builtin_assume_aligned(cube, sizeof *cube * simd_width));
     map_hypercube_slices(hc, data, cube, [](const data_type *src, bits_type *dest, size_t n_elems) {
-        memcpy(dest, src, n_elems * sizeof(data_type));
+        memcpy(assume_simd_aligned(dest), src, n_elems * sizeof(data_type));
     });
 }
 
@@ -81,10 +83,83 @@ void store_hypercube(const hypercube<Profile> &hc,
     using data_type = typename Profile::data_type;
     using bits_type = typename Profile::bits_type;
 
-    cube = static_cast<const typename Profile::bits_type*>(__builtin_assume_aligned(cube, sizeof *cube * simd_width));
     map_hypercube_slices(hc, data, cube, [](data_type *dest, const bits_type *src, size_t n_elems) {
-        memcpy(dest, src, n_elems * sizeof(data_type));
+        memcpy(dest, assume_simd_aligned(src), n_elems * sizeof(data_type));
     });
+}
+
+
+template<typename T>
+void block_transform_step(T *x, size_t n, size_t s) {
+    T a, b;
+    b = x[0*s];
+    for (size_t i = 1; i < n; ++i) {
+        a = b;
+        b = x[i*s];
+        x[i*s] = a ^ b;
+    }
+}
+
+#ifdef __AVX2__
+
+[[gnu::always_inline]]
+inline void block_transform_2d_32_avx2(uint32_t *x) {
+    constexpr auto side_length = profile<float, 2>::hypercube_side_length;
+    constexpr auto n_lanes = sizeof(uint32_t) * side_length / simd_width_bytes;
+
+    __m256i lanes_a[n_lanes];
+    __m256i lanes_b[n_lanes];
+    __builtin_memcpy(lanes_b, assume_simd_aligned(x), sizeof lanes_b);
+
+    for (size_t i = 1; i < side_length; ++i) {
+        __builtin_memcpy(lanes_a, lanes_b, sizeof lanes_b);
+        __builtin_memcpy(lanes_b, assume_simd_aligned(x + i * side_length), sizeof lanes_b);
+        for (size_t j = 0; j < n_lanes; ++j) {
+            lanes_a[j] = _mm256_xor_si256(lanes_a[j], lanes_b[j]);
+        }
+        __builtin_memcpy(assume_simd_aligned(x + i * side_length), lanes_a, sizeof lanes_a);
+    }
+
+    for (size_t i = 0; i < side_length*side_length; i += side_length) {
+        block_transform_step(x + i, side_length, 1);
+    }
+}
+
+#endif // __AVX2__
+
+template<typename Profile>
+[[gnu::noinline]]
+void block_transform(typename Profile::bits_type *x) {
+    constexpr size_t n = Profile::hypercube_side_length;
+
+    x = assume_simd_aligned(x);
+    if constexpr (Profile::dimensions == 1) {
+        block_transform_step(x, n, 1);
+    } else if constexpr (Profile::dimensions == 2) {
+#ifdef __AVX2__
+        if constexpr (sizeof(typename Profile::bits_type) == 4) {
+            return block_transform_2d_32_avx2(x);
+        }
+#endif
+        for (size_t i = 0; i < n*n; i += n) {
+            block_transform_step(x + i, n, 1);
+        }
+        for (size_t i = 0; i < n; ++i) {
+            block_transform_step(x + i, n, n);
+        }
+    } else if constexpr (Profile::dimensions == 3) {
+        for (size_t i = 0; i < n*n*n; i += n*n) {
+            for (size_t j = 0; j < n; ++j) {
+                block_transform_step(x + i + j, n, n);
+            }
+        }
+        for (size_t i = 0; i < n*n*n; i += n) {
+            block_transform_step(x + i, n, 1);
+        }
+        for (size_t i = 0; i < n*n; ++i) {
+            block_transform_step(x + i, n, n * n);
+        }
+    }
 }
 
 template<typename T>
@@ -103,7 +178,7 @@ void transpose_bits_trivial(const T *__restrict vs, T *__restrict out) {
 [[gnu::always_inline]]
 inline void transpose_bits_32_avx2(const uint32_t *__restrict vs, uint32_t *__restrict out) {
     __m256i unpck0[4];
-    __builtin_memcpy(unpck0, vs, sizeof unpck0);
+    __builtin_memcpy(unpck0, assume_simd_aligned(vs), sizeof unpck0);
 
     // 1. In order to generate 32 transpositions using only 32 *movemask* instructions,
     // first shuffle bytes so that the i-th 256-bit vector contains the i-th byte of
@@ -165,6 +240,7 @@ inline void transpose_bits_32_avx2(const uint32_t *__restrict vs, uint32_t *__re
 #endif // __AVX2__
 
 template<typename T>
+[[gnu::never_inline]]
 void transpose_bits(const T *__restrict in, T *__restrict out) {
 #ifdef __AVX2__
     if constexpr(sizeof(T) == 4) {
@@ -218,7 +294,7 @@ size_t zero_bit_encode(const typename Profile::bits_type *cube, std::byte *strea
 
     size_t pos = 0;
     for (size_t i = 0; i < hc_size; i += detail::bitsof<bits_type>) {
-        bits_type transposed[detail::bitsof<bits_type>];
+        alignas(simd_width_bytes) bits_type transposed[detail::bitsof<bits_type>];
         detail::cpu::transpose_bits(cube + i, transposed);
         pos += detail::cpu::compact_zero_words(transposed, stream + pos);
     }
@@ -236,7 +312,7 @@ size_t zero_bit_decode(const std::byte *stream, typename Profile::bits_type *cub
 
     size_t pos = 0;
     for (size_t i = 0; i < hc_size; i += detail::bitsof<bits_type>) {
-        bits_type transposed[detail::bitsof<bits_type>];
+        alignas(simd_width_bytes) bits_type transposed[detail::bitsof<bits_type>];
         pos += detail::cpu::expand_zero_words(stream + pos, transposed);
         detail::cpu::transpose_bits(transposed, cube + i);
     }
@@ -276,7 +352,7 @@ size_t hcde::cpu_encoder<T, Dims>::compress(const slice<const data_type, dimensi
     file.for_each_hypercube([&](auto hc, auto hc_index) {
         auto header_pos = stream_pos;
         detail::cpu::load_hypercube(hc, data, cube.data());
-        detail::block_transform(cube.data(), Dims, profile::hypercube_side_length);
+        detail::cpu::block_transform<profile>(cube.data());
         stream_pos += detail::cpu::zero_bit_encode<profile>(cube.data(), static_cast<std::byte *>(stream) + stream_pos);
 
         if (hc_index > 0) {
