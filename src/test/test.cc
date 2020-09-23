@@ -138,10 +138,10 @@ TEMPLATE_TEST_CASE("file produces a sane hypercube / header layout", "[file]",
     file<profile> f(size);
     std::vector<extent<dims>> blocks;
     size_t hypercube_index = 0;
-    f.for_each_hypercube([&](auto hc, auto hc_index) {
+    f.for_each_hypercube([&](auto hc_offset, auto hc_index) {
         CHECK(hc_index == hypercube_index);
 
-        auto off = hc.global_offset();
+        auto off = hc_offset;
         for (unsigned d = 0; d < dims; ++d) {
             CHECK(off[d] < n);
             CHECK(off[d] % side_length == 0);

@@ -185,98 +185,13 @@ size_t border_element_count(const extent<Dims> &e, unsigned side_length) {
     return n_all_elems - n_cube_elems;
 }
 
-template<unsigned Dims>
-extent<Dims> global_hypercube_offset(const extent<Dims> &hypercubes_per_dim, unsigned side_length, size_t index) {
-    // less-or-equal: Allow generating one-past-end offset
-    assert(index <= hypercubes_per_dim[0]);
-    extent<Dims> off;
-    for (unsigned d = 1; d < Dims; ++d) {
-        off[d - 1] = index / hypercubes_per_dim[d] * side_length;
-        index %= hypercubes_per_dim[d];
-    }
-    off[Dims - 1] = index * side_length;
-    return off;
-}
-
-template<typename Profile>
-class hypercube {
-    public:
-        explicit hypercube(const extent<Profile::dimensions> &offset)
-            : _offset(offset) {
-        }
-
-        template<typename DataType, typename Fn>
-        [[gnu::always_inline]] void for_each_cell(const slice<DataType, Profile::dimensions> &data,
-            const Fn &fn) const {
-            constexpr auto side_length = Profile::hypercube_side_length;
-            if constexpr (Profile::dimensions == 1) {
-                auto *pointer = &data[_offset];
-                for (unsigned i = 0; i < side_length; ++i) {
-                    invoke_for_element(fn, i, pointer + i);
-                }
-            } else if constexpr (Profile::dimensions == 2) {
-                auto stride = data.size()[1];
-                auto *pointer = &data[_offset];
-                for (unsigned i = 0; i < side_length; ++i) {
-                    for (unsigned j = 0; j < side_length; ++j) {
-                        invoke_for_element(fn, i * side_length + j, pointer + j);
-                    }
-                    pointer += stride;
-                }
-            } else if constexpr (Profile::dimensions == 3) {
-                auto stride0 = data.size()[1] * data.size()[2];
-                auto stride1 = data.size()[2];
-                auto *pointer0 = &data[_offset];
-                for (unsigned i = 0; i < side_length; ++i) {
-                    auto pointer1 = pointer0;
-                    for (unsigned j = 0; j < side_length; ++j) {
-                        for (unsigned k = 0; k < side_length; ++k) {
-                            invoke_for_element(fn, (i * side_length + j) * side_length + k, pointer1 + k);
-                        }
-                        pointer1 += stride1;
-                    }
-                    pointer0 += stride0;
-                }
-            } else if constexpr (Profile::dimensions == 4) {
-                auto stride0 = data.size()[1] * data.size()[2] * data.size()[3];
-                auto stride1 = data.size()[2] * data.size()[3];
-                auto stride2 = data.size()[3];
-                auto *pointer0 = &data[_offset];
-                for (unsigned i = 0; i < side_length; ++i) {
-                    auto pointer1 = pointer0;
-                    for (unsigned j = 0; j < side_length; ++j) {
-                        auto pointer2 = pointer1;
-                        for (unsigned k = 0; k < side_length; ++k) {
-                            for (unsigned l = 0; l < side_length; ++l) {
-                                invoke_for_element(fn, ((i * side_length + j) * side_length + k) * side_length + l,
-                                    pointer2 + l);
-                            }
-                            pointer2 += stride2;
-                        }
-                        pointer1 += stride1;
-                    }
-                    pointer0 += stride0;
-                }
-            } else {
-                static_assert(Profile::dimensions != Profile::dimensions);
-            }
-        }
-
-        extent<Profile::dimensions> global_offset() const {
-            return _offset;
-        }
-
-    private:
-        extent<Profile::dimensions> _offset;
-};
-
 template<typename Profile, unsigned ThisDim, typename F>
 [[gnu::always_inline]]
 void iter_hypercubes(const extent<Profile::dimensions> &size,
         extent<Profile::dimensions> &off, size_t &i, F &f)
 {
     if constexpr (ThisDim == Profile::dimensions) {
-        invoke_for_element(f, i, hypercube<Profile>(off));
+        invoke_for_element(f, i, off);
         ++i;
     } else {
         for (off[ThisDim] = 0;
@@ -408,7 +323,7 @@ void inverse_block_transform(T *x, unsigned dims, size_t n) {
 #define HCDE_WARP_SIZE (size_t{32})
 
 template<typename Profile>
-void load_hypercube_warp(size_t tid, const hypercube<Profile> &hc,
+void load_hypercube_warp(size_t tid, const extent<Profile::dimensions> &hc_offset,
     const slice<const typename Profile::data_type, Profile::dimensions> &src,
     typename Profile::bits_type *dest) {
     using bits_type = typename Profile::bits_type;
@@ -416,13 +331,13 @@ void load_hypercube_warp(size_t tid, const hypercube<Profile> &hc,
     const auto hc_size = ipow(side_length, Profile::dimensions);
     const auto warp_size = HCDE_WARP_SIZE;
     if constexpr (Profile::dimensions == 1) {
-        auto start = linear_offset(src.size(), hc.global_offset());
+        auto start = linear_offset(src.size(), hc_offset);
         auto src_ptr = src.data() + start;
         for (size_t i = tid; i < Profile::hypercube_side_length; i += warp_size) {
             memcpy(&dest[i], src_ptr + i, sizeof(bits_type));
         }
     } else if constexpr (Profile::dimensions == 2) {
-        auto start = linear_offset(src.size(), hc.global_offset());
+        auto start = linear_offset(src.size(), hc_offset);
         auto dest_ptr = dest;
         for (size_t i = 0; i < side_length; ++i) {
             auto src_ptr = src.data() + start;
@@ -433,7 +348,7 @@ void load_hypercube_warp(size_t tid, const hypercube<Profile> &hc,
             dest_ptr += side_length;
         }
     } else if constexpr (Profile::dimensions == 3) {
-        auto src_off = hc.global_offset();
+        auto src_off = hc_offset;
         auto dest_ptr = dest;
         for (size_t i = 0; i < side_length; ++i) {
             auto start = linear_offset(src.size(), src_off);
@@ -455,13 +370,13 @@ void load_hypercube_warp(size_t tid, const hypercube<Profile> &hc,
 
 template<typename Profile, typename SliceDataType, typename CubeDataType, typename F>
 [[gnu::always_inline]]
-void map_hypercube_slices(const hypercube<Profile> &hc,
+void map_hypercube_slices(const extent<Profile::dimensions> &hc_offset,
                           const slice<SliceDataType, Profile::dimensions> &data,
                           CubeDataType *cube_ptr, F &&f)
 {
     constexpr auto side_length = Profile::hypercube_side_length;
 
-    auto slice_ptr = &data[hc.global_offset()];
+    auto slice_ptr = &data[hc_offset];
     if constexpr (Profile::dimensions == 1) {
         f(slice_ptr, cube_ptr, side_length);
     } else if constexpr (Profile::dimensions == 2) {

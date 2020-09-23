@@ -202,7 +202,7 @@ public:
 
     constexpr static unsigned dimensions = Dims;
 
-    size_t compress(const slice<const data_type, dimensions> &hc, void *hc_index) const;
+    size_t compress(const slice<const data_type, dimensions> &data, void *stream) const;
 
     size_t decompress(const void *stream, size_t bytes, const slice<data_type, dimensions> &data) const;
 };
