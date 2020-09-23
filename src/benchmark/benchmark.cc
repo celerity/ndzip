@@ -51,6 +51,13 @@ struct metadata {
 };
 
 
+struct malloc_deleter {
+    void operator()(void *p) const {
+        free(p);
+    }
+};
+
+
 static std::vector<metadata> load_metadata_file(const std::filesystem::path &path) {
     using namespace std::string_view_literals;
 
@@ -99,8 +106,8 @@ static benchmark_result benchmark_hcde_3(const Data *input_buffer, const hcde::e
 
     Encoder<Data, Dims> e;
     auto output_buffer_size = e.compressed_size_bound(size);
-    auto output_buffer = std::unique_ptr<std::byte, decltype((free))>(
-            static_cast<std::byte*>(malloc(output_buffer_size)), free);
+    auto output_buffer = std::unique_ptr<std::byte, malloc_deleter>(
+            static_cast<std::byte*>(malloc(output_buffer_size)));
 
     std::chrono::microseconds cum_time{};
     auto n_samples = size_t{0};
@@ -150,8 +157,8 @@ static benchmark_result benchmark_fpzip(const void *input_buffer, const metadata
     auto input_size = metadata.size_in_bytes();
 
     auto output_buffer_size = 2*input_size; // fpzip has no bound function, just guess large enough
-    auto output_buffer = std::unique_ptr<Bytef, decltype((free))>(
-            static_cast<Bytef*>(malloc(output_buffer_size)), free);
+    auto output_buffer = std::unique_ptr<Bytef, malloc_deleter>(
+            static_cast<Bytef*>(malloc(output_buffer_size)));
     memzero_noinline(output_buffer.get(), output_buffer_size);
 
     std::chrono::microseconds cum_time{};
@@ -223,8 +230,8 @@ static benchmark_result benchmark_deflate(const void *input_buffer, const metada
         output_buffer_size = deflateBound(&strm_init, strm_init.avail_in);
     }
 
-    auto output_buffer = std::unique_ptr<Bytef, decltype((free))>(
-            static_cast<Bytef*>(malloc(output_buffer_size)), free);
+    auto output_buffer = std::unique_ptr<Bytef, malloc_deleter>(
+            static_cast<Bytef*>(malloc(output_buffer_size)));
     memzero_noinline(output_buffer.get(), output_buffer_size);
     strm_init.next_out = output_buffer.get(),
     strm_init.avail_out = static_cast<uInt>(output_buffer_size);
@@ -260,8 +267,8 @@ static benchmark_result benchmark_lz4(const void *input_buffer, const metadata &
         std::chrono::milliseconds benchmark_time) {
     auto input_size = metadata.size_in_bytes();
     auto output_buffer_size = static_cast<size_t>(LZ4_compressBound(static_cast<int>(input_size)));
-    auto output_buffer = std::unique_ptr<char, decltype((free))>(
-            static_cast<char*>(malloc(output_buffer_size)), free);
+    auto output_buffer = std::unique_ptr<char, malloc_deleter>(
+            static_cast<char*>(malloc(output_buffer_size)));
     memzero_noinline(output_buffer.get(), output_buffer_size);
 
     std::chrono::microseconds cum_time{};
@@ -303,8 +310,8 @@ static benchmark_result benchmark_lzma(const void *input_buffer, const metadata 
 
     auto input_size = metadata.size_in_bytes();
     auto output_buffer_size = static_cast<size_t>(lzma_stream_buffer_bound(input_size));
-    auto output_buffer = std::unique_ptr<uint8_t, decltype((free))>(
-            static_cast<uint8_t*>(malloc(output_buffer_size)), free);
+    auto output_buffer = std::unique_ptr<uint8_t, malloc_deleter>(
+            static_cast<uint8_t*>(malloc(output_buffer_size)));
     memzero_noinline(output_buffer.get(), output_buffer_size);
 
     lzma_options_lzma opts;
@@ -379,8 +386,8 @@ static const algorithm_map available_algorithms {
 static void benchmark_file(const metadata &metadata, const algorithm_map &algorithms,
         std::chrono::milliseconds benchmark_time) {
     auto input_buffer_size = metadata.size_in_bytes();
-    auto input_buffer = std::unique_ptr<std::byte, decltype((free))>(
-            static_cast<std::byte*>(malloc(input_buffer_size)), free);
+    auto input_buffer = std::unique_ptr<std::byte, malloc_deleter>(
+            static_cast<std::byte*>(malloc(input_buffer_size)));
 
     auto file_name = metadata.path.string();
     auto input_file = std::unique_ptr<FILE, decltype((fclose))>(fopen(file_name.c_str(), "rb"), fclose);

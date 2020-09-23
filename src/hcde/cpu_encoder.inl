@@ -103,25 +103,58 @@ void block_transform_step(T *x, size_t n, size_t s) {
 #ifdef __AVX2__
 
 [[gnu::always_inline]]
+inline __m256i load_aligned_8x32(const uint32_t *p) {
+    return _mm256_load_si256(reinterpret_cast<const __m256i*>(p));
+}
+
+[[gnu::always_inline]]
+inline void store_aligned_8x32(uint32_t *p, __m256i x) {
+    _mm256_store_si256(reinterpret_cast<__m256i*>(p), x);
+}
+
+[[gnu::always_inline]]
+inline __m128i load_aligned_4x32(const uint32_t *p) {
+    return _mm_load_si128(reinterpret_cast<const __m128i*>(p));
+}
+
+[[gnu::always_inline]]
+inline void store_aligned_4x32(uint32_t *p, __m128i x) {
+    _mm_store_si128(reinterpret_cast<__m128i*>(p), x);
+}
+
+[[gnu::always_inline]]
 inline void block_transform_2d_32_avx2(uint32_t *x) {
     constexpr auto side_length = profile<float, 2>::hypercube_side_length;
-    constexpr auto n_lanes = sizeof(uint32_t) * side_length / simd_width_bytes;
+    constexpr auto n_256bit_lanes = sizeof(uint32_t) * side_length / simd_width_bytes;
+    constexpr auto words_per_256bit_lane = simd_width_bytes / sizeof(uint32_t);
+    constexpr auto n_128bit_lanes = n_256bit_lanes * 2;
+    constexpr auto words_per_128bit_lane = words_per_256bit_lane / 2;
 
-    __m256i lanes_a[n_lanes];
-    __m256i lanes_b[n_lanes];
+    __m256i lanes_a[n_256bit_lanes];
+    __m256i lanes_b[n_256bit_lanes];
     __builtin_memcpy(lanes_b, assume_simd_aligned(x), sizeof lanes_b);
 
     for (size_t i = 1; i < side_length; ++i) {
         __builtin_memcpy(lanes_a, lanes_b, sizeof lanes_b);
         __builtin_memcpy(lanes_b, assume_simd_aligned(x + i * side_length), sizeof lanes_b);
-        for (size_t j = 0; j < n_lanes; ++j) {
+        for (size_t j = 0; j < n_256bit_lanes; ++j) {
             lanes_a[j] = _mm256_xor_si256(lanes_a[j], lanes_b[j]);
         }
         __builtin_memcpy(assume_simd_aligned(x + i * side_length), lanes_a, sizeof lanes_a);
     }
 
-    for (size_t i = 0; i < side_length*side_length; i += side_length) {
-        block_transform_step(x + i, side_length, 1);
+    for (size_t i = 0; i < side_length; ++i) {
+        auto *line = x + i * side_length;
+        __m128i bottom_a, bottom_b, top;
+        bottom_b = load_aligned_4x32(line);
+        top = _mm_slli_si128(bottom_b, 4);
+        for (unsigned j = 0; j < n_128bit_lanes - 1; ++j) {
+            store_aligned_4x32(line + j * words_per_128bit_lane, _mm_xor_si128(bottom_b, top));
+            bottom_a = bottom_b;
+            bottom_b = load_aligned_4x32(line + (j + 1) * words_per_128bit_lane);
+            top = _mm_alignr_epi8(bottom_b, bottom_a, 12);
+        }
+        store_aligned_4x32(line + side_length - words_per_128bit_lane, _mm_xor_si128(bottom_b, top));
     }
 }
 
@@ -219,6 +252,7 @@ inline void transpose_bits_32_avx2(const uint32_t *__restrict vs, uint32_t *__re
         unpck1[i+0] = _mm256_unpacklo_epi64(perm[i+1], perm[i+0]);
     }
 
+    // is _mm256_inserti128_si256 faster here?
     __m256i perm2[4] = {
         // combine matching 128-bit lanes
         _mm256_permute2x128_si256(unpck1[2], unpck1[0], 0x20),
@@ -240,7 +274,7 @@ inline void transpose_bits_32_avx2(const uint32_t *__restrict vs, uint32_t *__re
 #endif // __AVX2__
 
 template<typename T>
-[[gnu::never_inline]]
+[[gnu::noinline]]
 void transpose_bits(const T *__restrict in, T *__restrict out) {
 #ifdef __AVX2__
     if constexpr(sizeof(T) == 4) {
