@@ -124,7 +124,7 @@ inline void store_aligned_4x32(uint32_t *p, __m128i x) {
 
 template<unsigned SideLength>
 [[gnu::always_inline]]
-void block_transform_horizontal_avx2(uint32_t *line) {
+void block_transform_horizontal_32_avx2(uint32_t *line) {
     constexpr auto n_128bit_lanes = sizeof(uint32_t) * SideLength / 16;
     constexpr auto words_per_128bit_lane = 16 / sizeof(uint32_t);
 
@@ -145,27 +145,22 @@ void block_transform_horizontal_avx2(uint32_t *line) {
     }
 }
 
+template<unsigned SideLength>
 [[gnu::always_inline]]
-inline void block_transform_2d_32_avx2(uint32_t *x) {
-    constexpr auto side_length = profile<float, 2>::hypercube_side_length;
-    constexpr auto n_256bit_lanes = sizeof(uint32_t) * side_length / simd_width_bytes;
-    constexpr auto words_per_256bit_lane = simd_width_bytes / sizeof(uint32_t);
+inline void block_transform_vertical_32_avx2(uint32_t *x) {
+    constexpr auto n_256bit_lanes = sizeof(uint32_t) * SideLength / simd_width_bytes;
 
     __m256i lanes_a[n_256bit_lanes];
     __m256i lanes_b[n_256bit_lanes];
     __builtin_memcpy(lanes_b, assume_simd_aligned(x), sizeof lanes_b);
 
-    for (size_t i = 1; i < side_length; ++i) {
+    for (size_t i = 1; i < SideLength; ++i) {
         __builtin_memcpy(lanes_a, lanes_b, sizeof lanes_b);
-        __builtin_memcpy(lanes_b, assume_simd_aligned(x + i * side_length), sizeof lanes_b);
+        __builtin_memcpy(lanes_b, assume_simd_aligned(x + i * SideLength), sizeof lanes_b);
         for (size_t j = 0; j < n_256bit_lanes; ++j) {
             lanes_a[j] = _mm256_xor_si256(lanes_a[j], lanes_b[j]);
         }
-        __builtin_memcpy(assume_simd_aligned(x + i * side_length), lanes_a, sizeof lanes_a);
-    }
-
-    for (size_t i = 0; i < side_length; ++i) {
-        block_transform_horizontal_avx2<side_length>(x + i * side_length);
+        __builtin_memcpy(assume_simd_aligned(x + i * SideLength), lanes_a, sizeof lanes_a);
     }
 }
 
@@ -180,14 +175,18 @@ void block_transform(typename Profile::bits_type *x) {
     if constexpr (Profile::dimensions == 1) {
 #ifdef __AVX2__
         if constexpr (sizeof(typename Profile::bits_type) == 4) {
-            return block_transform_horizontal_avx2<Profile::hypercube_side_length>(x);
+            return block_transform_horizontal_32_avx2<Profile::hypercube_side_length>(x);
         }
 #endif
         block_transform_step(x, n, 1);
     } else if constexpr (Profile::dimensions == 2) {
 #ifdef __AVX2__
         if constexpr (sizeof(typename Profile::bits_type) == 4) {
-            return block_transform_2d_32_avx2(x);
+            block_transform_vertical_32_avx2<n>(x);
+            for (size_t i = 0; i < n; ++i) {
+                block_transform_horizontal_32_avx2<n>(x + i * n);
+            }
+            return;
         }
 #endif
         for (size_t i = 0; i < n*n; i += n) {
@@ -198,6 +197,11 @@ void block_transform(typename Profile::bits_type *x) {
         }
     } else if constexpr (Profile::dimensions == 3) {
         for (size_t i = 0; i < n*n*n; i += n*n) {
+#ifdef __AVX2__
+            if constexpr (sizeof(typename Profile::bits_type) == 4) {
+                block_transform_vertical_32_avx2<Profile::hypercube_side_length>(x + i);
+            } else
+#endif
             for (size_t j = 0; j < n; ++j) {
                 block_transform_step(x + i + j, n, n);
             }
@@ -205,7 +209,7 @@ void block_transform(typename Profile::bits_type *x) {
         for (size_t i = 0; i < n*n*n; i += n) {
 #ifdef __AVX2__
             if constexpr (sizeof(typename Profile::bits_type) == 4) {
-                block_transform_horizontal_avx2<Profile::hypercube_side_length>(x + i);
+                block_transform_horizontal_32_avx2<Profile::hypercube_side_length>(x + i);
             } else
 #endif
             block_transform_step(x + i, n, 1);
