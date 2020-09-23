@@ -9,6 +9,7 @@ option(HCDE_BUILD_BENCHMARK "Build benchmarks against other algorithms" ON)
 find_package(Threads REQUIRED)
 find_package(Boost REQUIRED COMPONENTS program_options)
 find_package(hipSYCL CONFIG)
+find_package(OpenMP)
 
 if (HCDE_BUILD_TEST)
     find_package(Catch2)
@@ -29,13 +30,11 @@ endif ()
 
 
 set(CMAKE_CXX_STANDARD 17)
-set(HCDE_COMPILE_FLAGS -Wall -Wextra -Werror=return-type -Werror=init-self -Werror=undef -Wno-attributes)
-if(CMAKE_GENERATOR STREQUAL "Ninja")
+set(HCDE_COMPILE_FLAGS -Wall -Wextra -Werror=return-type -Werror=init-self -Werror=undef -Wno-attributes
+    -DHCDE_GPU_SUPPORT=$<BOOL:hipSYCL_FOUND> -DHCDE_OPENMP_SUPPORT=$<BOOL:OpenMP_FOUND>
     # Force colored warnings in Ninja's output, if the compiler has -fdiagnostics-color support.
     # Rationale in https://github.com/ninja-build/ninja/issues/814
-    set(HCDE_COMPILE_FLAGS ${COMPILE_FLAGS} -fdiagnostics-color=always)
-endif()
-
+    $<$<STREQUAL:${CMAKE_GENERATOR},Ninja>:-fdiagnostics-color=always>)
 
 add_library(hcde STATIC
     include/hcde/hcde.hh
@@ -49,12 +48,11 @@ target_include_directories(hcde PUBLIC include)
 target_compile_options(hcde PRIVATE ${HCDE_COMPILE_FLAGS})
 target_link_libraries(hcde PRIVATE Threads::Threads)
 
-
+if (OpenMP_FOUND)
+    target_link_libraries(hcde PRIVATE OpenMP::OpenMP_CXX)
+endif ()
 if (hipSYCL_FOUND)
-    target_compile_definitions(hcde PUBLIC -DHCDE_GPU_SUPPORT=1)
     add_sycl_to_target(TARGET hcde SOURCES src/hcde/gpu_encoder.cc)
-else ()
-    target_compile_definitions(hcde PUBLIC -DHCDE_GPU_SUPPORT=0)
 endif ()
 
 

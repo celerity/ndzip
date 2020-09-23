@@ -199,7 +199,6 @@ template<typename T, unsigned Dims>
 class cpu_encoder {
 public:
     using data_type = T;
-
     constexpr static unsigned dimensions = Dims;
 
     size_t compress(const slice<const data_type, dimensions> &data, void *stream) const;
@@ -207,8 +206,20 @@ public:
     size_t decompress(const void *stream, size_t bytes, const slice<data_type, dimensions> &data) const;
 };
 
+#if HCDE_OPENMP_SUPPORT
+
 template<typename T, unsigned Dims>
-using mt_cpu_encoder = cpu_encoder<T, Dims>;
+class mt_cpu_encoder {
+public:
+    using data_type = T;
+    constexpr static unsigned dimensions = Dims;
+
+    size_t compress(const slice<const data_type, dimensions> &data, void *stream) const;
+
+    size_t decompress(const void *stream, size_t bytes, const slice<data_type, dimensions> &data) const;
+};
+
+#endif // HCDE_OPENMP_SUPPORT
 
 #if HCDE_GPU_SUPPORT
 

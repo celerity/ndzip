@@ -230,6 +230,10 @@ class file {
             return num_hypercubes() * sizeof(file_offset_type);
         }
 
+        const extent<Profile::dimensions> &size() const {
+            return _size;
+        };
+
     private:
         extent<Profile::dimensions> _size;
 };

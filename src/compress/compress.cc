@@ -114,8 +114,10 @@ duration process_stream(bool decompress, const std::vector<size_t> &size_compone
     const std::string &encoder, const std::string &in, const std::string &out, const hcde::detail::io_factory &io) {
     if (encoder == "cpu") {
         return process_stream<hcde::cpu_encoder, Data>(decompress, size_components, in, out, io);
+#if HCDE_OPENMP_SUPPORT
     } else if (encoder == "cpu-mt") {
         return process_stream<hcde::mt_cpu_encoder, Data>(decompress, size_components, in, out, io);
+#endif
 #if HCDE_GPU_SUPPORT
     } else if (encoder == "gpu") {
         return process_stream<hcde::gpu_encoder, Data>(decompress, size_components, in, out, io);
@@ -149,7 +151,7 @@ int main(int argc, char **argv) {
     std::string input = "-";
     std::string output = "-";
     std::string data_type = "float";
-    std::string encoder = "cpu-mt";
+    std::string encoder = "cpu";
 
     auto usage = "Usage: "s + argv[0] + " [options]\n\n";
 
@@ -160,11 +162,14 @@ int main(int argc, char **argv) {
         ("array-size,n", opts::value(&size_components)->required()->multitoken(),
             "array size (one value per dimension, first-major)")
         ("data-type,t", opts::value(&data_type), "float|double (default float)")
-#if HCDE_GPU_SUPPORT
-        ("encoder,e", opts::value(&encoder), "cpu|cpu-mt|gpu (default cpu-mt)")
-#else
-        ("encoder,e", opts::value(&encoder), "cpu|cpu-mt (default cpu-mt)")
+        ("encoder,e", opts::value(&encoder), "cpu"
+#if HCDE_OPENMP_SUPPORT
+                                             "|cpu-mt"
 #endif
+#if HCDE_GPU_SUPPORT
+                                             "|gpu"
+#endif
+                                             " (default cpu)")
         ("input,i", opts::value(&input), "input file (default '-' is stdin)")
         ("output,o", opts::value(&output), "output file (default '-' is stdout)")
         ("no-mmap", opts::bool_switch(&no_mmap), "do not use memory-mapped I/O");

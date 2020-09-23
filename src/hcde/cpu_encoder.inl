@@ -378,6 +378,51 @@ size_t zero_bit_decode(const std::byte *stream, typename Profile::bits_type *cub
     return pos;
 }
 
+
+#if HCDE_OPENMP_SUPPORT
+
+#define HCDE_PRAGMA(...) _Pragma(#__VA_ARGS__)
+
+#define HCDE_OMP_FOR_EACH_HYPERCUBE(omp_directives, Profile, fi, f) { \
+    constexpr auto side_length = Profile::hypercube_side_length; \
+ \
+    auto num_intervals_per_dim = fi.size(); \
+    for (auto &n : num_intervals_per_dim) { \
+        n /= side_length; \
+    } \
+ \
+    if constexpr (Profile::dimensions == 1) { \
+HCDE_PRAGMA(omp for omp_directives) \
+        for (size_t i = 0; i < num_intervals_per_dim[0]; ++i) { \
+            detail::invoke_for_element(f, i, extent{i * side_length}); \
+        } \
+    } else if constexpr (Profile::dimensions == 2) { \
+HCDE_PRAGMA(omp for collapse(2) omp_directives) \
+        for (size_t i = 0; i < num_intervals_per_dim[0]; ++i) { \
+            for (size_t j = 0; j < num_intervals_per_dim[1]; ++j) { \
+                auto index = i * num_intervals_per_dim[1] + j; \
+                auto off = extent{i * side_length, j * side_length}; \
+                detail::invoke_for_element(f, index, off); \
+            } \
+        } \
+    } else if constexpr (Profile::dimensions == 3) { \
+HCDE_PRAGMA(omp for collapse(3) omp_directives) \
+        for (size_t i = 0; i < num_intervals_per_dim[0]; ++i) { \
+            for (size_t j = 0; j < num_intervals_per_dim[1]; ++j) { \
+                for (size_t k = 0; k < num_intervals_per_dim[2]; ++k) { \
+                    auto index = (i * num_intervals_per_dim[1] + j) * num_intervals_per_dim[2] + k; \
+                    auto off = extent{i * side_length, j * side_length, k * side_length}; \
+                    detail::invoke_for_element(f, index, off); \
+                } \
+            } \
+        } \
+    } \
+}
+
+#define HCDE_OMP_ORDERED(...) { HCDE_PRAGMA(omp ordered) { __VA_ARGS__ } }
+
+#endif // HCDE_OPENMP_SUPPORT
+
 }
 
 
@@ -405,7 +450,7 @@ size_t hcde::cpu_encoder<T, Dims>::compress(const slice<const data_type, dimensi
 
         if (hc_index > 0) {
             auto file_offset_address = static_cast<std::byte *>(stream)
-                    + (hc_index - 1) * sizeof(detail::file_offset_type);
+                + (hc_index - 1) * sizeof(detail::file_offset_type);
             auto file_offset = static_cast<detail::file_offset_type>(header_pos);
             detail::store_aligned(file_offset_address, detail::endian_transform(file_offset));
         }
@@ -413,7 +458,7 @@ size_t hcde::cpu_encoder<T, Dims>::compress(const slice<const data_type, dimensi
 
     if (file.num_hypercubes() > 0) {
         auto file_offset_address
-                = static_cast<char *>(stream) + (file.num_hypercubes() - 1) * sizeof(detail::file_offset_type);
+            = static_cast<char *>(stream) + (file.num_hypercubes() - 1) * sizeof(detail::file_offset_type);
         detail::store_aligned(file_offset_address, detail::endian_transform(stream_pos));
     }
     stream_pos += detail::pack_border(static_cast<char *>(stream) + stream_pos, data, side_length);
@@ -423,7 +468,7 @@ size_t hcde::cpu_encoder<T, Dims>::compress(const slice<const data_type, dimensi
 
 template<typename T, unsigned Dims>
 size_t hcde::cpu_encoder<T, Dims>::decompress(
-        const void *stream, size_t bytes, const slice<data_type, dimensions> &data) const {
+    const void *stream, size_t bytes, const slice<data_type, dimensions> &data) const {
     using profile = detail::profile<T, Dims>;
     using bits_type = typename profile::bits_type;
 
@@ -440,13 +485,115 @@ size_t hcde::cpu_encoder<T, Dims>::decompress(
     size_t stream_pos = file.file_header_length(); // simply skip the header
     file.for_each_hypercube([&](auto hc_offset) {
         stream_pos += detail::cpu::zero_bit_decode<profile>(static_cast<const std::byte*>(stream) + stream_pos,
-                                                            cube.data());
+            cube.data());
         detail::inverse_block_transform(cube.data(), Dims, profile::hypercube_side_length);
         detail::cpu::store_hypercube<profile>(hc_offset, cube.data(), data);
     });
     stream_pos += detail::unpack_border(data, static_cast<const std::byte *>(stream) + stream_pos, side_length);
     return stream_pos;
 }
+
+
+#if HCDE_OPENMP_SUPPORT
+
+template<typename T, unsigned Dims>
+size_t hcde::mt_cpu_encoder<T, Dims>::compress(const slice<const data_type, dimensions> &data, void *stream) const {
+    using profile = detail::profile<T, Dims>;
+    using bits_type = typename profile::bits_type;
+
+    constexpr static auto side_length = profile::hypercube_side_length;
+    constexpr static auto hc_size = detail::ipow(side_length, profile::dimensions);
+
+    if (reinterpret_cast<uintptr_t>(stream) % sizeof(bits_type) != 0) {
+        throw std::invalid_argument("stream is not properly aligned");
+    }
+
+    detail::file<profile> file(data.size());
+    size_t stream_pos = file.file_header_length();
+
+#pragma omp parallel
+    {
+        detail::cpu::simd_aligned_buffer<bits_type> cube(hc_size);
+        detail::cpu::simd_aligned_buffer<std::byte> cube_stream(profile::compressed_block_size_bound);
+        HCDE_OMP_FOR_EACH_HYPERCUBE(schedule(static, 1) ordered, profile, file, [&](auto hc_offset, auto hc_index) {
+            detail::cpu::load_hypercube<profile>(hc_offset, data, cube.data());
+            detail::cpu::block_transform<profile>(cube.data());
+            auto compressed_size = detail::cpu::zero_bit_encode<profile>(cube.data(), cube_stream.data());
+
+            HCDE_OMP_ORDERED({
+                memcpy(static_cast<std::byte *>(stream) + stream_pos, cube_stream.data(), compressed_size);
+                if (hc_index > 0) {
+                    auto file_offset_address = static_cast<std::byte *>(stream)
+                        + (hc_index - 1) * sizeof(detail::file_offset_type);
+                    auto file_offset = static_cast<detail::file_offset_type>(stream_pos);
+                    detail::store_aligned(file_offset_address, detail::endian_transform(file_offset));
+                }
+                stream_pos += compressed_size;
+            })
+        })
+    }
+
+    if (file.num_hypercubes() > 0) {
+        auto file_offset_address
+                = static_cast<char *>(stream) + (file.num_hypercubes() - 1) * sizeof(detail::file_offset_type);
+        detail::store_aligned(file_offset_address, detail::endian_transform(stream_pos));
+    }
+    stream_pos += detail::pack_border(static_cast<char *>(stream) + stream_pos, data, side_length);
+    return stream_pos;
+}
+
+
+template<typename T, unsigned Dims>
+size_t hcde::mt_cpu_encoder<T, Dims>::decompress(
+        const void *stream, size_t bytes, const slice<data_type, dimensions> &data) const {
+    using profile = detail::profile<T, Dims>;
+    using bits_type = typename profile::bits_type;
+
+    constexpr static auto side_length = profile::hypercube_side_length;
+    constexpr static auto hc_size = detail::ipow(side_length, profile::dimensions);
+
+    if (reinterpret_cast<uintptr_t>(stream) % sizeof(bits_type) != 0) {
+        throw std::invalid_argument("stream is not properly aligned");
+    }
+
+    detail::file<profile> file(data.size());
+
+#pragma omp parallel
+    {
+        detail::cpu::simd_aligned_buffer<bits_type> cube(hc_size);
+        HCDE_OMP_FOR_EACH_HYPERCUBE(schedule(static), profile, file, [&](auto hc_offset, auto hc_index) {
+            size_t stream_pos;
+            if (hc_index > 0) {
+                auto file_offset_address = static_cast<const std::byte *>(stream)
+                    + (hc_index - 1) * sizeof(detail::file_offset_type);
+                auto file_offset = detail::endian_transform(detail::load_aligned<detail::file_offset_type>(
+                    file_offset_address));
+                stream_pos = static_cast<size_t>(file_offset);
+            } else {
+                stream_pos = file.file_header_length();
+            }
+
+            detail::cpu::zero_bit_decode<profile>(static_cast<const std::byte *>(stream) + stream_pos, cube.data());
+            detail::inverse_block_transform(cube.data(), Dims, profile::hypercube_side_length);
+            detail::cpu::store_hypercube<profile>(hc_offset, cube.data(), data);
+        })
+    }
+
+    size_t stream_pos;
+    if (file.num_hypercubes() > 0) {
+        auto file_offset_address = static_cast<const std::byte *>(stream)
+            + (file.num_hypercubes() - 1) * sizeof(detail::file_offset_type);
+        auto file_offset = detail::endian_transform(detail::load_aligned<detail::file_offset_type>(
+            file_offset_address));
+        stream_pos = static_cast<size_t>(file_offset);
+    } else {
+        stream_pos = file.file_header_length();
+    }
+    stream_pos += detail::unpack_border(data, static_cast<const std::byte *>(stream) + stream_pos, side_length);
+    return stream_pos;
+}
+
+#endif // HCDE_OPENMP_SUPPORT
 
 
 namespace hcde {
@@ -456,4 +603,13 @@ namespace hcde {
     extern template class cpu_encoder<double, 1>;
     extern template class cpu_encoder<double, 2>;
     extern template class cpu_encoder<double, 3>;
+
+#if HCDE_OPENMP_SUPPORT
+    extern template class mt_cpu_encoder<float, 1>;
+    extern template class mt_cpu_encoder<float, 2>;
+    extern template class mt_cpu_encoder<float, 3>;
+    extern template class mt_cpu_encoder<double, 1>;
+    extern template class mt_cpu_encoder<double, 2>;
+    extern template class mt_cpu_encoder<double, 3>;
+#endif // HCDE_OPENMP_SUPPORT
 }

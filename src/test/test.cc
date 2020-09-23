@@ -241,6 +241,9 @@ TEMPLATE_TEST_CASE("encoder produces the expected bit stream", "[encoder]",
 
 TEMPLATE_TEST_CASE("encoder reproduces the bit-identical array", "[encoder]",
     (cpu_encoder<float, 1>), (cpu_encoder<float, 2>), (cpu_encoder<float, 3>)
+#if HCDE_OPENMP_SUPPORT
+    , (mt_cpu_encoder<float, 1>), (mt_cpu_encoder<float, 2>), (mt_cpu_encoder<float, 3>)
+#endif
 ) {
     using profile = detail::profile<typename TestType::data_type, TestType::dimensions>;
 

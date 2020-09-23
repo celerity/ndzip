@@ -72,7 +72,7 @@ static std::vector<metadata> load_metadata_file(const std::filesystem::path &pat
         size_t extent[3];
         auto n_tokens = sscanf(line.c_str(), "%99[^;];%9[^;];%zu %zu %zu", data_file_name, type_string,
                 extent, extent + 1, extent + 2);
-        if (n_tokens >= 3 && n_tokens <= 5 && type_string == "float"sv || type_string == "double"sv) {
+        if (n_tokens >= 3 && n_tokens <= 5 && (type_string == "float"sv || type_string == "double"sv)) {
             metadata.emplace_back(path.parent_path()  / data_file_name,
                     type_string == "float"sv ? data_type::t_float : data_type::t_double,
                     std::vector<size_t>(extent, extent + n_tokens - 2));
@@ -362,7 +362,9 @@ using algorithm_map = std::unordered_map<std::string, std::function<benchmark_re
 
 static const algorithm_map available_algorithms {
         {"hcde/cpu", benchmark_hcde<hcde::cpu_encoder>},
+#if HCDE_OPENMP_SUPPORT
         {"hcde/cpu-mt", benchmark_hcde<hcde::mt_cpu_encoder>},
+#endif
 #if HCDE_GPU_SUPPORT
         {"hcde/gpu", benchmark_hcde<hcde::gpu_encoder>},
 #endif
