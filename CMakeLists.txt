@@ -40,6 +40,7 @@ endif()
 add_library(hcde STATIC
     include/hcde/hcde.hh
     src/hcde/common.hh
+    src/hcde/common.cc
     src/hcde/cpu_encoder.inl
     src/hcde/cpu_encoder.cc
 )

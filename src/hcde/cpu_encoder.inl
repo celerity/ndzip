@@ -382,17 +382,6 @@ size_t zero_bit_decode(const std::byte *stream, typename Profile::bits_type *cub
 
 
 template<typename T, unsigned Dims>
-size_t hcde::cpu_encoder<T, Dims>::compressed_size_bound(const extent<dimensions> &size) const {
-    using profile = detail::profile<T, Dims>;
-    detail::file<profile> file(size);
-    size_t bound = file.file_header_length();
-    bound += file.num_hypercubes() * profile::compressed_block_size_bound;
-    bound += detail::border_element_count(size, profile::hypercube_side_length) * sizeof(data_type);
-    return bound;
-}
-
-
-template<typename T, unsigned Dims>
 size_t hcde::cpu_encoder<T, Dims>::compress(const slice<const data_type, dimensions> &data, void *stream) const {
     using profile = detail::profile<T, Dims>;
     using bits_type = typename profile::bits_type;

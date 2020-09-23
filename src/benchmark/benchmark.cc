@@ -105,7 +105,7 @@ static benchmark_result benchmark_hcde_3(const Data *input_buffer, const hcde::e
     auto input_slice = hcde::slice<const Data, Dims>(input_buffer, size);
 
     Encoder<Data, Dims> e;
-    auto output_buffer_size = e.compressed_size_bound(size);
+    auto output_buffer_size = hcde::compressed_size_bound<Data>(size);
     auto output_buffer = std::unique_ptr<std::byte, malloc_deleter>(
             static_cast<std::byte*>(malloc(output_buffer_size)));
 

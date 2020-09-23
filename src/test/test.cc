@@ -196,7 +196,7 @@ TEMPLATE_TEST_CASE("encoder produces the expected bit stream", "[encoder]",
     REQUIRE(f.num_hypercubes() > 1);
 
     TestType encoder;
-    std::vector<std::byte> stream(encoder.compressed_size_bound(array.size()));
+    std::vector<std::byte> stream(hcde::compressed_size_bound<data_type>(array.size()));
     size_t size = encoder.compress(array, stream.data());
 
     CHECK(size <= stream.size());
@@ -251,7 +251,7 @@ TEMPLATE_TEST_CASE("encoder reproduces the bit-identical array", "[encoder]",
     slice<const float, dims> input(input_data.data(), extent<dims>::broadcast(n));
 
     TestType encoder;
-    std::vector<std::byte> stream(encoder.compressed_size_bound(input.size()));
+    std::vector<std::byte> stream(hcde::compressed_size_bound<typename TestType::data_type>(input.size()));
     stream.resize(encoder.compress(input, stream.data()));
 
     std::vector<float> output_data(ipow(n, dims));

@@ -193,13 +193,14 @@ class slice {
 };
 
 template<typename T, unsigned Dims>
+size_t compressed_size_bound(const extent<Dims> &e);
+
+template<typename T, unsigned Dims>
 class cpu_encoder {
 public:
     using data_type = T;
 
     constexpr static unsigned dimensions = Dims;
-
-    size_t compressed_size_bound(const extent<dimensions> &e) const;
 
     size_t compress(const slice<const data_type, dimensions> &hc, void *hc_index) const;
 
