@@ -122,13 +122,34 @@ inline void store_aligned_4x32(uint32_t *p, __m128i x) {
     _mm_store_si128(reinterpret_cast<__m128i*>(p), x);
 }
 
+template<unsigned SideLength>
+[[gnu::always_inline]]
+void block_transform_horizontal_avx2(uint32_t *line) {
+    constexpr auto n_128bit_lanes = sizeof(uint32_t) * SideLength / 16;
+    constexpr auto words_per_128bit_lane = 16 / sizeof(uint32_t);
+
+    constexpr unsigned simultaneous = 4;
+    __m128i bottom[simultaneous + 1], top[simultaneous];
+    bottom[0] = __m128i{};
+    for (unsigned j = 0; j < n_128bit_lanes; j += simultaneous) {
+        for (unsigned k = 0; k < simultaneous; ++k) {
+            bottom[k+1] = load_aligned_4x32(line + (j + k) * words_per_128bit_lane);
+        }
+        for (unsigned k = 0; k < simultaneous; ++k) {
+            top[k] = _mm_alignr_epi8(bottom[k+1], bottom[k], 12);
+        }
+        for (unsigned k = 0; k < simultaneous; ++k) {
+            store_aligned_4x32(line + (j + k) * words_per_128bit_lane, _mm_xor_si128(bottom[k + 1], top[k]));
+        }
+        bottom[0] = bottom[simultaneous];
+    }
+}
+
 [[gnu::always_inline]]
 inline void block_transform_2d_32_avx2(uint32_t *x) {
     constexpr auto side_length = profile<float, 2>::hypercube_side_length;
     constexpr auto n_256bit_lanes = sizeof(uint32_t) * side_length / simd_width_bytes;
     constexpr auto words_per_256bit_lane = simd_width_bytes / sizeof(uint32_t);
-    constexpr auto n_128bit_lanes = n_256bit_lanes * 2;
-    constexpr auto words_per_128bit_lane = words_per_256bit_lane / 2;
 
     __m256i lanes_a[n_256bit_lanes];
     __m256i lanes_b[n_256bit_lanes];
@@ -144,17 +165,7 @@ inline void block_transform_2d_32_avx2(uint32_t *x) {
     }
 
     for (size_t i = 0; i < side_length; ++i) {
-        auto *line = x + i * side_length;
-        __m128i bottom_a, bottom_b, top;
-        bottom_b = load_aligned_4x32(line);
-        top = _mm_slli_si128(bottom_b, 4);
-        for (unsigned j = 0; j < n_128bit_lanes - 1; ++j) {
-            store_aligned_4x32(line + j * words_per_128bit_lane, _mm_xor_si128(bottom_b, top));
-            bottom_a = bottom_b;
-            bottom_b = load_aligned_4x32(line + (j + 1) * words_per_128bit_lane);
-            top = _mm_alignr_epi8(bottom_b, bottom_a, 12);
-        }
-        store_aligned_4x32(line + side_length - words_per_128bit_lane, _mm_xor_si128(bottom_b, top));
+        block_transform_horizontal_avx2<side_length>(x + i * side_length);
     }
 }
 
@@ -167,6 +178,11 @@ void block_transform(typename Profile::bits_type *x) {
 
     x = assume_simd_aligned(x);
     if constexpr (Profile::dimensions == 1) {
+#ifdef __AVX2__
+        if constexpr (sizeof(typename Profile::bits_type) == 4) {
+            return block_transform_horizontal_avx2<Profile::hypercube_side_length>(x);
+        }
+#endif
         block_transform_step(x, n, 1);
     } else if constexpr (Profile::dimensions == 2) {
 #ifdef __AVX2__
@@ -187,6 +203,11 @@ void block_transform(typename Profile::bits_type *x) {
             }
         }
         for (size_t i = 0; i < n*n*n; i += n) {
+#ifdef __AVX2__
+            if constexpr (sizeof(typename Profile::bits_type) == 4) {
+                block_transform_horizontal_avx2<Profile::hypercube_side_length>(x + i);
+            } else
+#endif
             block_transform_step(x + i, n, 1);
         }
         for (size_t i = 0; i < n*n; ++i) {

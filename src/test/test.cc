@@ -240,8 +240,7 @@ TEMPLATE_TEST_CASE("encoder produces the expected bit stream", "[encoder]",
 
 
 TEMPLATE_TEST_CASE("encoder reproduces the bit-identical array", "[encoder]",
-    (cpu_encoder<float, 2>), (cpu_encoder<float, 3>),
-    (mt_cpu_encoder<float, 2>), (mt_cpu_encoder<float, 3>)
+    (cpu_encoder<float, 1>), (cpu_encoder<float, 2>), (cpu_encoder<float, 3>)
 ) {
     using profile = detail::profile<typename TestType::data_type, TestType::dimensions>;
 
