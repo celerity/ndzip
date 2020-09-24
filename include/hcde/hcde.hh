@@ -1,36 +1,8 @@
 #pragma once
 
-#include <climits>
-#include <cstdint>
 #include <cstdlib>
 #include <type_traits>
 #include <memory>
-
-
-namespace hcde::detail {
-
-template<typename Integer>
-constexpr inline Integer ipow(Integer base, unsigned exponent) {
-    Integer power{1};
-    while (exponent) {
-        if (exponent & 1u) {
-            power *= base;
-        }
-        base *= base;
-        exponent >>= 1;
-    }
-    return power;
-}
-
-template<typename T>
-using bits_type = std::conditional_t<sizeof(T) == 1, uint8_t,
-      std::conditional_t<sizeof(T) == 2, uint16_t,
-      std::conditional_t<sizeof(T) == 4, uint32_t, uint64_t>>>;
-
-template<typename T>
-constexpr inline size_t bitsof = CHAR_BIT * sizeof(T);
-
-} // namespace hcde::detail
 
 
 namespace hcde {
@@ -76,6 +48,51 @@ class extent {
         friend extent operator+(const extent &left, const extent &right) {
             auto result = left;
             result += right;
+            return result;
+        }
+
+        extent &operator-=(const extent &other) {
+            for (unsigned d = 0; d < Dims; ++d) {
+                _components[d] -= other._components[d];
+            }
+            return *this;
+        }
+
+        friend extent operator-(const extent &left, const extent &right) {
+            auto result = left;
+            result -= right;
+            return result;
+        }
+
+        extent &operator*=(size_t other) {
+            for (unsigned d = 0; d < Dims; ++d) {
+                _components[d] *= other;
+            }
+            return *this;
+        }
+
+        friend extent operator*(const extent &left, size_t right) {
+            auto result = left;
+            result *= right;
+            return result;
+        }
+
+        friend extent operator*(size_t left, const extent &right) {
+            auto result = right;
+            result *= left;
+            return result;
+        }
+
+        extent &operator/=(size_t other) {
+            for (unsigned d = 0; d < Dims; ++d) {
+                _components[d] /= other;
+            }
+            return *this;
+        }
+
+        friend extent operator/(const extent &left, size_t right) {
+            auto result = left;
+            result /= right;
             return result;
         }
 
@@ -224,7 +241,24 @@ public:
 #if HCDE_GPU_SUPPORT
 
 template<typename T, unsigned Dims>
-using gpu_encoder = cpu_encoder<T, Dims>;
+class gpu_encoder {
+    public:
+        using data_type = T;
+        constexpr static unsigned dimensions = Dims;
+
+        gpu_encoder();
+        ~gpu_encoder();
+        gpu_encoder(gpu_encoder &&) noexcept = default;
+        gpu_encoder &operator=(gpu_encoder &&) noexcept = default;
+
+        size_t compress(const slice<const data_type, dimensions> &data, void *stream) const;
+
+        size_t decompress(const void *stream, size_t bytes, const slice<data_type, dimensions> &data) const;
+
+    private:
+        struct impl;
+        std::unique_ptr<impl> _pimpl;
+};
 
 #endif // HCDE_GPU_SUPPORT
 

@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cassert>
 #include <climits>
+#include <cstdint>
 #include <cstring>
 #include <limits>
 #include <optional>
@@ -37,6 +38,28 @@
 
 
 namespace hcde::detail {
+
+template<typename Integer>
+constexpr inline Integer ipow(Integer base, unsigned exponent) {
+    Integer power{1};
+    while (exponent) {
+        if (exponent & 1u) {
+            power *= base;
+        }
+        base *= base;
+        exponent >>= 1u;
+    }
+    return power;
+}
+
+template<typename T>
+using bits_type = std::conditional_t<sizeof(T) == 1, uint8_t,
+    std::conditional_t<sizeof(T) == 2, uint16_t,
+        std::conditional_t<sizeof(T) == 4, uint32_t,
+            std::conditional_t<sizeof(T) == 8, uint64_t, void>>>>;
+
+template<typename T>
+constexpr inline size_t bitsof = CHAR_BIT * sizeof(T);
 
 using file_offset_type = uint64_t;
 

@@ -4,12 +4,19 @@ project(hcde)
 
 option(HCDE_BUILD_TEST "Build unit tests" ON)
 option(HCDE_BUILD_BENCHMARK "Build benchmarks against other algorithms" ON)
+option(HCDE_WITH_MT "Enable parallel CPU implementation through OpenMP if available " ON)
+option(HCDE_WITH_GPU "Enable GPU implementation through hipSYCL if available" ON)
 
-
-find_package(Threads REQUIRED)
 find_package(Boost REQUIRED COMPONENTS program_options)
-find_package(hipSYCL CONFIG)
-find_package(OpenMP)
+
+if (HCDE_WITH_MT)
+    find_package(OpenMP)
+    set(HCDE_USE_OPENMP "${OpenMP_FOUND}")
+endif ()
+if (HCDE_WITH_GPU)
+    find_package(hipSYCL CONFIG)
+    set(HCDE_USE_HIPSYCL "${hipSYCL_FOUND}")
+endif ()
 
 if (HCDE_BUILD_TEST)
     find_package(Catch2)
@@ -36,7 +43,7 @@ set(HCDE_COMPILE_FLAGS -Wall -Wextra -Werror=return-type -Werror=init-self -Werr
     # Rationale in https://github.com/ninja-build/ninja/issues/814
     $<$<STREQUAL:${CMAKE_GENERATOR},Ninja>:-fdiagnostics-color=always>)
 
-add_library(hcde STATIC
+add_library(hcde SHARED
     include/hcde/hcde.hh
     src/hcde/common.hh
     src/hcde/common.cc
@@ -46,13 +53,19 @@ add_library(hcde STATIC
 
 target_include_directories(hcde PUBLIC include)
 target_compile_options(hcde PRIVATE ${HCDE_COMPILE_FLAGS})
-target_link_libraries(hcde PRIVATE Threads::Threads)
 
-if (OpenMP_FOUND)
+if (HCDE_USE_OPENMP)
     target_link_libraries(hcde PRIVATE OpenMP::OpenMP_CXX)
 endif ()
-if (hipSYCL_FOUND)
-    add_sycl_to_target(TARGET hcde SOURCES src/hcde/gpu_encoder.cc)
+
+if (HCDE_USE_HIPSYCL)
+    add_library(hcde-gpu SHARED
+        src/hcde/gpu_encoder.inl
+        src/hcde/gpu_encoder.cc
+    )
+    target_include_directories(hcde-gpu PUBLIC include)
+    target_compile_options(hcde-gpu PRIVATE ${HCDE_COMPILE_FLAGS})
+    add_sycl_to_target(TARGET hcde-gpu)
 endif ()
 
 
@@ -63,10 +76,8 @@ add_executable(compress
 )
 target_compile_options(compress PRIVATE ${HCDE_COMPILE_FLAGS})
 target_link_libraries(compress PRIVATE hcde Boost::program_options)
-
-if (hipSYCL_FOUND)
-    # For some reason, add_sycl_to_target does not link `compress` to OpenMP when using hipCPU
-    add_sycl_to_target(TARGET compress)
+if (HCDE_USE_HIPSYCL)
+    target_link_libraries(compress PRIVATE hcde-gpu)
 endif ()
 
 
@@ -75,6 +86,9 @@ if (HCDE_BUILD_TEST AND Catch2_FOUND)
     target_include_directories(test PRIVATE src)
     target_compile_options(test PRIVATE ${HCDE_COMPILE_FLAGS})
     target_link_libraries(test PRIVATE hcde Catch2::Catch2)
+    if (HCDE_USE_HIPSYCL)
+        target_link_libraries(test PRIVATE hcde-gpu)
+    endif ()
 endif ()
 
 
@@ -94,9 +108,8 @@ if (HCDE_BUILD_BENCHMARK)
         "-DHCDE_BENCHMARK_HAVE_LZMA=$<BOOL:LZMA_FOUND>"
         "-DHCDE_BENCHMARK_HAVE_FPZIP=$<BOOL:FPZIP_FOUND>"
     )
-
-    if (hipSYCL_FOUND)
-        add_sycl_to_target(TARGET benchmark)
+    if (HCDE_USE_HIPSYCL)
+        target_link_libraries(benchmark PRIVATE hcde-gpu)
     endif ()
 
     if (ZLIB_FOUND)
