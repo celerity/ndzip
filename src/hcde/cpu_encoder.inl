@@ -220,6 +220,26 @@ void block_transform(typename Profile::bits_type *x) {
     }
 }
 
+
+template<typename T>
+bool all_zero(const T *u) {
+#ifdef __AVX2__
+    __m256i por{};
+    for (unsigned i = 0; i < bitsof<T> * sizeof(T) / 32; ++i) {
+        por |= _mm256_load_si256(reinterpret_cast<const __m256i*>(u) + i);
+    }
+    return static_cast<uint32_t>(_mm256_movemask_epi8(_mm256_cmpeq_epi32(por, __m256i{}))) == ~uint32_t{};
+#else
+    u = assume_simd_aligned(u);
+    bool zero = true;
+    for (unsigned j = 0; j < bitsof<T>; ++j) {
+        zero &= u[j] == 0;
+    }
+    return zero;
+#endif
+}
+
+
 template<typename T>
 [[gnu::always_inline]]
 void transpose_bits_trivial(const T *__restrict vs, T *__restrict out) {
@@ -343,6 +363,7 @@ size_t expand_zero_words(const std::byte *in0, T *shifted) {
     return in - in0;
 }
 
+
 template<typename Profile>
 [[gnu::noinline]]
 size_t zero_bit_encode(const typename Profile::bits_type *cube, std::byte *stream) {
@@ -353,9 +374,15 @@ size_t zero_bit_encode(const typename Profile::bits_type *cube, std::byte *strea
 
     size_t pos = 0;
     for (size_t i = 0; i < hc_size; i += detail::bitsof<bits_type>) {
-        alignas(simd_width_bytes) bits_type transposed[detail::bitsof<bits_type>];
-        detail::cpu::transpose_bits(cube + i, transposed);
-        pos += detail::cpu::compact_zero_words(transposed, stream + pos);
+        if (all_zero(cube + i)) {
+            // fast path (all_zero is relatively common, transpose+compact is expensive)
+            store_aligned(stream + pos, bits_type{});
+            pos += sizeof(bits_type);
+        } else {
+            alignas(simd_width_bytes) bits_type transposed[detail::bitsof<bits_type>];
+            detail::cpu::transpose_bits(cube + i, transposed);
+            pos += detail::cpu::compact_zero_words(transposed, stream + pos);
+        }
     }
 
     return pos;
@@ -372,8 +399,14 @@ size_t zero_bit_decode(const std::byte *stream, typename Profile::bits_type *cub
     size_t pos = 0;
     for (size_t i = 0; i < hc_size; i += detail::bitsof<bits_type>) {
         alignas(simd_width_bytes) bits_type transposed[detail::bitsof<bits_type>];
-        pos += detail::cpu::expand_zero_words(stream + pos, transposed);
-        detail::cpu::transpose_bits(transposed, cube + i);
+        if (load_aligned<bits_type>(stream) == 0) {
+            // fast path (all_zero is relatively common, transpose+compact is expensive)
+            memset(cube + i, 0, sizeof transposed);
+            pos += sizeof(bits_type);
+        } else {
+            pos += detail::cpu::expand_zero_words(stream + pos, transposed);
+            detail::cpu::transpose_bits(transposed, cube + i);
+        }
     }
     return pos;
 }
