@@ -87,7 +87,7 @@ static std::vector<metadata> load_metadata_file(const std::filesystem::path &pat
 // memset the output buffer before calling the compression function to ensure all pages of the allocated buffer
 // have been mapped by the OS.
 [[gnu::noinline]]
-void memzero_noinline(void *mem, size_t n_bytes) {
+static void memzero_noinline(void *mem, size_t n_bytes) {
     memset(mem, 0, n_bytes);
 }
 
@@ -100,7 +100,7 @@ struct benchmark_result {
 
 template<template<typename, unsigned> typename Encoder, typename Data, unsigned Dims>
 static benchmark_result benchmark_hcde_3(const Data *input_buffer, const hcde::extent<Dims> &size,
-        std::chrono::milliseconds benchmark_time) {
+        std::chrono::milliseconds benchmark_time, unsigned benchmark_reps) {
     auto input_size = hcde::num_elements(size) * sizeof(Data);
     auto input_slice = hcde::slice<const Data, Dims>(input_buffer, size);
 
@@ -108,32 +108,38 @@ static benchmark_result benchmark_hcde_3(const Data *input_buffer, const hcde::e
     auto output_buffer_size = hcde::compressed_size_bound<Data>(size);
     auto output_buffer = std::unique_ptr<std::byte, malloc_deleter>(
             static_cast<std::byte*>(malloc(output_buffer_size)));
+    memzero_noinline(output_buffer.get(), output_buffer_size);
 
-    std::chrono::microseconds cum_time{};
-    auto n_samples = size_t{0};
+    std::chrono::steady_clock::duration min_time{std::chrono::hours(1000)};
+    std::chrono::steady_clock::duration cum_time{};
     size_t compressed_size;
-    while (cum_time < benchmark_time) {
-        memzero_noinline(output_buffer.get(), output_buffer_size);
-        auto start = std::chrono::steady_clock::now();
+    for (unsigned i = 0; cum_time < benchmark_time || i < benchmark_reps; ++i) {
+        auto run_start = std::chrono::steady_clock::now();
         compressed_size = e.compress(input_slice, output_buffer.get());
-        auto end = std::chrono::steady_clock::now();
-        cum_time += std::chrono::duration_cast<std::chrono::microseconds>(end - start);
-        ++n_samples;
+        auto run_time = std::chrono::steady_clock::now() - run_start;
+        min_time = std::min(min_time, run_time);
+        cum_time += run_time;
     }
-    return {cum_time / n_samples, static_cast<double>(compressed_size) / input_size};
+
+    return {
+        std::chrono::duration_cast<std::chrono::microseconds>(min_time),
+        static_cast<double>(compressed_size) / input_size
+    };
 }
 
 
 template<template<typename, unsigned> typename Encoder, typename Data>
 static benchmark_result benchmark_hcde_2(const Data *input_buffer, const metadata &metadata,
-        std::chrono::milliseconds benchmark_time) {
+        std::chrono::milliseconds benchmark_time, unsigned benchmark_reps) {
     auto &e = metadata.extent;
     if (e.size() == 1) {
-        return benchmark_hcde_3<Encoder, Data, 1>(input_buffer, hcde::extent{e[0]}, benchmark_time);
+        return benchmark_hcde_3<Encoder, Data, 1>(input_buffer, hcde::extent{e[0]}, benchmark_time, benchmark_reps);
     } else if (e.size() == 2) {
-        return benchmark_hcde_3<Encoder, Data, 2>(input_buffer, hcde::extent{e[0], e[1]}, benchmark_time);
+        return benchmark_hcde_3<Encoder, Data, 2>(input_buffer, hcde::extent{e[0], e[1]}, benchmark_time,
+            benchmark_reps);
     } else if (e.size() == 3) {
-        return benchmark_hcde_3<Encoder, Data, 3>(input_buffer, hcde::extent{e[0], e[1], e[2]}, benchmark_time);
+        return benchmark_hcde_3<Encoder, Data, 3>(input_buffer, hcde::extent{e[0], e[1], e[2]}, benchmark_time,
+            benchmark_reps);
     } else {
         std::abort(); // should be unreachable
     }
@@ -142,18 +148,20 @@ static benchmark_result benchmark_hcde_2(const Data *input_buffer, const metadat
 
 template<template<typename, unsigned> typename Encoder>
 static benchmark_result benchmark_hcde(const void *input_buffer, const metadata &metadata,
-        std::chrono::milliseconds benchmark_time) {
+        std::chrono::milliseconds benchmark_time, unsigned benchmark_reps) {
     if (metadata.data_type == data_type::t_float) {
-        return benchmark_hcde_2<Encoder, float>(static_cast<const float*>(input_buffer), metadata, benchmark_time);
+        return benchmark_hcde_2<Encoder, float>(static_cast<const float*>(input_buffer), metadata, benchmark_time,
+            benchmark_reps);
     } else {
-        return benchmark_hcde_2<Encoder, double>(static_cast<const double*>(input_buffer), metadata, benchmark_time);
+        return benchmark_hcde_2<Encoder, double>(static_cast<const double*>(input_buffer), metadata, benchmark_time,
+            benchmark_reps);
     }
 }
 
 
 #if HCDE_BENCHMARK_HAVE_FPZIP
 static benchmark_result benchmark_fpzip(const void *input_buffer, const metadata &metadata,
-        std::chrono::milliseconds benchmark_time) {
+        std::chrono::milliseconds benchmark_time, unsigned benchmark_reps) {
     auto input_size = metadata.size_in_bytes();
 
     auto output_buffer_size = 2*input_size; // fpzip has no bound function, just guess large enough
@@ -161,10 +169,10 @@ static benchmark_result benchmark_fpzip(const void *input_buffer, const metadata
             static_cast<Bytef*>(malloc(output_buffer_size)));
     memzero_noinline(output_buffer.get(), output_buffer_size);
 
-    std::chrono::microseconds cum_time{};
-    auto n_samples = size_t{0};
+    std::chrono::steady_clock::duration cum_time{};
+    std::chrono::steady_clock::duration min_time{std::chrono::hours(1000)};
     size_t compressed_size;
-    while (cum_time < benchmark_time) {
+    for (unsigned i = 0; cum_time < benchmark_time || i < benchmark_reps; ++i) {
         std::unique_ptr<FPZ, decltype((fpzip_write_close))> fpz(
                 fpzip_write_to_buffer(output_buffer.get(), output_buffer_size), fpzip_write_close);
 
@@ -176,26 +184,29 @@ static benchmark_result benchmark_fpzip(const void *input_buffer, const metadata
         fpz->nz = e.size() >= 3 ? static_cast<int>(e[e.size() - 3]) : 1;
         fpz->nf = e.size() >= 4 ? static_cast<int>(e[e.size() - 4]) : 1;
 
-        auto start = std::chrono::steady_clock::now();
+        auto run_start = std::chrono::steady_clock::now();
         auto result = fpzip_write(fpz.get(), input_buffer);
-        auto end = std::chrono::steady_clock::now();
+        auto run_time = std::chrono::steady_clock::now() - run_start;
 
         if (result == 0) {
             throw std::runtime_error("fpzip_write");
         }
         compressed_size = result;
-        cum_time += std::chrono::duration_cast<std::chrono::microseconds>(end - start);
-        ++n_samples;
+        min_time = std::min(min_time, run_time);
+        cum_time += run_time;
     }
 
-    return {cum_time / n_samples, static_cast<double>(compressed_size) / input_size};
+    return {
+        std::chrono::duration_cast<std::chrono::microseconds>(min_time),
+        static_cast<double>(compressed_size) / input_size
+    };
 }
 #endif
 
 
 #if HCDE_BENCHMARK_HAVE_ZLIB
 static benchmark_result benchmark_deflate(const void *input_buffer, const metadata &metadata, int level,
-        std::chrono::milliseconds benchmark_time) {
+        std::chrono::milliseconds benchmark_time, unsigned benchmark_reps) {
     class deflate_end_guard {
         public:
             explicit deflate_end_guard(z_streamp p) : _p(p) {}
@@ -239,7 +250,7 @@ static benchmark_result benchmark_deflate(const void *input_buffer, const metada
     std::chrono::microseconds cum_time{};
     auto n_samples = size_t{0};
     size_t compressed_size;
-    while (cum_time < benchmark_time) {
+    for (unsigned i = 0; cum_time < benchmark_time || i < benchmark_reps; ++i) {
         auto strm = strm_init;
         if (deflateInit(&strm, /* level */ 9) != Z_OK) {
             throw std::runtime_error("deflateInit");
@@ -264,38 +275,41 @@ static benchmark_result benchmark_deflate(const void *input_buffer, const metada
 
 #if HCDE_BENCHMARK_HAVE_LZ4
 static benchmark_result benchmark_lz4(const void *input_buffer, const metadata &metadata,
-        std::chrono::milliseconds benchmark_time) {
+        std::chrono::milliseconds benchmark_time, unsigned benchmark_reps) {
     auto input_size = metadata.size_in_bytes();
     auto output_buffer_size = static_cast<size_t>(LZ4_compressBound(static_cast<int>(input_size)));
     auto output_buffer = std::unique_ptr<char, malloc_deleter>(
             static_cast<char*>(malloc(output_buffer_size)));
     memzero_noinline(output_buffer.get(), output_buffer_size);
 
-    std::chrono::microseconds cum_time{};
-    auto n_samples = size_t{0};
+    std::chrono::steady_clock::duration min_time{std::chrono::hours(1000)};
+    std::chrono::steady_clock::duration cum_time{};
     size_t compressed_size;
-    while (cum_time < benchmark_time) {
-        auto start = std::chrono::steady_clock::now();
+    for (unsigned i = 0; cum_time < benchmark_time || i < benchmark_reps; ++i) {
+        auto run_start = std::chrono::steady_clock::now();
         int result = LZ4_compress_default(static_cast<const char*>(input_buffer), output_buffer.get(),
                 static_cast<int>(input_size), static_cast<int>(output_buffer_size));
-        auto end = std::chrono::steady_clock::now();
+        auto run_time = std::chrono::steady_clock::now() - run_start;
 
         if (result == 0) {
             throw std::runtime_error("LZ4_compress_default");
         }
         compressed_size = static_cast<size_t>(result);
-        cum_time += std::chrono::duration_cast<std::chrono::microseconds>(end - start);
-        ++n_samples;
+        min_time = std::min(min_time, run_time);
+        cum_time += run_time;
     }
 
-    return {cum_time / n_samples, static_cast<double>(compressed_size) / input_size};
+    return {
+        std::chrono::duration_cast<std::chrono::microseconds>(min_time),
+        static_cast<double>(compressed_size) / input_size
+    };
 }
 #endif
 
 
 #if HCDE_BENCHMARK_HAVE_LZMA
 static benchmark_result benchmark_lzma(const void *input_buffer, const metadata &metadata, int level,
-        std::chrono::milliseconds benchmark_time) {
+        std::chrono::milliseconds benchmark_time, unsigned benchmark_reps) {
     class lzma_end_guard {
        public:
         explicit lzma_end_guard(lzma_stream *strm) : _strm(strm) {}
@@ -323,17 +337,17 @@ static benchmark_result benchmark_lzma(const void *input_buffer, const metadata 
     strm_template.next_out = output_buffer.get();
     strm_template.avail_out = output_buffer_size;
 
-    std::chrono::microseconds cum_time{};
-    auto n_samples = size_t{0};
+    std::chrono::steady_clock::duration min_time{std::chrono::hours(1000)};
+    std::chrono::steady_clock::duration cum_time{};
     size_t compressed_size;
-    while (cum_time < benchmark_time) {
+    for (unsigned i = 0; cum_time < benchmark_time || i < benchmark_reps; ++i) {
         auto strm = strm_template;
         if (lzma_alone_encoder(&strm, &opts) != LZMA_OK) {
             throw std::runtime_error("lzma_alone_encoder");
         }
         lzma_end_guard guard(&strm);
 
-        auto start = std::chrono::steady_clock::now();
+        auto run_start = std::chrono::steady_clock::now();
         if (lzma_code(&strm, LZMA_RUN) != LZMA_OK) {
             throw std::runtime_error("llzma_code(LZMA_RUN)");
         }
@@ -346,19 +360,22 @@ static benchmark_result benchmark_lzma(const void *input_buffer, const metadata 
                 throw std::runtime_error("llzma_code(LZMA_FINISH)");
             }
         }
-        auto end = std::chrono::steady_clock::now();
+        auto run_time = std::chrono::steady_clock::now() - run_start;
 
         compressed_size = strm.total_out;
-        cum_time += std::chrono::duration_cast<std::chrono::microseconds>(end - start);
-        ++n_samples;
+        min_time = std::min(min_time, run_time);
+        cum_time += run_time;
     }
 
-    return {cum_time / n_samples, static_cast<double>(compressed_size) / input_size};
+    return {
+        std::chrono::duration_cast<std::chrono::microseconds>(min_time),
+        static_cast<double>(compressed_size) / input_size
+    };
 }
 #endif
 
 using algorithm_map = std::unordered_map<std::string, std::function<benchmark_result(const void *, const metadata&,
-        std::chrono::milliseconds)>>;
+        std::chrono::milliseconds, unsigned)>>;
 
 static const algorithm_map available_algorithms {
         {"hcde/cpu", benchmark_hcde<hcde::cpu_encoder>},
@@ -372,21 +389,21 @@ static const algorithm_map available_algorithms {
         {"fpzip", benchmark_fpzip},
 #endif
 #if HCDE_BENCHMARK_HAVE_ZLIB
-        {"deflate/1", [](auto *i, auto &m, auto t) { return benchmark_deflate(i, m, 1, t); }},
-        {"deflate/9", [](auto *i, auto &m, auto t) { return benchmark_deflate(i, m, 9, t); }},
+        {"deflate/1", [](auto *i, auto &m, auto t, auto r) { return benchmark_deflate(i, m, 1, t, r); }},
+        {"deflate/9", [](auto *i, auto &m, auto t, auto r) { return benchmark_deflate(i, m, 9, t, r); }},
 #endif
 #if HCDE_BENCHMARK_HAVE_LZ4
         {"lz4", benchmark_lz4},
 #endif
 #if HCDE_BENCHMARK_HAVE_LZMA
-        {"lzma/1", [](auto *i, auto &m, auto t) { return benchmark_lzma(i, m, 1, t); }},
-        {"lzma/9", [](auto *i, auto &m, auto t) { return benchmark_lzma(i, m, 9, t); }},
+        {"lzma/1", [](auto *i, auto &m, auto t, auto r) { return benchmark_lzma(i, m, 1, t, r); }},
+        {"lzma/9", [](auto *i, auto &m, auto t, auto r) { return benchmark_lzma(i, m, 9, t, r); }},
 #endif
 };
 
 
 static void benchmark_file(const metadata &metadata, const algorithm_map &algorithms,
-        std::chrono::milliseconds benchmark_time) {
+        std::chrono::milliseconds benchmark_time, unsigned benchmark_reps) {
     auto input_buffer_size = metadata.size_in_bytes();
     auto input_buffer = std::unique_ptr<std::byte, malloc_deleter>(
             static_cast<std::byte*>(malloc(input_buffer_size)));
@@ -402,7 +419,7 @@ static void benchmark_file(const metadata &metadata, const algorithm_map &algori
     }
 
     for (auto &[algo_name, benchmark_algo]: algorithms) {
-        auto result = benchmark_algo(input_buffer.get(), metadata, benchmark_time);
+        auto result = benchmark_algo(input_buffer.get(), metadata, benchmark_time, benchmark_reps);
         std::cout << metadata.path.filename().string() << ";"
                 << algo_name << ";"
                 << std::chrono::duration_cast<std::chrono::duration<double>>(result.duration).count() << ";"
@@ -446,6 +463,7 @@ int main(int argc, char **argv) {
     std::string metadata_csv_file;
     std::vector<std::string> algorithm_names;
     unsigned benchmark_ms = 1000;
+    unsigned benchmark_reps = 2;
 
     auto usage = "Usage: "s + argv[0] + " [options] csv-file\n\n";
 
@@ -455,7 +473,8 @@ int main(int argc, char **argv) {
             ("version", "show library versions")
             ("csv-file", opts::value(&metadata_csv_file)->required(), "csv file with benchmark file metadata")
             ("algorithms,a", opts::value(&algorithm_names)->multitoken(), "algorithms to evaluate (see --help)")
-            ("time-each,t", opts::value(&benchmark_ms), "repeat each measurement for at least t ms");
+            ("time-each,t", opts::value(&benchmark_ms), "repeat each for at least t ms (default 1000)")
+            ("reps-each,r", opts::value(&benchmark_reps), "repeat each at least n times (default 3)");
     opts::positional_options_description pos_desc;
     pos_desc.add("csv-file", 1);
 
@@ -500,7 +519,7 @@ int main(int argc, char **argv) {
         std::cout.precision(9);
         std::cout.setf(std::ios::fixed);
         for (auto &metadata : load_metadata_file(metadata_csv_file)) {
-            benchmark_file(metadata, selected_algorithms, std::chrono::milliseconds(benchmark_ms));
+            benchmark_file(metadata, selected_algorithms, std::chrono::milliseconds(benchmark_ms), benchmark_reps);
         }
         return EXIT_SUCCESS;
     } catch (std::exception &e) {
