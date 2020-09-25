@@ -34,17 +34,6 @@ T extent_cast(const sycl::id<Dims> &r) {
     return extent_cast<static_cast<unsigned>(Dims), T>(r);
 }
 
-template<unsigned Dims>
-extent<Dims> extent_from_linear_id(size_t linear_id, const extent<Dims> &size) {
-    extent<Dims> ext;
-    for (unsigned nd = 0; nd < Dims; ++nd) {
-        auto d = Dims-1-nd;
-        ext[d] = linear_id % size[d];
-        linear_id /= size[d];
-    }
-    return ext;
-}
-
 template<typename Profile, typename DataAccessor, typename BlockTransformAccessor>
 void load_hypercube(const DataAccessor &data_acc, const BlockTransformAccessor &block_transform_acc,
     sycl::nd_item<2> item)
@@ -56,7 +45,7 @@ void load_hypercube(const DataAccessor &data_acc, const BlockTransformAccessor &
 
     auto hc_index = item.get_global_range(0);
     auto data_size = detail::gpu::extent_cast<extent<dimensions>>(data_acc.get_range());
-    auto hc_offset = detail::gpu::extent_from_linear_id(hc_index, data_size / side_length) * side_length;
+    auto hc_offset = detail::extent_from_linear_id(hc_index, data_size / side_length) * side_length;
     auto tid = item.get_local_range(1);
 
     // Parallel global -> local load

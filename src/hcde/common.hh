@@ -430,4 +430,15 @@ void map_hypercube_slices(const extent<Profile::dimensions> &hc_offset,
     }
 }
 
+template<unsigned Dims>
+extent<Dims> extent_from_linear_id(size_t linear_id, const extent<Dims> &size) {
+    extent<Dims> ext;
+    for (unsigned nd = 0; nd < Dims; ++nd) {
+        auto d = Dims-1-nd;
+        ext[d] = linear_id % size[d];
+        linear_id /= size[d];
+    }
+    return ext;
+}
+
 } // namespace hcde::detail
