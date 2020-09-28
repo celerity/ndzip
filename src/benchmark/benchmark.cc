@@ -28,9 +28,6 @@
 #include <boost/program_options.hpp>
 
 
-using namespace std::placeholders;
-
-
 enum class data_type {
     t_float,
     t_double,
@@ -98,7 +95,8 @@ static void memzero_noinline(void *mem, size_t n_bytes) {
 
 struct benchmark_result {
     std::chrono::microseconds duration;
-    double compression_ratio;
+    uint64_t uncompressed_bytes;
+    uint64_t compressed_bytes;
 };
 
 
@@ -128,10 +126,7 @@ static benchmark_result benchmark_hcde_3(const Data *input_buffer, const hcde::e
         cum_time += run_time;
     }
 
-    return {
-        std::chrono::duration_cast<std::chrono::microseconds>(min_time),
-        static_cast<double>(compressed_size) / input_size
-    };
+    return {std::chrono::duration_cast<std::chrono::microseconds>(min_time), input_size, compressed_size};
 }
 
 
@@ -203,10 +198,7 @@ static benchmark_result benchmark_fpzip(const void *input_buffer, const metadata
         cum_time += run_time;
     }
 
-    return {
-        std::chrono::duration_cast<std::chrono::microseconds>(min_time),
-        static_cast<double>(compressed_size) / input_size
-    };
+    return { std::chrono::duration_cast<std::chrono::microseconds>(min_time), input_size, compressed_size};
 }
 #endif
 
@@ -240,10 +232,7 @@ static benchmark_result benchmark_fpc(const void *input_buffer, const metadata &
         cum_time += run_time;
     }
 
-    return {
-        std::chrono::duration_cast<std::chrono::microseconds>(min_time),
-        static_cast<double>(compressed_size) / input_size
-    };
+    return { std::chrono::duration_cast<std::chrono::microseconds>(min_time), input_size, compressed_size };
 }
 
 
@@ -311,7 +300,7 @@ static benchmark_result benchmark_deflate(const void *input_buffer, const metada
         ++n_samples;
     }
 
-    return {cum_time / n_samples, static_cast<double>(compressed_size) / input_size};
+    return {cum_time / n_samples, input_size, compressed_size};
 }
 #endif
 
@@ -342,10 +331,7 @@ static benchmark_result benchmark_lz4(const void *input_buffer, const metadata &
         cum_time += run_time;
     }
 
-    return {
-        std::chrono::duration_cast<std::chrono::microseconds>(min_time),
-        static_cast<double>(compressed_size) / input_size
-    };
+    return { std::chrono::duration_cast<std::chrono::microseconds>(min_time), input_size, compressed_size};
 }
 #endif
 
@@ -410,17 +396,17 @@ static benchmark_result benchmark_lzma(const void *input_buffer, const metadata 
         cum_time += run_time;
     }
 
-    return {
-        std::chrono::duration_cast<std::chrono::microseconds>(min_time),
-        static_cast<double>(compressed_size) / input_size
-    };
+    return {std::chrono::duration_cast<std::chrono::microseconds>(min_time), input_size, compressed_size};
 }
 #endif
 
-using algorithm_map = std::unordered_map<std::string, std::function<benchmark_result(const void *, const metadata&,
-        std::chrono::milliseconds, unsigned)>>;
+using algorithm =  std::function<benchmark_result(const void *, const metadata&, std::chrono::milliseconds, unsigned)>;
+using algorithm_map = std::unordered_map<std::string, algorithm>;
 
-static const algorithm_map available_algorithms {
+const algorithm_map &available_algorithms() {
+    using namespace std::placeholders;
+
+    static const algorithm_map algorithms{
         {"hcde/cpu", benchmark_hcde<hcde::cpu_encoder>},
 #if HCDE_OPENMP_SUPPORT
         {"hcde/cpu-mt", benchmark_hcde<hcde::mt_cpu_encoder>},
@@ -443,7 +429,10 @@ static const algorithm_map available_algorithms {
         {"lzma/1", std::bind(benchmark_lzma, _1, _2, 1, _3, _4)},
         {"lzma/9", std::bind(benchmark_lzma, _1, _2, 9, _3, _4)},
 #endif
-};
+    };
+
+    return algorithms;
+}
 
 
 static void benchmark_file(const metadata &metadata, const algorithm_map &algorithms,
@@ -472,14 +461,15 @@ static void benchmark_file(const metadata &metadata, const algorithm_map &algori
         std::cout << metadata.path.filename().string() << ";"
                 << algo_name << ";"
                 << std::chrono::duration_cast<std::chrono::duration<double>>(result.duration).count() << ";"
-                << result.compression_ratio << "\n";
+                << result.uncompressed_bytes << ";"
+                << result.compressed_bytes << "\n";
     }
 }
 
 
 static std::string available_algorithms_string() {
     std::string algos;
-    for (auto &[name, _]: available_algorithms) {
+    for (auto &[name, _]: available_algorithms()) {
         if (!algos.empty()) {
             algos.push_back(' ');
         }
@@ -552,19 +542,19 @@ int main(int argc, char **argv) {
     algorithm_map selected_algorithms;
     if (!algorithm_names.empty()) {
         for (auto &name: algorithm_names) {
-            auto iter = available_algorithms.find(name);
-            if (iter == available_algorithms.end()) {
+            auto iter = available_algorithms().find(name);
+            if (iter == available_algorithms().end()) {
                 std::cerr << "Unknown algorithm \"" << name << "\".\nAvailable algorithms are: "
                         << available_algorithms_string() << "\n";
             }
             selected_algorithms.insert(*iter);
         }
     } else {
-        selected_algorithms = available_algorithms;
+        selected_algorithms = available_algorithms();
     }
 
     try {
-        std::cout << "dataset;algorithm;time;ratio\n";
+        std::cout << "dataset;algorithm;fastest time (seconds);uncompressed bytes;compressed bytes\n";
         std::cout.precision(9);
         std::cout.setf(std::ios::fixed);
         for (auto &metadata : load_metadata_file(metadata_csv_file)) {
