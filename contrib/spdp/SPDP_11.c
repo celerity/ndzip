@@ -39,10 +39,11 @@ Synthesized Lossless Compression Algorithm for Floating-Point Data. Proceedings
 of the 2018 Data Compression Conference, pp. 337-346. March 2018.
 */
 
+#include "SPDP_11.h"
 
-#include <stdlib.h>
-#include <stdio.h>
+#include <assert.h>
 #include <string.h>
+#include <stdio.h>
 
 #define BUFFER_SIZE (1 << 23)
 #define MAX_TABLE_SIZE (1 << 18)
@@ -194,48 +195,65 @@ static void decompress(const byte_t level, const size_t length, byte_t* const bu
   }
 }
 
-int main(int argc, char *argv[])
-{
-  fprintf(stderr, "SPDP Floating-Point Compressor v1.1\n");
-  fprintf(stderr, "Copyright (c) 2015-2020 Texas State University\n\n");
+// Burtscher's implementation has been slightly modified to read from / write to memory instead of files.
 
-  if ((argc != 1) && (argc != 2)) {
-    fprintf(stderr, "compression usage: %s level < uncompressed_file > compressed_file\n", argv[0]);
-    fprintf(stderr, "decompression usage: %s < compressed_file > decompressed_file\n", argv[0]);
-    return -1;
-  }
+static size_t stream_read(void *buffer, size_t size, size_t items, const void *stream, size_t bytes, size_t *cursor) {
+    assert(*cursor <= bytes);
+    size_t remaining_items = (bytes - *cursor) / size;
+    size_t read = items < remaining_items ? items : remaining_items;
+    memcpy(buffer, (const char*) stream + *cursor, read * size);
+    *cursor += read * size;
+    return read;
+}
 
-  if (argc == 2) {  // compression
-    byte_t level = atoi(argv[1]);
+static size_t stream_write(const void *buffer, size_t size, size_t items, void *stream, size_t *cursor) {
+    memcpy((char*) stream + *cursor, buffer, size * items);
+    *cursor += size * items;
+    return items;
+}
+
+
+size_t SPDP_Compress_Memory(const void *in_stream, size_t in_bytes, void *out_stream, int level) {
+    size_t in_cursor = 0;
+    size_t out_cursor = 0;
+
     if (level < 0) level = 0;
     if (level > 9) level = 9;
-    fwrite(&level, sizeof(byte_t), 1, stdout);
 
-    int length = fread(buffer1, sizeof(byte_t), BUFFER_SIZE, stdin);
+    stream_write(&level, sizeof(byte_t), 1, out_stream, &out_cursor);
+
+    int length = stream_read(buffer1, sizeof(byte_t), BUFFER_SIZE, in_stream, in_bytes, &in_cursor);
     while (length > 0) {
-      fwrite(&length, sizeof(int), 1, stdout);
-      int csize = compress(level, length, buffer1, buffer2);
-      fwrite(&csize, sizeof(int), 1, stdout);
-      fwrite(buffer2, sizeof(byte_t), csize, stdout);
-      length = fread(buffer1, sizeof(byte_t), BUFFER_SIZE, stdin);
+        stream_write(&length, sizeof(int), 1, out_stream, &out_cursor);
+        int csize = compress(level, length, buffer1, buffer2);
+        stream_write(&csize, sizeof(int), 1, out_stream, &out_cursor);
+        stream_write(buffer2, sizeof(byte_t), csize, out_stream, &out_cursor);
+        length = stream_read(buffer1, sizeof(byte_t), BUFFER_SIZE, in_stream, in_bytes, &in_cursor);
     }
-  } else {  // decompression
+
+    return out_cursor;
+}
+
+
+size_t SPDP_Decompress_Memory(const void *in_stream, size_t in_bytes, void *out_stream) {
+    size_t in_cursor = 0;
+    size_t out_cursor = 0;
+
     byte_t level = 10;
-    fread(&level, sizeof(byte_t), 1, stdin);
+    stream_read(&level, sizeof(byte_t), 1, in_stream, in_bytes, &in_cursor);
     if ((level < 0) || (level > 9)) {
-      fprintf(stderr, "incorrect input file type\n");
-      return -2;
+        fprintf(stderr, "incorrect input file type\n");
+        abort();
     }
 
     int length;
-    while (fread(&length, sizeof(int), 1, stdin) > 0) {
-      int csize;
-      fread(&csize, sizeof(int), 1, stdin);
-      fread(buffer2, sizeof(byte_t), csize, stdin);
-      decompress(level, csize, buffer2, buffer1);
-      fwrite(buffer1, sizeof(byte_t), length, stdout);
+    while (stream_read(&length, sizeof(int), 1, in_stream, in_bytes, &in_cursor) > 0) {
+        int csize;
+        stream_read(&csize, sizeof(int), 1, in_stream, in_bytes, &in_cursor);
+        stream_read(buffer2, sizeof(byte_t), csize, in_stream, in_bytes, &in_cursor);
+        decompress(level, csize, buffer2, buffer1);
+        stream_write(buffer1, sizeof(byte_t), length, out_stream, &out_cursor);
     }
-  }
 
-  return 0;
+    return in_cursor;
 }

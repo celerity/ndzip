@@ -24,6 +24,7 @@
 #   include <fpzip.h>
 #endif
 #include <fpc.h>
+#include <SPDP_11.h>
 
 #include <boost/program_options.hpp>
 
@@ -213,7 +214,7 @@ static benchmark_result benchmark_fpc(const void *input_buffer, const metadata &
 
     auto output_buffer_size = 2*input_size + 1000; // fpc has no bound function, just guess large enough
     auto output_buffer = std::unique_ptr<Bytef, malloc_deleter>(
-            static_cast<Bytef*>(malloc(output_buffer_size)));
+        static_cast<Bytef*>(malloc(output_buffer_size)));
     memzero_noinline(output_buffer.get(), output_buffer_size);
 
     std::chrono::steady_clock::duration cum_time{};
@@ -222,6 +223,35 @@ static benchmark_result benchmark_fpc(const void *input_buffer, const metadata &
     for (unsigned i = 0; cum_time < benchmark_time || i < benchmark_reps; ++i) {
         auto run_start = std::chrono::steady_clock::now();
         auto result = FPC_Compress_Memory(input_buffer, metadata.size_in_bytes(), output_buffer.get(), pred_size);
+        auto run_time = std::chrono::steady_clock::now() - run_start;
+
+        if (result == 0) {
+            throw std::runtime_error("fpzip_write");
+        }
+        compressed_size = result;
+        min_time = std::min(min_time, run_time);
+        cum_time += run_time;
+    }
+
+    return { std::chrono::duration_cast<std::chrono::microseconds>(min_time), input_size, compressed_size };
+}
+
+
+static benchmark_result benchmark_spdp(const void *input_buffer, const metadata &metadata, int pred_size,
+        std::chrono::milliseconds benchmark_time, unsigned benchmark_reps) {
+    auto input_size = metadata.size_in_bytes();
+
+    auto output_buffer_size = 2*input_size + 1000; // spdp has no bound function, just guess large enough
+    auto output_buffer = std::unique_ptr<Bytef, malloc_deleter>(
+            static_cast<Bytef*>(malloc(output_buffer_size)));
+    memzero_noinline(output_buffer.get(), output_buffer_size);
+
+    std::chrono::steady_clock::duration cum_time{};
+    std::chrono::steady_clock::duration min_time{std::chrono::hours(1000)};
+    size_t compressed_size;
+    for (unsigned i = 0; cum_time < benchmark_time || i < benchmark_reps; ++i) {
+        auto run_start = std::chrono::steady_clock::now();
+        auto result = SPDP_Compress_Memory(input_buffer, metadata.size_in_bytes(), output_buffer.get(), pred_size);
         auto run_time = std::chrono::steady_clock::now() - run_start;
 
         if (result == 0) {
@@ -417,7 +447,10 @@ const algorithm_map &available_algorithms() {
 #if HCDE_BENCHMARK_HAVE_FPZIP
         {"fpzip", benchmark_fpzip},
 #endif
-        {"fpc", std::bind(benchmark_fpc, _1, _2, 20, _3, _4)},
+        {"fpc/10", std::bind(benchmark_fpc, _1, _2, 10, _3, _4)},
+        {"fpc/20", std::bind(benchmark_fpc, _1, _2, 20, _3, _4)},
+        {"spdp/1", std::bind(benchmark_spdp, _1, _2, 1, _3, _4)},
+        {"spdp/9", std::bind(benchmark_spdp, _1, _2, 9, _3, _4)},
 #if HCDE_BENCHMARK_HAVE_ZLIB
         {"deflate/1", std::bind(benchmark_deflate, _1, _2, 1, _3, _4)},
         {"deflate/9", std::bind(benchmark_deflate, _1, _2, 9, _3, _4)},
@@ -500,7 +533,8 @@ int main(int argc, char **argv) {
     using namespace std::string_literals;
 
     std::string metadata_csv_file;
-    std::vector<std::string> algorithm_names;
+    std::vector<std::string> include_algorithms;
+    std::vector<std::string> exclude_algorithms;
     unsigned benchmark_ms = 1000;
     unsigned benchmark_reps = 2;
 
@@ -511,7 +545,9 @@ int main(int argc, char **argv) {
             ("help", "show this help")
             ("version", "show library versions")
             ("csv-file", opts::value(&metadata_csv_file)->required(), "csv file with benchmark file metadata")
-            ("algorithms,a", opts::value(&algorithm_names)->multitoken(), "algorithms to evaluate (see --help)")
+            ("algorithms,a", opts::value(&include_algorithms)->multitoken(), "algorithms to evaluate (see --help)")
+            ("skip-algorithms,A", opts::value(&exclude_algorithms)->multitoken(),
+                "algorithms to NOT evaluate (see --help)")
             ("time-each,t", opts::value(&benchmark_ms), "repeat each for at least t ms (default 1000)")
             ("reps-each,r", opts::value(&benchmark_reps), "repeat each at least n times (default 3)");
     opts::positional_options_description pos_desc;
@@ -540,17 +576,22 @@ int main(int argc, char **argv) {
     }
 
     algorithm_map selected_algorithms;
-    if (!algorithm_names.empty()) {
-        for (auto &name: algorithm_names) {
-            auto iter = available_algorithms().find(name);
-            if (iter == available_algorithms().end()) {
+    if (!include_algorithms.empty()) {
+        for (auto &name: include_algorithms) {
+            if (auto iter = available_algorithms().find(name); iter != available_algorithms().end()) {
+                selected_algorithms.insert(*iter);
+            } else {
                 std::cerr << "Unknown algorithm \"" << name << "\".\nAvailable algorithms are: "
                         << available_algorithms_string() << "\n";
             }
-            selected_algorithms.insert(*iter);
         }
     } else {
         selected_algorithms = available_algorithms();
+    }
+    for (auto &name: exclude_algorithms) {
+        if (auto iter = selected_algorithms.find(name); iter != selected_algorithms.end()) {
+            selected_algorithms.erase(iter);
+        }
     }
 
     try {
