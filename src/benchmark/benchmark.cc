@@ -309,28 +309,28 @@ static benchmark_result benchmark_deflate(const void *input_buffer, const metada
     strm_init.next_out = output_buffer.get(),
     strm_init.avail_out = static_cast<uInt>(output_buffer_size);
 
-    std::chrono::microseconds cum_time{};
-    auto n_samples = size_t{0};
+    std::chrono::steady_clock::duration cum_time{};
+    std::chrono::steady_clock::duration min_time{std::chrono::hours(1000)};
     size_t compressed_size;
     for (unsigned i = 0; cum_time < benchmark_time || i < benchmark_reps; ++i) {
         auto strm = strm_init;
-        if (deflateInit(&strm, /* level */ 9) != Z_OK) {
+        if (deflateInit(&strm, level) != Z_OK) {
             throw std::runtime_error("deflateInit");
         }
         deflate_end_guard guard(&strm);
 
-        auto start = std::chrono::steady_clock::now();
+        auto run_start = std::chrono::steady_clock::now();
         if (deflate(&strm, Z_SYNC_FLUSH) != Z_OK) {
             throw std::runtime_error("deflate");
         }
-        auto end = std::chrono::steady_clock::now();
+        auto run_time = std::chrono::steady_clock::now() - run_start;
 
         compressed_size = strm.total_out;
-        cum_time += std::chrono::duration_cast<std::chrono::microseconds>(end - start);
-        ++n_samples;
+        min_time = std::min(min_time, run_time);
+        cum_time += run_time;
     }
 
-    return {cum_time / n_samples, input_size, compressed_size};
+    return {std::chrono::duration_cast<std::chrono::microseconds>(min_time), input_size, compressed_size};
 }
 #endif
 
