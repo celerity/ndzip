@@ -23,8 +23,12 @@
 #if HCDE_BENCHMARK_HAVE_FPZIP
 #   include <fpzip.h>
 #endif
+#include <fpc.h>
 
 #include <boost/program_options.hpp>
+
+
+using namespace std::placeholders;
 
 
 enum class data_type {
@@ -98,6 +102,9 @@ struct benchmark_result {
 };
 
 
+class not_implemented: std::exception {};
+
+
 template<template<typename, unsigned> typename Encoder, typename Data, unsigned Dims>
 static benchmark_result benchmark_hcde_3(const Data *input_buffer, const hcde::extent<Dims> &size,
         std::chrono::milliseconds benchmark_time, unsigned benchmark_reps) {
@@ -141,7 +148,7 @@ static benchmark_result benchmark_hcde_2(const Data *input_buffer, const metadat
         return benchmark_hcde_3<Encoder, Data, 3>(input_buffer, hcde::extent{e[0], e[1], e[2]}, benchmark_time,
             benchmark_reps);
     } else {
-        std::abort(); // should be unreachable
+        throw not_implemented{};
     }
 }
 
@@ -164,9 +171,9 @@ static benchmark_result benchmark_fpzip(const void *input_buffer, const metadata
         std::chrono::milliseconds benchmark_time, unsigned benchmark_reps) {
     auto input_size = metadata.size_in_bytes();
 
-    auto output_buffer_size = 2*input_size; // fpzip has no bound function, just guess large enough
+    auto output_buffer_size = 2*input_size + 1000; // fpzip has no bound function, just guess large enough
     auto output_buffer = std::unique_ptr<Bytef, malloc_deleter>(
-            static_cast<Bytef*>(malloc(output_buffer_size)));
+        static_cast<Bytef*>(malloc(output_buffer_size)));
     memzero_noinline(output_buffer.get(), output_buffer_size);
 
     std::chrono::steady_clock::duration cum_time{};
@@ -174,7 +181,7 @@ static benchmark_result benchmark_fpzip(const void *input_buffer, const metadata
     size_t compressed_size;
     for (unsigned i = 0; cum_time < benchmark_time || i < benchmark_reps; ++i) {
         std::unique_ptr<FPZ, decltype((fpzip_write_close))> fpz(
-                fpzip_write_to_buffer(output_buffer.get(), output_buffer_size), fpzip_write_close);
+            fpzip_write_to_buffer(output_buffer.get(), output_buffer_size), fpzip_write_close);
 
         fpz->type = metadata.data_type == data_type::t_float ? 0 : 1;
         fpz->prec = 0; // lossless
@@ -202,6 +209,42 @@ static benchmark_result benchmark_fpzip(const void *input_buffer, const metadata
     };
 }
 #endif
+
+
+static benchmark_result benchmark_fpc(const void *input_buffer, const metadata &metadata, int pred_size,
+        std::chrono::milliseconds benchmark_time, unsigned benchmark_reps) {
+    if (metadata.data_type != data_type::t_double) {
+        throw not_implemented{};
+    }
+
+    auto input_size = metadata.size_in_bytes();
+
+    auto output_buffer_size = 2*input_size + 1000; // fpc has no bound function, just guess large enough
+    auto output_buffer = std::unique_ptr<Bytef, malloc_deleter>(
+            static_cast<Bytef*>(malloc(output_buffer_size)));
+    memzero_noinline(output_buffer.get(), output_buffer_size);
+
+    std::chrono::steady_clock::duration cum_time{};
+    std::chrono::steady_clock::duration min_time{std::chrono::hours(1000)};
+    size_t compressed_size;
+    for (unsigned i = 0; cum_time < benchmark_time || i < benchmark_reps; ++i) {
+        auto run_start = std::chrono::steady_clock::now();
+        auto result = FPC_Compress_Memory(input_buffer, metadata.size_in_bytes(), output_buffer.get(), pred_size);
+        auto run_time = std::chrono::steady_clock::now() - run_start;
+
+        if (result == 0) {
+            throw std::runtime_error("fpzip_write");
+        }
+        compressed_size = result;
+        min_time = std::min(min_time, run_time);
+        cum_time += run_time;
+    }
+
+    return {
+        std::chrono::duration_cast<std::chrono::microseconds>(min_time),
+        static_cast<double>(compressed_size) / input_size
+    };
+}
 
 
 #if HCDE_BENCHMARK_HAVE_ZLIB
@@ -388,16 +431,17 @@ static const algorithm_map available_algorithms {
 #if HCDE_BENCHMARK_HAVE_FPZIP
         {"fpzip", benchmark_fpzip},
 #endif
+        {"fpc", std::bind(benchmark_fpc, _1, _2, 20, _3, _4)},
 #if HCDE_BENCHMARK_HAVE_ZLIB
-        {"deflate/1", [](auto *i, auto &m, auto t, auto r) { return benchmark_deflate(i, m, 1, t, r); }},
-        {"deflate/9", [](auto *i, auto &m, auto t, auto r) { return benchmark_deflate(i, m, 9, t, r); }},
+        {"deflate/1", std::bind(benchmark_deflate, _1, _2, 1, _3, _4)},
+        {"deflate/9", std::bind(benchmark_deflate, _1, _2, 9, _3, _4)},
 #endif
 #if HCDE_BENCHMARK_HAVE_LZ4
         {"lz4", benchmark_lz4},
 #endif
 #if HCDE_BENCHMARK_HAVE_LZMA
-        {"lzma/1", [](auto *i, auto &m, auto t, auto r) { return benchmark_lzma(i, m, 1, t, r); }},
-        {"lzma/9", [](auto *i, auto &m, auto t, auto r) { return benchmark_lzma(i, m, 9, t, r); }},
+        {"lzma/1", std::bind(benchmark_lzma, _1, _2, 1, _3, _4)},
+        {"lzma/9", std::bind(benchmark_lzma, _1, _2, 9, _3, _4)},
 #endif
 };
 
@@ -419,7 +463,12 @@ static void benchmark_file(const metadata &metadata, const algorithm_map &algori
     }
 
     for (auto &[algo_name, benchmark_algo]: algorithms) {
-        auto result = benchmark_algo(input_buffer.get(), metadata, benchmark_time, benchmark_reps);
+        benchmark_result result;
+        try {
+            result = benchmark_algo(input_buffer.get(), metadata, benchmark_time, benchmark_reps);
+        } catch (not_implemented &) {
+            continue;
+        }
         std::cout << metadata.path.filename().string() << ";"
                 << algo_name << ";"
                 << std::chrono::duration_cast<std::chrono::duration<double>>(result.duration).count() << ";"

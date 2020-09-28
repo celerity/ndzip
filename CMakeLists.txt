@@ -104,9 +104,11 @@ if (HCDE_BUILD_BENCHMARK)
         add_subdirectory(contrib/fpzip)
     endif ()
 
+    add_subdirectory(contrib/fpc)
+
     add_executable(benchmark src/benchmark/benchmark.cc)
     target_compile_options(benchmark PRIVATE ${HCDE_COMPILE_FLAGS})
-    target_link_libraries(benchmark PRIVATE hcde Boost::program_options)
+    target_link_libraries(benchmark PRIVATE hcde Boost::program_options fpc)
     target_compile_definitions(benchmark PRIVATE
         "-DHCDE_BENCHMARK_HAVE_ZLIB=$<BOOL:ZLIB_FOUND>"
         "-DHCDE_BENCHMARK_HAVE_LZ4=$<BOOL:LZ4_FOUND>"
@@ -116,7 +118,6 @@ if (HCDE_BUILD_BENCHMARK)
     if (HCDE_USE_HIPSYCL)
         target_link_libraries(benchmark PRIVATE hcde-gpu)
     endif ()
-
     if (ZLIB_FOUND)
         target_link_libraries(benchmark PRIVATE ZLIB::ZLIB)
     endif ()

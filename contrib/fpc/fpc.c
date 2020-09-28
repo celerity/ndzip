@@ -29,9 +29,9 @@ Software License Terms and Conditions
 
 */
 
+#include "fpc.h"
 
-#include <stdlib.h>
-#include <stdio.h>
+#include <string.h>
 #include <assert.h>
 
 #define SIZE 32768
@@ -46,18 +46,39 @@ static const long long mask[8] =
  0x00ffffffffffffffLL,
  0xffffffffffffffffLL};
 
-static void Compress(long predsizem1)
+// Burtscher's implementation has been slightly modified to read from / write to memory instead of files.
+
+static size_t stream_read(void *buffer, size_t size, size_t items, const void *stream, size_t bytes, size_t *cursor) {
+    assert(*cursor <= bytes);
+    size_t remaining_items = (bytes - *cursor) / size;
+    size_t read = items < remaining_items ? items : remaining_items;
+    memcpy(buffer, (const char*) stream + *cursor, read * size);
+    *cursor += read * size;
+    return read;
+}
+
+static size_t stream_write(const void *buffer, size_t size, size_t items, void *stream, size_t *cursor) {
+    memcpy((char*) stream + *cursor, buffer, size * items);
+    *cursor += size * items;
+    return items;
+}
+
+size_t FPC_Compress_Memory(const void *in_stream, size_t in_bytes, void *out_stream, long predsizem1)
 {
   register long i, out, intot, hash, dhash, code, bcode, ioc;
   register long long val, lastval, stride, pred1, pred2, xor1, xor2;
   register long long *fcm, *dfcm;
   unsigned long long inbuf[SIZE + 1];
   unsigned char outbuf[6 + (SIZE / 2) + (SIZE * 8) + 2];
+  size_t in_cursor, out_cursor;
 
   assert(0 == ((long)outbuf & 0x7));
 
+  in_cursor = 0;
+  out_cursor = 0;
+
   outbuf[0] = predsizem1;
-  ioc = fwrite(outbuf, 1, 1, stdout);
+  ioc = stream_write(outbuf, 1, 1, out_stream, &out_cursor);
   assert(1 == ioc);
   predsizem1 = (1L << predsizem1) - 1;
 
@@ -71,7 +92,7 @@ static void Compress(long predsizem1)
   dfcm = (long long *)calloc(predsizem1 + 1, 8);
   assert(NULL != dfcm);
 
-  intot = fread(inbuf, 8, SIZE, stdin);
+  intot = stream_read(inbuf, 8, SIZE, in_stream, in_bytes, &in_cursor);
   while (0 < intot) {
     val = inbuf[0];
     out = 6 + ((intot + 1) >> 1);
@@ -170,23 +191,29 @@ static void Compress(long predsizem1)
     outbuf[3] = out;
     outbuf[4] = out >> 8;
     outbuf[5] = out >> 16;
-    ioc = fwrite(outbuf, 1, out, stdout);
+    ioc = stream_write(outbuf, 1, out, out_stream, &out_cursor);
     assert(ioc == out);
-    intot = fread(inbuf, 8, SIZE, stdin);
+    intot = stream_read(inbuf, 8, SIZE, in_stream, in_bytes, &in_cursor);
   }
+
+  return out_cursor;
 }
 
-static void Decompress()
+size_t FPC_Deompress_Memory(const void *in_stream, size_t in_bytes, void *out_stream)
 {
   register long i, in, intot, hash, dhash, code, bcode, predsizem1, end, tmp, ioc;
   register long long val, lastval, stride, pred1, pred2, next;
   register long long *fcm, *dfcm;
   long long outbuf[SIZE];
   unsigned char inbuf[(SIZE / 2) + (SIZE * 8) + 6 + 2];
+  size_t in_cursor, out_cursor;
 
   assert(0 == ((long)inbuf & 0x7));
 
-  ioc = fread(inbuf, 1, 7, stdin);
+  in_cursor = 0;
+  out_cursor = 0;
+
+  ioc = stream_read(inbuf, 1, 7, in_stream, in_bytes, &in_cursor);
   if (1 != ioc) {
     assert(7 == ioc);
     predsizem1 = inbuf[0];
@@ -210,7 +237,7 @@ static void Decompress()
     in = (in << 8) | inbuf[4];
     assert(SIZE >= intot);
     do {
-      end = fread(inbuf, 1, in, stdin);
+      end = stream_read(inbuf, 1, in, in_stream, in_bytes, &in_cursor);
       assert((end + 6) >= in);
       in = (intot + 1) >> 1;
       for (i = 0; i < intot; i += 2) {
@@ -274,7 +301,7 @@ static void Decompress()
 
         outbuf[i + 1] = val;
       }
-      ioc = fwrite(outbuf, 8, intot, stdout);
+      ioc = stream_write(outbuf, 8, intot, out_stream, &out_cursor);
       assert(ioc == intot);
       intot = 0;
       if ((end - 6) >= in) {
@@ -289,5 +316,7 @@ static void Decompress()
       assert(SIZE >= intot);
     } while (0 < intot);
   }
+
+  return in_cursor;
 }
 

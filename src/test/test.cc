@@ -240,25 +240,28 @@ TEMPLATE_TEST_CASE("encoder produces the expected bit stream", "[encoder]",
 
 
 TEMPLATE_TEST_CASE("encoder reproduces the bit-identical array", "[encoder]",
-    (cpu_encoder<float, 1>), (cpu_encoder<float, 2>), (cpu_encoder<float, 3>)
+    (cpu_encoder<float, 1>), (cpu_encoder<float, 2>), (cpu_encoder<float, 3>),
+    (cpu_encoder<double, 1>), (cpu_encoder<double, 2>), (cpu_encoder<double, 3>)
 #if HCDE_OPENMP_SUPPORT
-    , (mt_cpu_encoder<float, 1>), (mt_cpu_encoder<float, 2>), (mt_cpu_encoder<float, 3>)
+    , (mt_cpu_encoder<float, 1>), (mt_cpu_encoder<float, 2>), (mt_cpu_encoder<float, 3>),
+    (mt_cpu_encoder<double, 1>), (mt_cpu_encoder<double, 2>), (mt_cpu_encoder<double, 3>)
 #endif
 ) {
-    using profile = detail::profile<typename TestType::data_type, TestType::dimensions>;
+    using data_type = typename TestType::data_type;
+    using profile = detail::profile<data_type, TestType::dimensions>;
 
     constexpr auto dims = profile::dimensions;
     const size_t n = 199;
 
-    auto input_data = make_random_vector<float>(ipow(n, dims));
-    slice<const float, dims> input(input_data.data(), extent<dims>::broadcast(n));
+    auto input_data = make_random_vector<data_type>(ipow(n, dims));
+    slice<const data_type, dims> input(input_data.data(), extent<dims>::broadcast(n));
 
     TestType encoder;
     std::vector<std::byte> stream(hcde::compressed_size_bound<typename TestType::data_type>(input.size()));
     stream.resize(encoder.compress(input, stream.data()));
 
-    std::vector<float> output_data(ipow(n, dims));
-    slice<float, dims> output(output_data.data(), extent<dims>::broadcast(n));
+    std::vector<data_type> output_data(ipow(n, dims));
+    slice<data_type, dims> output(output_data.data(), extent<dims>::broadcast(n));
     encoder.decompress(stream.data(), stream.size(), output);
 
     CHECK(memcmp(input_data.data(), output_data.data(), input_data.size() * sizeof(float)) == 0);
