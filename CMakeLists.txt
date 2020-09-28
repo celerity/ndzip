@@ -98,6 +98,8 @@ endif ()
 
 
 if (HCDE_BUILD_BENCHMARK)
+    find_package(CUDAToolkit)
+
     if (FPZIP_FOUND)
         set(BUILD_UTILITIES OFF CACHE BOOL "Build command-line utilities for fpzip")
         set(BUILD_TESTING OFF CACHE BOOL "Build tests")
@@ -107,6 +109,12 @@ if (HCDE_BUILD_BENCHMARK)
     add_subdirectory(contrib/fpc)
     add_subdirectory(contrib/spdp)
 
+    if (CUDAToolkit_FOUND)
+        add_subdirectory(contrib/gfc)
+    else ()
+        message(WARNING "CUDA not found, omitting some algorithms in benchmark")
+    endif ()
+
     add_executable(benchmark src/benchmark/benchmark.cc)
     target_compile_options(benchmark PRIVATE ${HCDE_COMPILE_FLAGS})
     target_link_libraries(benchmark PRIVATE hcde Boost::program_options fpc spdp)
@@ -115,6 +123,7 @@ if (HCDE_BUILD_BENCHMARK)
         "-DHCDE_BENCHMARK_HAVE_LZ4=$<BOOL:LZ4_FOUND>"
         "-DHCDE_BENCHMARK_HAVE_LZMA=$<BOOL:LZMA_FOUND>"
         "-DHCDE_BENCHMARK_HAVE_FPZIP=$<BOOL:FPZIP_FOUND>"
+        "-DHCDE_BENCHMARK_HAVE_GFC=$<BOOL:CUDAToolkit_FOUND>"
     )
     if (HCDE_USE_HIPSYCL)
         target_link_libraries(benchmark PRIVATE hcde-gpu)
@@ -130,5 +139,8 @@ if (HCDE_BUILD_BENCHMARK)
     endif ()
     if (FPZIP_FOUND)
         target_link_libraries(benchmark PRIVATE fpzip::fpzip)
+    endif ()
+    if (CUDAToolkit_FOUND)
+        target_link_libraries(benchmark PRIVATE gfc)
     endif ()
 endif ()

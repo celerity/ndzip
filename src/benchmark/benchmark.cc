@@ -25,6 +25,9 @@
 #endif
 #include <fpc.h>
 #include <SPDP_11.h>
+#if HCDE_BENCHMARK_HAVE_GFC
+#   include <GFC_22.h>
+#endif
 
 #include <boost/program_options.hpp>
 
@@ -243,7 +246,7 @@ static benchmark_result benchmark_spdp(const void *input_buffer, const metadata 
 
     auto output_buffer_size = 2*input_size + 1000; // spdp has no bound function, just guess large enough
     auto output_buffer = std::unique_ptr<Bytef, malloc_deleter>(
-            static_cast<Bytef*>(malloc(output_buffer_size)));
+        static_cast<Bytef*>(malloc(output_buffer_size)));
     memzero_noinline(output_buffer.get(), output_buffer_size);
 
     std::chrono::steady_clock::duration cum_time{};
@@ -264,6 +267,44 @@ static benchmark_result benchmark_spdp(const void *input_buffer, const metadata 
 
     return { std::chrono::duration_cast<std::chrono::microseconds>(min_time), input_size, compressed_size };
 }
+
+
+#if HCDE_BENCHMARK_HAVE_GFC
+static benchmark_result benchmark_gfc(const void *input_buffer, const metadata &metadata,
+        std::chrono::milliseconds benchmark_time, unsigned benchmark_reps) {
+    if (metadata.data_type != data_type::t_double) {
+        throw not_implemented{};
+    }
+
+    auto input_size = metadata.size_in_bytes();
+
+    auto output_buffer_size = 2*input_size + 1000; // spdp has no bound function, just guess large enough
+    auto output_buffer = std::unique_ptr<Bytef, malloc_deleter>(
+            static_cast<Bytef*>(malloc(output_buffer_size)));
+    memzero_noinline(output_buffer.get(), output_buffer_size);
+
+    GFC_Init();
+
+    std::chrono::microseconds cum_time{};
+    std::chrono::microseconds min_time{std::chrono::hours(1000)};
+    size_t compressed_size;
+    for (unsigned i = 0; cum_time < benchmark_time || i < benchmark_reps; ++i) {
+        uint64_t kernel_time_us;
+        int blocks = 28;
+        int warps_per_block = 18;
+        int dimensionality = 1;
+
+        compressed_size = GFC_Compress_Memory(input_buffer, metadata.size_in_bytes(), output_buffer.get(), blocks,
+            warps_per_block, dimensionality , &kernel_time_us);
+
+        auto run_time = std::chrono::microseconds(kernel_time_us);
+        min_time = std::min(min_time, run_time);
+        cum_time += run_time;
+    }
+
+    return { min_time, input_size, compressed_size };
+}
+#endif
 
 
 #if HCDE_BENCHMARK_HAVE_ZLIB
@@ -451,6 +492,9 @@ const algorithm_map &available_algorithms() {
         {"fpc/20", std::bind(benchmark_fpc, _1, _2, 20, _3, _4)},
         {"spdp/1", std::bind(benchmark_spdp, _1, _2, 1, _3, _4)},
         {"spdp/9", std::bind(benchmark_spdp, _1, _2, 9, _3, _4)},
+#if HCDE_BENCHMARK_HAVE_GFC
+        {"gfc", benchmark_gfc},
+#endif
 #if HCDE_BENCHMARK_HAVE_ZLIB
         {"deflate/1", std::bind(benchmark_deflate, _1, _2, 1, _3, _4)},
         {"deflate/9", std::bind(benchmark_deflate, _1, _2, 9, _3, _4)},
@@ -524,6 +568,9 @@ static void print_library_versions() {
 #endif
 #if HCDE_BENCHMARK_HAVE_FPZIP
     printf("%s\n", fpzip_version_string);
+#endif
+#if HCDE_BENCHMARK_HAVE_GFC
+    printf("GFC %s\n", GFC_Version_String);
 #endif
 }
 
