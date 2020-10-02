@@ -27,6 +27,7 @@ if (HCDE_BUILD_BENCHMARK)
     find_package(PkgConfig)
     pkg_check_modules(LZMA liblzma>=5.0.0 QUIET IMPORTED_TARGET)
     pkg_check_modules(LZ4 liblz4>=1.0.0 QUIET IMPORTED_TARGET)
+    pkg_check_modules(ZSTD libzstd>=1.0.0 QUIET IMPORTED_TARGET)
 
     if (EXISTS "${CMAKE_SOURCE_DIR}/contrib/fpzip/CMakeLists.txt")
         set(FPZIP_FOUND TRUE)
@@ -124,6 +125,7 @@ if (HCDE_BUILD_BENCHMARK)
         "-DHCDE_BENCHMARK_HAVE_LZMA=$<BOOL:LZMA_FOUND>"
         "-DHCDE_BENCHMARK_HAVE_FPZIP=$<BOOL:FPZIP_FOUND>"
         "-DHCDE_BENCHMARK_HAVE_GFC=$<BOOL:CUDAToolkit_FOUND>"
+        "-DHCDE_BENCHMARK_HAVE_ZSTD=$<BOOL:ZSTD_FOUND>"
     )
     if (HCDE_USE_HIPSYCL)
         target_link_libraries(benchmark PRIVATE hcde-gpu)
@@ -142,5 +144,8 @@ if (HCDE_BUILD_BENCHMARK)
     endif ()
     if (CUDAToolkit_FOUND)
         target_link_libraries(benchmark PRIVATE gfc)
+    endif ()
+    if (ZSTD_FOUND)
+        target_link_libraries(benchmark PRIVATE PkgConfig::ZSTD)
     endif ()
 endif ()

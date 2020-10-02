@@ -20,6 +20,9 @@
 #if HCDE_BENCHMARK_HAVE_LZMA
 #    include <lzma.h>
 #endif
+#if HCDE_BENCHMARK_HAVE_ZSTD
+#   include <zstd.h>
+#endif
 #if HCDE_BENCHMARK_HAVE_FPZIP
 #   include <fpzip.h>
 #endif
@@ -471,6 +474,37 @@ static benchmark_result benchmark_lzma(const void *input_buffer, const metadata 
 }
 #endif
 
+
+#if HCDE_BENCHMARK_HAVE_ZSTD
+static benchmark_result benchmark_zstd(const void *input_buffer, const metadata &metadata, int level,
+    std::chrono::milliseconds benchmark_time, unsigned benchmark_reps) {
+    auto input_size = metadata.size_in_bytes();
+    auto output_buffer_size = ZSTD_compressBound(input_size);
+    auto output_buffer = std::unique_ptr<char, malloc_deleter>(
+        static_cast<char*>(malloc(output_buffer_size)));
+    memzero_noinline(output_buffer.get(), output_buffer_size);
+
+    std::chrono::steady_clock::duration min_time{std::chrono::hours(1000)};
+    std::chrono::steady_clock::duration cum_time{};
+    size_t compressed_size;
+    for (unsigned i = 0; cum_time < benchmark_time || i < benchmark_reps; ++i) {
+        auto run_start = std::chrono::steady_clock::now();
+        auto result = ZSTD_compress(output_buffer.get(), output_buffer_size, input_buffer, input_size, level);
+        auto run_time = std::chrono::steady_clock::now() - run_start;
+
+        if (ZSTD_isError(result)) {
+            throw std::runtime_error("ZSTD_compress");
+        }
+        compressed_size = result;
+        min_time = std::min(min_time, run_time);
+        cum_time += run_time;
+    }
+
+    return { std::chrono::duration_cast<std::chrono::microseconds>(min_time), input_size, compressed_size};
+}
+#endif
+
+
 using algorithm =  std::function<benchmark_result(const void *, const metadata&, std::chrono::milliseconds, unsigned)>;
 using algorithm_map = std::unordered_map<std::string, algorithm>;
 
@@ -501,6 +535,10 @@ const algorithm_map &available_algorithms() {
 #endif
 #if HCDE_BENCHMARK_HAVE_LZ4
         {"lz4", benchmark_lz4},
+#endif
+#if HCDE_BENCHMARK_HAVE_ZSTD
+        {"zstd/1", std::bind(benchmark_zstd, _1, _2, 1, _3, _4)},
+        {"zstd/19", std::bind(benchmark_zstd, _1, _2, 19, _3, _4)},
 #endif
 #if HCDE_BENCHMARK_HAVE_LZMA
         {"lzma/1", std::bind(benchmark_lzma, _1, _2, 1, _3, _4)},
@@ -536,6 +574,8 @@ static void benchmark_file(const metadata &metadata, const algorithm_map &algori
             continue;
         }
         std::cout << metadata.path.filename().string() << ";"
+                << (metadata.data_type == data_type::t_float ? "float" : "double") << ";"
+                << metadata.extent.size() << ";"
                 << algo_name << ";"
                 << std::chrono::duration_cast<std::chrono::duration<double>>(result.duration).count() << ";"
                 << result.uncompressed_bytes << ";"
@@ -642,7 +682,8 @@ int main(int argc, char **argv) {
     }
 
     try {
-        std::cout << "dataset;algorithm;fastest time (seconds);uncompressed bytes;compressed bytes\n";
+        std::cout << "dataset;data type;dimensions;algorithm;fastest time (seconds);"
+                     "uncompressed bytes;compressed bytes\n";
         std::cout.precision(9);
         std::cout.setf(std::ios::fixed);
         for (auto &metadata : load_metadata_file(metadata_csv_file)) {
