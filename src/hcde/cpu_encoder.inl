@@ -93,17 +93,6 @@ void store_hypercube(const extent<Profile::dimensions> &hc_offset,
 }
 
 
-template<typename T>
-void block_transform_step(T *x, size_t n, size_t s) {
-    T a, b;
-    b = x[0*s];
-    for (size_t i = 1; i < n; ++i) {
-        a = b;
-        b = x[i*s];
-        x[i*s] = a ^ b;
-    }
-}
-
 #ifdef __AVX2__
 
 [[gnu::always_inline]]
@@ -119,6 +108,16 @@ inline __m256i load_unaligned_256(const void *p) {
 [[gnu::always_inline]]
 inline void store_aligned_256(void *p, __m256i x) {
     _mm256_store_si256(static_cast<__m256i*>(p), x);
+}
+
+template<typename Bits>
+[[gnu::always_inline]]
+__m256i subtract_packed(__m256i a, __m256i b) {
+    if constexpr (bitsof<Bits> == 32) {
+        return _mm256_sub_epi32(a, b);
+    } else {
+        return _mm256_sub_epi64(a, b);
+    }
 }
 
 template<unsigned SideLength, typename Bits>
@@ -139,10 +138,10 @@ void block_transform_horizontal_avx2(Bits *line) {
         auto top = top_n;
         top_n = load_unaligned_256(line + (j + 1) * words_per_256bit_lane - 1);
         auto bottom = load_aligned_256(line + j * words_per_256bit_lane);
-        store_aligned_256(line + j * words_per_256bit_lane, _mm256_xor_si256(bottom, top));
+        store_aligned_256(line + j * words_per_256bit_lane, subtract_packed<Bits>(bottom, top));
     }
     auto bottom = load_aligned_256(line + (n_256bit_lanes - 1) * words_per_256bit_lane);
-    store_aligned_256(line + (n_256bit_lanes - 1) * words_per_256bit_lane, _mm256_xor_si256(bottom, top_n));
+    store_aligned_256(line + (n_256bit_lanes - 1) * words_per_256bit_lane, subtract_packed<Bits>(bottom, top_n));
 }
 
 template<unsigned SideLength, typename Bits>
@@ -158,7 +157,7 @@ inline void block_transform_vertical_avx2(Bits *x) {
         __builtin_memcpy(lanes_a, lanes_b, sizeof lanes_b);
         __builtin_memcpy(lanes_b, assume_simd_aligned(x + i * SideLength), sizeof lanes_b);
         for (size_t j = 0; j < n_256bit_lanes; ++j) {
-            lanes_a[j] = _mm256_xor_si256(lanes_a[j], lanes_b[j]);
+            lanes_a[j] = subtract_packed<Bits>(lanes_b[j], lanes_a[j]);
         }
         __builtin_memcpy(assume_simd_aligned(x + i * SideLength), lanes_a, sizeof lanes_a);
     }
@@ -178,7 +177,7 @@ inline void block_transform_planes_avx2(Bits *x) {
             __builtin_memcpy(lanes_a, lanes_b, sizeof lanes_b);
             __builtin_memcpy(lanes_b, assume_simd_aligned(x + i + j), sizeof lanes_b);
             for (size_t k = 0; k < n_256bit_lanes; ++k) {
-                lanes_a[k] = _mm256_xor_si256(lanes_a[k], lanes_b[k]);
+                lanes_a[k] = subtract_packed<Bits>(lanes_b[k], lanes_a[k]);
             }
             __builtin_memcpy(assume_simd_aligned(x + i + j), lanes_a, sizeof lanes_a);
         }
@@ -186,12 +185,16 @@ inline void block_transform_planes_avx2(Bits *x) {
 }
 
 template<typename Profile>
-[[gnu::noinline]]
 void block_transform_avx2(typename Profile::bits_type *x) {
     constexpr size_t dims = Profile::dimensions;
     constexpr size_t side_length = Profile::hypercube_side_length;
 
     x = assume_simd_aligned(x);
+
+    for (size_t i = 0; i < ipow(side_length, Profile::dimensions); ++i) {
+        x[i] = rotate_left_1(x[i]);
+    }
+
     if constexpr (dims == 1) {
         block_transform_horizontal_avx2<side_length>(x);
     } else if constexpr (dims == 2) {
@@ -208,17 +211,28 @@ void block_transform_avx2(typename Profile::bits_type *x) {
         }
         block_transform_planes_avx2<side_length>(x);
     }
+
+    for (size_t i = 0; i < ipow(side_length, Profile::dimensions); ++i) {
+        x[i] = complement_negative(x[i]);
+    }
 }
 
 #endif // __AVX2__
 
 template<typename Profile>
+[[gnu::noinline]]
 void block_transform(typename Profile::bits_type *x) {
 #ifdef __AVX2__
     block_transform_avx2<Profile>(x);
 #else
     hcde::detail::block_transform(x, Profile::dimensions, Profile::hypercube_side_length);
 #endif
+}
+
+template<typename Profile>
+[[gnu::noinline]]
+void inverse_block_transform(typename Profile::bits_type *x) {
+    hcde::detail::inverse_block_transform(x, Profile::dimensions, Profile::hypercube_side_length);
 }
 
 
@@ -475,7 +489,7 @@ size_t hcde::cpu_encoder<T, Dims>::decompress(
     file.for_each_hypercube([&](auto hc_offset) {
         stream_pos += detail::cpu::zero_bit_decode<profile>(static_cast<const std::byte*>(stream) + stream_pos,
             cube.data());
-        detail::inverse_block_transform(cube.data(), Dims, profile::hypercube_side_length);
+        detail::cpu::inverse_block_transform<profile>(cube.data());
         detail::cpu::store_hypercube<profile>(hc_offset, cube.data(), data);
     });
     stream_pos += detail::unpack_border(data, static_cast<const std::byte *>(stream) + stream_pos, side_length);
@@ -603,7 +617,7 @@ size_t hcde::mt_cpu_encoder<T, Dims>::decompress(
             }
 
             detail::cpu::zero_bit_decode<profile>(static_cast<const std::byte *>(stream) + stream_pos, cube.data());
-            detail::inverse_block_transform(cube.data(), Dims, profile::hypercube_side_length);
+            detail::cpu::inverse_block_transform<profile>(cube.data());
             detail::cpu::store_hypercube<profile>(hc_offset, cube.data(), data);
         }
     }

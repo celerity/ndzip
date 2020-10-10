@@ -275,26 +275,44 @@ class profile {
 
 
 template<typename T>
+T rotate_left_1(T v) {
+    return (v << 1u) | (v >> (bitsof<T> - 1u));
+}
+
+template<typename T>
+T rotate_right_1(T v) {
+    return (v >> 1u) | (v << (bitsof<T> - 1u));
+}
+
+template<typename T>
+T complement_negative(T v) {
+    return v >> (bitsof<T> - 1u) ? v ^ (~T{} >> 1u) : v;
+}
+
+template<typename T>
 void block_transform_step(T *x, size_t n, size_t s) {
     T a, b;
     b = x[0*s];
     for (size_t i = 1; i < n; ++i) {
         a = b;
         b = x[i*s];
-        x[i*s] = a ^ b;
+        x[i*s] = b - a;
     }
 }
 
 template<typename T>
 void inverse_block_transform_step(T *x, size_t n, size_t s) {
     for (size_t i = 1; i < n; ++i) {
-        x[i*s] ^= x[(i-1)*s];
+        x[i*s] += x[(i-1)*s];
     }
 }
 
 template<typename T>
-[[gnu::noinline]]
 void block_transform(T *x, unsigned dims, size_t n) {
+    for (size_t i = 0; i < ipow(n, dims); ++i) {
+        x[i] = rotate_left_1(x[i]);
+    }
+
     if (dims == 1) {
         block_transform_step(x, n, 1);
     } else if (dims == 2) {
@@ -317,11 +335,18 @@ void block_transform(T *x, unsigned dims, size_t n) {
             block_transform_step(x + i, n, n * n);
         }
     }
+
+    for (size_t i = 0; i < ipow(n, dims); ++i) {
+        x[i] = complement_negative(x[i]);
+    }
 }
 
 template<typename T>
-[[gnu::noinline]]
 void inverse_block_transform(T *x, unsigned dims, size_t n) {
+    for (size_t i = 0; i < ipow(n, dims); ++i) {
+        x[i] = complement_negative(x[i]);
+    }
+
     if (dims == 1) {
         inverse_block_transform_step(x, n, 1);
     } else if (dims == 2) {
@@ -343,6 +368,10 @@ void inverse_block_transform(T *x, unsigned dims, size_t n) {
                 inverse_block_transform_step(x + i + j, n, n);
             }
         }
+    }
+
+    for (size_t i = 0; i < ipow(n, dims); ++i) {
+        x[i] = rotate_right_1(x[i]);
     }
 }
 

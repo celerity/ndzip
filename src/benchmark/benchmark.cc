@@ -679,7 +679,7 @@ const algorithm_map &available_algorithms() {
         {"hcde/cpu-mt", benchmark_hcde<hcde::mt_cpu_encoder>},
 #endif
 #if HCDE_GPU_SUPPORT
-        {"hcde/gpu", benchmark_hcde<hcde::gpu_encoder>},
+        // {"hcde/gpu", benchmark_hcde<hcde::gpu_encoder>},
 #endif
 #if HCDE_BENCHMARK_HAVE_FPZIP
         {"fpzip", benchmark_fpzip},
