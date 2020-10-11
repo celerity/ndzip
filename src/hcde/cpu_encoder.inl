@@ -112,6 +112,16 @@ inline __m256i load_aligned_8x32(const uint32_t *p) {
 }
 
 [[gnu::always_inline]]
+inline __m256i load_aligned_4x64(const uint64_t *p) {
+    return _mm256_load_si256(reinterpret_cast<const __m256i*>(p));
+}
+
+[[gnu::always_inline]]
+inline __m256i load_unaligned_4x64(const uint64_t *p) {
+    return _mm256_loadu_si256(reinterpret_cast<const __m256i*>(p));
+}
+
+[[gnu::always_inline]]
 inline void store_aligned_8x32(uint32_t *p, __m256i x) {
     _mm256_store_si256(reinterpret_cast<__m256i*>(p), x);
 }
@@ -126,11 +136,18 @@ inline void store_aligned_4x32(uint32_t *p, __m128i x) {
     _mm_store_si128(reinterpret_cast<__m128i*>(p), x);
 }
 
+[[gnu::always_inline]]
+inline void store_aligned_4x64(uint64_t *p, __m256i x) {
+    _mm256_store_si256(reinterpret_cast<__m256i*>(p), x);
+}
+
 template<unsigned SideLength>
 [[gnu::always_inline]]
-void block_transform_horizontal_32_avx2(uint32_t *line) {
+void block_transform_horizontal_avx2(uint32_t *line) {
     constexpr auto n_128bit_lanes = sizeof(uint32_t) * SideLength / 16;
     constexpr auto words_per_128bit_lane = 16 / sizeof(uint32_t);
+
+    // TODO 256 bit ops + unaligned loads are probably faster
 
     constexpr unsigned simultaneous = 4;
     __m128i bottom[simultaneous + 1], top[simultaneous];
@@ -151,8 +168,25 @@ void block_transform_horizontal_32_avx2(uint32_t *line) {
 
 template<unsigned SideLength>
 [[gnu::always_inline]]
-inline void block_transform_vertical_32_avx2(uint32_t *x) {
-    constexpr auto n_256bit_lanes = sizeof(uint32_t) * SideLength / simd_width_bytes;
+void block_transform_horizontal_avx2(uint64_t *line) {
+    constexpr auto n_256bit_lanes = sizeof(uint64_t) * SideLength / simd_width_bytes;
+    constexpr auto words_per_256bit_lane = simd_width_bytes / sizeof(uint64_t);
+
+    __m256i top_n = _mm256_setr_epi64x(0, line[0], line[1], line[2]);
+    for (unsigned j = 0; j < n_256bit_lanes - 1; ++j) {
+        auto top = top_n;
+        top_n = load_unaligned_4x64(line + (j + 1) * words_per_256bit_lane - 1);
+        auto bottom = load_aligned_4x64(line + j * words_per_256bit_lane);
+        store_aligned_4x64(line + j * words_per_256bit_lane, _mm256_xor_si256(bottom, top));
+    }
+    auto bottom = load_aligned_4x64(line + (n_256bit_lanes - 1) * words_per_256bit_lane);
+    store_aligned_4x64(line + (n_256bit_lanes - 1) * words_per_256bit_lane, _mm256_xor_si256(bottom, top_n));
+}
+
+template<unsigned SideLength, typename Bits>
+[[gnu::always_inline]]
+inline void block_transform_vertical_avx2(Bits *x) {
+    constexpr auto n_256bit_lanes = sizeof(Bits) * SideLength / simd_width_bytes;
 
     __m256i lanes_a[n_256bit_lanes];
     __m256i lanes_b[n_256bit_lanes];
@@ -168,10 +202,10 @@ inline void block_transform_vertical_32_avx2(uint32_t *x) {
     }
 }
 
-template<unsigned SideLength>
+template<unsigned SideLength, typename Bits>
 [[gnu::always_inline]]
-inline void block_transform_planes_32_avx2(uint32_t *x) {
-    constexpr auto n_256bit_lanes = sizeof(uint32_t) * SideLength / simd_width_bytes;
+inline void block_transform_planes_avx2(Bits *x) {
+    constexpr auto n_256bit_lanes = sizeof(Bits) * SideLength / simd_width_bytes;
     constexpr auto n = SideLength;
 
     for (size_t i = 0; i < n*n; i += n) {
@@ -189,65 +223,40 @@ inline void block_transform_planes_32_avx2(uint32_t *x) {
     }
 }
 
+template<typename Profile>
+[[gnu::noinline]]
+void block_transform_avx2(typename Profile::bits_type *x) {
+    constexpr size_t dims = Profile::dimensions;
+    constexpr size_t side_length = Profile::hypercube_side_length;
+
+    x = assume_simd_aligned(x);
+    if constexpr (dims == 1) {
+        block_transform_horizontal_avx2<side_length>(x);
+    } else if constexpr (dims == 2) {
+        for (size_t i = 0; i < side_length; ++i) {
+            block_transform_horizontal_avx2<side_length>(x + i * side_length);
+        }
+        block_transform_vertical_avx2<side_length>(x);
+    } else if constexpr (dims == 3) {
+        for (size_t i = 0; i < side_length * side_length * side_length; i += side_length) {
+            block_transform_horizontal_avx2<side_length>(x + i);
+        }
+        for (size_t i = 0; i < side_length * side_length * side_length; i += side_length * side_length) {
+            block_transform_vertical_avx2<side_length>(x + i);
+        }
+        block_transform_planes_avx2<side_length>(x);
+    }
+}
+
 #endif // __AVX2__
 
 template<typename Profile>
-[[gnu::noinline]]
 void block_transform(typename Profile::bits_type *x) {
-    constexpr size_t n = Profile::hypercube_side_length;
-
-    x = assume_simd_aligned(x);
-    if constexpr (Profile::dimensions == 1) {
 #ifdef __AVX2__
-        if constexpr (sizeof(typename Profile::bits_type) == 4) {
-            return block_transform_horizontal_32_avx2<Profile::hypercube_side_length>(x);
-        }
+    block_transform_avx2<Profile>(x);
+#else
+    hcde::detail::block_transform(x, Profile::dimensions, Profile::hypercube_side_length);
 #endif
-        block_transform_step(x, n, 1);
-    } else if constexpr (Profile::dimensions == 2) {
-#ifdef __AVX2__
-        if constexpr (sizeof(typename Profile::bits_type) == 4) {
-            block_transform_vertical_32_avx2<n>(x);
-            for (size_t i = 0; i < n; ++i) {
-                block_transform_horizontal_32_avx2<n>(x + i * n);
-            }
-            return;
-        }
-#endif
-        for (size_t i = 0; i < n*n; i += n) {
-            block_transform_step(x + i, n, 1);
-        }
-        for (size_t i = 0; i < n; ++i) {
-            block_transform_step(x + i, n, n);
-        }
-    } else if constexpr (Profile::dimensions == 3) {
-        for (size_t i = 0; i < n*n*n; i += n*n) {
-#ifdef __AVX2__
-            if constexpr (sizeof(typename Profile::bits_type) == 4) {
-                block_transform_vertical_32_avx2<Profile::hypercube_side_length>(x + i);
-            } else
-#endif
-            for (size_t j = 0; j < n; ++j) {
-                block_transform_step(x + i + j, n, n);
-            }
-        }
-        for (size_t i = 0; i < n*n*n; i += n) {
-#ifdef __AVX2__
-            if constexpr (sizeof(typename Profile::bits_type) == 4) {
-                block_transform_horizontal_32_avx2<Profile::hypercube_side_length>(x + i);
-            } else
-#endif
-            block_transform_step(x + i, n, 1);
-        }
-#ifdef __AVX2__
-        if constexpr (sizeof(typename Profile::bits_type) == 4) {
-            block_transform_planes_32_avx2<Profile::hypercube_side_length>(x);
-        } else
-#endif
-        for (size_t i = 0; i < n*n; ++i) {
-            block_transform_step(x + i, n, n * n);
-        }
-    }
 }
 
 
