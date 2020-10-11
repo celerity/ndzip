@@ -168,6 +168,27 @@ inline void block_transform_vertical_32_avx2(uint32_t *x) {
     }
 }
 
+template<unsigned SideLength>
+[[gnu::always_inline]]
+inline void block_transform_planes_32_avx2(uint32_t *x) {
+    constexpr auto n_256bit_lanes = sizeof(uint32_t) * SideLength / simd_width_bytes;
+    constexpr auto n = SideLength;
+
+    for (size_t i = 0; i < n*n; i += n) {
+        __m256i lanes_a[n_256bit_lanes];
+        __m256i lanes_b[n_256bit_lanes];
+        __builtin_memcpy(lanes_b, assume_simd_aligned(x + i), sizeof lanes_b);
+        for (size_t j = n*n; j < n*n*n; j += n*n) {
+            __builtin_memcpy(lanes_a, lanes_b, sizeof lanes_b);
+            __builtin_memcpy(lanes_b, assume_simd_aligned(x + i + j), sizeof lanes_b);
+            for (size_t k = 0; k < n_256bit_lanes; ++k) {
+                lanes_a[k] = _mm256_xor_si256(lanes_a[k], lanes_b[k]);
+            }
+            __builtin_memcpy(assume_simd_aligned(x + i + j), lanes_a, sizeof lanes_a);
+        }
+    }
+}
+
 #endif // __AVX2__
 
 template<typename Profile>
@@ -218,6 +239,11 @@ void block_transform(typename Profile::bits_type *x) {
 #endif
             block_transform_step(x + i, n, 1);
         }
+#ifdef __AVX2__
+        if constexpr (sizeof(typename Profile::bits_type) == 4) {
+            block_transform_planes_32_avx2<Profile::hypercube_side_length>(x);
+        } else
+#endif
         for (size_t i = 0; i < n*n; ++i) {
             block_transform_step(x + i, n, n * n);
         }
