@@ -290,7 +290,7 @@ T complement_negative(T v) {
 }
 
 template<typename T>
-void block_transform_step(T *x, size_t n, size_t s) {
+inline void block_transform_step(T *x, size_t n, size_t s) {
     T a, b;
     b = x[0*s];
     for (size_t i = 1; i < n; ++i) {
@@ -301,14 +301,14 @@ void block_transform_step(T *x, size_t n, size_t s) {
 }
 
 template<typename T>
-void inverse_block_transform_step(T *x, size_t n, size_t s) {
+inline void inverse_block_transform_step(T *x, size_t n, size_t s) {
     for (size_t i = 1; i < n; ++i) {
         x[i*s] += x[(i-1)*s];
     }
 }
 
 template<typename T>
-void block_transform(T *x, unsigned dims, size_t n) {
+inline void block_transform(T *x, unsigned dims, size_t n) {
     for (size_t i = 0; i < ipow(n, dims); ++i) {
         x[i] = rotate_left_1(x[i]);
     }
@@ -342,7 +342,7 @@ void block_transform(T *x, unsigned dims, size_t n) {
 }
 
 template<typename T>
-void inverse_block_transform(T *x, unsigned dims, size_t n) {
+inline void inverse_block_transform(T *x, unsigned dims, size_t n) {
     for (size_t i = 0; i < ipow(n, dims); ++i) {
         x[i] = complement_negative(x[i]);
     }
