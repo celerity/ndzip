@@ -27,16 +27,16 @@ else:
 column_names = rows[0]
 data_types = ['float', 'double']
 operations = ['compression', 'decompression']
+palette = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf',
+           '#aec7e8', '#ffbb78', '#98df8a', '#ff9896', '#c5b0d5', '#c49c94', '#f7b6d2', '#c7c7c7', '#dbdb8d', '#9edae5']
 
 by_data_type_and_algorithm = defaultdict(lambda: defaultdict(list))
-all_algorithms = set()
+algorithms = set()
 for r in rows[1:]:
     a = dict(zip(column_names, r))
     by_data_type_and_algorithm[a['data type']][a['algorithm']].append(a)
-    all_algorithms.add(a['algorithm'])
-algorithm_colors = {}
-for i, a in enumerate(sorted(all_algorithms)):
-    algorithm_colors[a] = colors.hsv_to_rgb((math.fmod(i * 0.618033988749895, 1.0), 0.75, math.sqrt(1.0 - math.fmod(i * 0.618033988749895, 0.5))));
+    algorithms.add(a['algorithm'])
+algorithm_colors = dict(zip(sorted(algorithms), palette))
 
 fig, axes = plt.subplots(len(data_types), len(operations))
 fig.subplots_adjust(top=0.92, bottom=0.1, left=0.08, right=0.88, wspace=0.2, hspace=0.35)
@@ -51,7 +51,8 @@ for row, data_type in enumerate(data_types):
                                                / float(a[f'fastest {operation} time (seconds)'])
                                                for a in points]) * 1e-6
             throughput_values.append(mean_throughput)
-            ax.scatter(mean_throughput, mean_compression_ratio, label=algo, color=algorithm_colors[algo])
+            ax.scatter(mean_throughput, mean_compression_ratio, label=algo, color=algorithm_colors[algo],
+                       marker='D' if algo.startswith('hcde') else 'o')
         ax.set_title(f'{data_type} {operation}')
         ax.set_xscale('log')
         if throughput_values:

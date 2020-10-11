@@ -590,7 +590,7 @@ size_t hcde::mt_cpu_encoder<T, Dims>::decompress(
 
         const auto num_hypercubes = file.num_hypercubes();
 
-        HCDE_OMP_FOR(schedule(static) ordered)
+        HCDE_OMP_FOR(schedule(static))
         for (size_t hc_index = 0; hc_index < num_hypercubes; ++hc_index) {
             auto hc_offset = detail::extent_from_linear_id(hc_index, data.size() / side_length) * side_length;
 
