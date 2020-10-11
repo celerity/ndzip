@@ -54,8 +54,8 @@ add_library(hcde SHARED
 
 target_include_directories(hcde PUBLIC include)
 target_compile_definitions(hcde PUBLIC
-    -DHCDE_GPU_SUPPORT=$<BOOL:hipSYCL_FOUND>
-    -DHCDE_OPENMP_SUPPORT=$<BOOL:OpenMP_FOUND>
+    -DHCDE_GPU_SUPPORT=$<BOOL:${HCDE_USE_HIPSYCL}>
+    -DHCDE_OPENMP_SUPPORT=$<BOOL:${OpenMP_FOUND}>
 )
 target_compile_options(hcde PRIVATE ${HCDE_COMPILE_FLAGS})
 
@@ -120,12 +120,12 @@ if (HCDE_BUILD_BENCHMARK)
     target_compile_options(benchmark PRIVATE ${HCDE_COMPILE_FLAGS})
     target_link_libraries(benchmark PRIVATE hcde Boost::program_options fpc spdp)
     target_compile_definitions(benchmark PRIVATE
-        "-DHCDE_BENCHMARK_HAVE_ZLIB=$<BOOL:ZLIB_FOUND>"
-        "-DHCDE_BENCHMARK_HAVE_LZ4=$<BOOL:LZ4_FOUND>"
-        "-DHCDE_BENCHMARK_HAVE_LZMA=$<BOOL:LZMA_FOUND>"
-        "-DHCDE_BENCHMARK_HAVE_FPZIP=$<BOOL:FPZIP_FOUND>"
-        "-DHCDE_BENCHMARK_HAVE_GFC=$<BOOL:CUDAToolkit_FOUND>"
-        "-DHCDE_BENCHMARK_HAVE_ZSTD=$<BOOL:ZSTD_FOUND>"
+        "-DHCDE_BENCHMARK_HAVE_ZLIB=$<BOOL:${ZLIB_FOUND}>"
+        "-DHCDE_BENCHMARK_HAVE_LZ4=$<BOOL:${LZ4_FOUND}>"
+        "-DHCDE_BENCHMARK_HAVE_LZMA=$<BOOL:${LZMA_FOUND}>"
+        "-DHCDE_BENCHMARK_HAVE_FPZIP=$<BOOL:${FPZIP_FOUND}>"
+        "-DHCDE_BENCHMARK_HAVE_GFC=$<BOOL:${CUDAToolkit_FOUND}>"
+        "-DHCDE_BENCHMARK_HAVE_ZSTD=$<BOOL:${ZSTD_FOUND}>"
     )
     if (HCDE_USE_HIPSYCL)
         target_link_libraries(benchmark PRIVATE hcde-gpu)
