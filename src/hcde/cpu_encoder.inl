@@ -107,80 +107,42 @@ void block_transform_step(T *x, size_t n, size_t s) {
 #ifdef __AVX2__
 
 [[gnu::always_inline]]
-inline __m256i load_aligned_8x32(const uint32_t *p) {
-    return _mm256_load_si256(reinterpret_cast<const __m256i*>(p));
+inline __m256i load_aligned_256(const void *p) {
+    return _mm256_load_si256(static_cast<const __m256i*>(p));
 }
 
 [[gnu::always_inline]]
-inline __m256i load_aligned_4x64(const uint64_t *p) {
-    return _mm256_load_si256(reinterpret_cast<const __m256i*>(p));
+inline __m256i load_unaligned_256(const void *p) {
+    return _mm256_loadu_si256(static_cast<const __m256i*>(p));
 }
 
 [[gnu::always_inline]]
-inline __m256i load_unaligned_4x64(const uint64_t *p) {
-    return _mm256_loadu_si256(reinterpret_cast<const __m256i*>(p));
+inline void store_aligned_256(void *p, __m256i x) {
+    _mm256_store_si256(static_cast<__m256i*>(p), x);
 }
 
+template<unsigned SideLength, typename Bits>
 [[gnu::always_inline]]
-inline void store_aligned_8x32(uint32_t *p, __m256i x) {
-    _mm256_store_si256(reinterpret_cast<__m256i*>(p), x);
-}
+void block_transform_horizontal_avx2(Bits *line) {
+    constexpr auto n_256bit_lanes = sizeof(Bits) * SideLength / simd_width_bytes;
+    constexpr auto words_per_256bit_lane = simd_width_bytes / sizeof(Bits);
 
-[[gnu::always_inline]]
-inline __m128i load_aligned_4x32(const uint32_t *p) {
-    return _mm_load_si128(reinterpret_cast<const __m128i*>(p));
-}
-
-[[gnu::always_inline]]
-inline void store_aligned_4x32(uint32_t *p, __m128i x) {
-    _mm_store_si128(reinterpret_cast<__m128i*>(p), x);
-}
-
-[[gnu::always_inline]]
-inline void store_aligned_4x64(uint64_t *p, __m256i x) {
-    _mm256_store_si256(reinterpret_cast<__m256i*>(p), x);
-}
-
-template<unsigned SideLength>
-[[gnu::always_inline]]
-void block_transform_horizontal_avx2(uint32_t *line) {
-    constexpr auto n_128bit_lanes = sizeof(uint32_t) * SideLength / 16;
-    constexpr auto words_per_128bit_lane = 16 / sizeof(uint32_t);
-
-    // TODO 256 bit ops + unaligned loads are probably faster
-
-    constexpr unsigned simultaneous = 4;
-    __m128i bottom[simultaneous + 1], top[simultaneous];
-    bottom[0] = __m128i{};
-    for (unsigned j = 0; j < n_128bit_lanes; j += simultaneous) {
-        for (unsigned k = 0; k < simultaneous; ++k) {
-            bottom[k+1] = load_aligned_4x32(line + (j + k) * words_per_128bit_lane);
-        }
-        for (unsigned k = 0; k < simultaneous; ++k) {
-            top[k] = _mm_alignr_epi8(bottom[k+1], bottom[k], 12);
-        }
-        for (unsigned k = 0; k < simultaneous; ++k) {
-            store_aligned_4x32(line + (j + k) * words_per_128bit_lane, _mm_xor_si128(bottom[k + 1], top[k]));
-        }
-        bottom[0] = bottom[simultaneous];
+    // TODO is there a better option than the setr sequence? vpmaskmov and overflowing vmovdqu + blend are both slower.
+    __m256i top_n;
+    if constexpr (bitsof<Bits> == 32) {
+        top_n = _mm256_setr_epi32(0, line[0], line[1], line[2], line[3], line[4], line[5], line[6]);
+    } else {
+        top_n = _mm256_setr_epi64x(0, line[0], line[1], line[2]);
     }
-}
 
-template<unsigned SideLength>
-[[gnu::always_inline]]
-void block_transform_horizontal_avx2(uint64_t *line) {
-    constexpr auto n_256bit_lanes = sizeof(uint64_t) * SideLength / simd_width_bytes;
-    constexpr auto words_per_256bit_lane = simd_width_bytes / sizeof(uint64_t);
-
-    __m256i top_n = _mm256_setr_epi64x(0, line[0], line[1], line[2]);
     for (unsigned j = 0; j < n_256bit_lanes - 1; ++j) {
         auto top = top_n;
-        top_n = load_unaligned_4x64(line + (j + 1) * words_per_256bit_lane - 1);
-        auto bottom = load_aligned_4x64(line + j * words_per_256bit_lane);
-        store_aligned_4x64(line + j * words_per_256bit_lane, _mm256_xor_si256(bottom, top));
+        top_n = load_unaligned_256(line + (j + 1) * words_per_256bit_lane - 1);
+        auto bottom = load_aligned_256(line + j * words_per_256bit_lane);
+        store_aligned_256(line + j * words_per_256bit_lane, _mm256_xor_si256(bottom, top));
     }
-    auto bottom = load_aligned_4x64(line + (n_256bit_lanes - 1) * words_per_256bit_lane);
-    store_aligned_4x64(line + (n_256bit_lanes - 1) * words_per_256bit_lane, _mm256_xor_si256(bottom, top_n));
+    auto bottom = load_aligned_256(line + (n_256bit_lanes - 1) * words_per_256bit_lane);
+    store_aligned_256(line + (n_256bit_lanes - 1) * words_per_256bit_lane, _mm256_xor_si256(bottom, top_n));
 }
 
 template<unsigned SideLength, typename Bits>
