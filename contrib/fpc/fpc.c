@@ -199,7 +199,7 @@ size_t FPC_Compress_Memory(const void *in_stream, size_t in_bytes, void *out_str
   return out_cursor;
 }
 
-size_t FPC_Deompress_Memory(const void *in_stream, size_t in_bytes, void *out_stream)
+size_t FPC_Decompress_Memory(const void *in_stream, size_t in_bytes, void *out_stream)
 {
   register long i, in, intot, hash, dhash, code, bcode, predsizem1, end, tmp, ioc;
   register long long val, lastval, stride, pred1, pred2, next;

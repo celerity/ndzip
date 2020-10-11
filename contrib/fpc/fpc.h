@@ -9,7 +9,7 @@ extern "C" {
 
 size_t FPC_Compress_Memory(const void *in_stream, size_t in_bytes, void *out_stream, long predsizem1);
 
-size_t FPC_Deompress_Memory(const void *in_stream, size_t in_bytes, void *out_stream);
+size_t FPC_Decompress_Memory(const void *in_stream, size_t in_bytes, void *out_stream);
 
 #ifdef __cplusplus
 }
