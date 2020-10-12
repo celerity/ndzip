@@ -269,7 +269,7 @@ void transpose_bits_trivial(const T *__restrict vs, T *__restrict out) {
 #ifdef __AVX2__
 
 [[gnu::always_inline]]
-inline void transpose_bits_32_avx2(const uint32_t *__restrict vs, uint32_t *__restrict out) {
+inline void transpose_bits_avx2(const uint32_t *__restrict vs, uint32_t *__restrict out) {
     __m256i unpck0[4];
     __builtin_memcpy(unpck0, assume_simd_aligned(vs), sizeof unpck0);
 
@@ -331,19 +331,83 @@ inline void transpose_bits_32_avx2(const uint32_t *__restrict vs, uint32_t *__re
     }
 }
 
+[[gnu::always_inline]]
+inline void transpose_bits_avx2(const uint64_t *__restrict vs, uint64_t *__restrict out) {
+    __m256i in[16];
+    __builtin_memcpy(in, __builtin_assume_aligned(vs, 32), sizeof in);
+
+    __m256i unpck0[16];
+    for (unsigned i = 0; i < 16; i += 2) {
+        unpck0[i + 1] = _mm256_unpackhi_epi8(in[i + 0], in[i + 1]);
+        unpck0[i + 0] = _mm256_unpacklo_epi8(in[i + 0], in[i + 1]);
+    }
+
+    __m256i unpck1[16];
+    for (unsigned i = 0; i < 16; i += 4) {
+        for (unsigned j = 0; j < 2; ++j) {
+            unpck1[i + 2 * j + 1] = _mm256_unpackhi_epi16(unpck0[i + j], unpck0[i + 2 + j]);
+            unpck1[i + 2 * j + 0] = _mm256_unpacklo_epi16(unpck0[i + j], unpck0[i + 2 + j]);
+        }
+    }
+
+    __m256i unpck2[16];
+    for (unsigned i = 0; i < 16; i += 8) {
+        for (unsigned j = 0; j < 4; ++j) {
+            unpck2[i + 2 * j + 1] = _mm256_unpackhi_epi32(unpck1[i + j], unpck1[i + 4 + j]);
+            unpck2[i + 2 * j + 0] = _mm256_unpacklo_epi32(unpck1[i + j], unpck1[i + 4 + j]);
+        }
+    }
+
+    __m256i unpck3[16];
+    for (unsigned i = 0; i < 16; i += 8) {
+        for (unsigned j = 0; j < 4; ++j) {
+            unpck3[i + 2 * j + 1] = _mm256_unpackhi_epi8(unpck2[i + j], unpck2[i + 4 + j]);
+            unpck3[i + 2 * j + 0] = _mm256_unpacklo_epi8(unpck2[i + j], unpck2[i + 4 + j]);
+        }
+    }
+
+    __m256i perm0[16];
+    for (unsigned i = 0; i < 16; ++i) {
+        perm0[15 - i] = _mm256_permute4x64_epi64(unpck3[i], 0b00'10'01'11);
+    }
+
+    __m256i shuf0[16];
+    {
+        const uint8_t idx8[] = {
+            7, 6, 15, 14, 5, 4, 13, 12, 3, 2, 11, 10, 1, 0, 9, 8,
+            7, 6, 15, 14, 5, 4, 13, 12, 3, 2, 11, 10, 1, 0, 9, 8,
+        };
+        __m256i idx;
+        __builtin_memcpy(&idx, idx8, sizeof idx);
+        for (unsigned i = 0; i < 8; ++i) {
+            shuf0[2 * i] = _mm256_shuffle_epi8(perm0[i], idx);
+            shuf0[2 * i + 1] = _mm256_shuffle_epi8(perm0[i + 8], idx);
+        }
+    }
+
+    auto dwords = reinterpret_cast<uint32_t *>(out);
+    for (unsigned i = 0; i < 8; ++i) {
+        for (unsigned j = 0; j < 8; ++j) {
+            auto half1 = static_cast<uint32_t>(_mm256_movemask_epi8(shuf0[2*i]));
+            auto half2 = static_cast<uint32_t>(_mm256_movemask_epi8(shuf0[2*i+1]));
+            __builtin_memcpy(dwords + 2*(i * 8 + j), &half1, 4);
+            __builtin_memcpy(dwords + 2*(i * 8 + j) + 1, &half2, 4);
+            shuf0[2*i] = _mm256_slli_epi32(shuf0[2*i], 1);
+            shuf0[2*i+1] = _mm256_slli_epi32(shuf0[2*i+1], 1);
+        }
+    }
+}
+
 #endif // __AVX2__
 
 template<typename T>
 [[gnu::noinline]]
 void transpose_bits(const T *__restrict in, T *__restrict out) {
 #ifdef __AVX2__
-    if constexpr(sizeof(T) == 4) {
-        transpose_bits_32_avx2(in, out);
-    } else
+    return transpose_bits_avx2(in, out);
+#else
+    return transpose_bits_trivial(in, out);
 #endif
-    {
-        return transpose_bits_trivial(in, out);
-    }
 }
 
 template<typename T>
