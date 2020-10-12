@@ -336,6 +336,9 @@ inline void transpose_bits_avx2(const uint64_t *__restrict vs, uint64_t *__restr
     __m256i in[16];
     __builtin_memcpy(in, __builtin_assume_aligned(vs, 32), sizeof in);
 
+    // TODO Clang does a lot of spilling and reloading here because it's running out of YMM registers. GCC less so.
+    // Can this be improved, e.g. by merging operations that can operate on a subset of the 16 vectors?
+
     __m256i unpck0[16];
     for (unsigned i = 0; i < 16; i += 2) {
         unpck0[i + 1] = _mm256_unpackhi_epi8(in[i + 0], in[i + 1]);

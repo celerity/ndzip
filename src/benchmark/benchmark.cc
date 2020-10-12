@@ -66,6 +66,19 @@ struct malloc_deleter {
 };
 
 
+template<typename F>
+class defer {
+    public:
+        [[nodiscard]] explicit defer(F &&f) : _f(std::move(f)) {}
+        defer(const defer &) = delete;
+        defer &operator=(const defer &) = delete;
+        ~defer() { std::move(_f)(); }
+
+    private:
+        F _f;
+};
+
+
 static std::vector<metadata> load_metadata_file(const std::filesystem::path &path) {
     using namespace std::string_view_literals;
 
@@ -295,11 +308,12 @@ static benchmark_result benchmark_fpzip(const void *input_buffer, const metadata
     auto compress_buffer = scratch_buffer{2*uncompressed_size + 1000}; // no bound function, just guess large enough
     size_t compressed_size;
     while (bench.compress_more()) {
-        std::unique_ptr<FPZ, decltype((fpzip_write_close))> fpz(
-            fpzip_write_to_buffer(compress_buffer.data(), compress_buffer.size()), fpzip_write_close);
-        fpz_set(fpz.get(), meta);
+        auto fpz = fpzip_write_to_buffer(compress_buffer.data(), compress_buffer.size());
+        auto close_fpz = defer([&] { fpzip_write_close(fpz); });
+
+        fpz_set(fpz, meta);
         bench.time_compression([&] {
-            compressed_size = fpzip_write(fpz.get(), input_buffer);
+            compressed_size = fpzip_write(fpz, input_buffer);
         });
         if (compressed_size == 0) {
             throw std::runtime_error("fpzip_write");
@@ -308,12 +322,12 @@ static benchmark_result benchmark_fpzip(const void *input_buffer, const metadata
 
     auto decompress_buffer = scratch_buffer{uncompressed_size}; // no bound function, just guess large enough
     while (bench.decompress_more()) {
-        std::unique_ptr<FPZ, decltype((fpzip_read_close))> fpz(
-                fpzip_read_from_buffer(compress_buffer.data()), fpzip_read_close);
-        fpz_set(fpz.get(), meta);
+        auto fpz = fpzip_read_from_buffer(compress_buffer.data());
+        auto close_fpz = defer([&] { fpzip_read_close(fpz); });
+        fpz_set(fpz, meta);
         size_t result;
         bench.time_decompression([&] {
-            result = fpzip_read(fpz.get(), decompress_buffer.data());
+            result = fpzip_read(fpz, decompress_buffer.data());
         });
         if (result == 0) {
             throw std::runtime_error("fpzip_read");
@@ -431,18 +445,6 @@ static benchmark_result benchmark_gfc(const void *input_buffer, const metadata &
 #if HCDE_BENCHMARK_HAVE_ZLIB
 static benchmark_result benchmark_deflate(const void *input_buffer, const metadata &metadata, int level,
         const benchmark_params &params) {
-    class deflate_end_guard {
-        public:
-            explicit deflate_end_guard(z_streamp p) : _p(p) {}
-
-            ~deflate_end_guard() {
-                deflateEnd(_p);
-            }
-
-        private:
-            z_streamp _p;
-    };
-
     const auto uncompressed_size = metadata.size_in_bytes();
     auto bench = benchmark{params};
 
@@ -456,9 +458,8 @@ static benchmark_result benchmark_deflate(const void *input_buffer, const metada
         if (deflateInit(&strm, level) != Z_OK) {
             throw std::runtime_error("deflateInit");
         }
-        deflate_end_guard guard(&strm);
-
         output_buffer_size = deflateBound(&strm_init, strm_init.avail_in);
+        deflateEnd(&strm_init);
     }
 
     auto compress_buffer = scratch_buffer<Bytef>{output_buffer_size}; // no bound function, just guess large enough
@@ -471,7 +472,7 @@ static benchmark_result benchmark_deflate(const void *input_buffer, const metada
         if (deflateInit(&strm, level) != Z_OK) {
             throw std::runtime_error("deflateInit");
         }
-        deflate_end_guard guard(&strm);
+        auto end_deflate = defer([&] { deflateEnd(&strm); });
 
         int result;
         bench.time_compression([&] {
@@ -495,7 +496,7 @@ static benchmark_result benchmark_deflate(const void *input_buffer, const metada
         if (inflateInit(&strm) != Z_OK) {
             throw std::runtime_error("inflateInit");
         }
-        deflate_end_guard guard(&strm);
+        auto end_inflate = defer([&] { inflateEnd(&strm); });
 
         int result;
         bench.time_decompression([&] {
@@ -555,18 +556,6 @@ static benchmark_result benchmark_lz4(const void *input_buffer, const metadata &
 #if HCDE_BENCHMARK_HAVE_LZMA
 static benchmark_result benchmark_lzma(const void *input_buffer, const metadata &metadata, int level,
                                        const benchmark_params &params) {
-    class lzma_end_guard {
-       public:
-        explicit lzma_end_guard(lzma_stream *strm) : _strm(strm) {}
-
-        ~lzma_end_guard() {
-            lzma_end(_strm);
-        }
-
-       private:
-        lzma_stream *_strm;
-    };
-
     const auto uncompressed_size = metadata.size_in_bytes();
     auto bench = benchmark{params};
 
@@ -585,7 +574,7 @@ static benchmark_result benchmark_lzma(const void *input_buffer, const metadata 
         if (lzma_alone_encoder(&strm, &opts) != LZMA_OK) {
             throw std::runtime_error("lzma_alone_encoder");
         }
-        lzma_end_guard guard(&strm);
+        auto end_lzma = defer([&] { lzma_end(&strm); });
 
         bench.time_compression([&] {
             lzma_ret ret = lzma_code(&strm, LZMA_RUN);
@@ -614,10 +603,10 @@ static benchmark_result benchmark_lzma(const void *input_buffer, const metadata 
         strm.next_out = decompress_buffer.data();
         strm.avail_out = decompress_buffer.size();
 
-        if (lzma_alone_decoder(&strm, UINT64_MAX) != LZMA_OK) {
+        if (lzma_alone_decoder(&strm, /* 10GiB mem limit */ 10 * (1ull << 30u)) != LZMA_OK) {
             throw std::runtime_error("lzma_alone_decoder");
         }
-        lzma_end_guard guard(&strm);
+        auto end_lzma = defer([&] { lzma_end(&strm); });
 
         bench.time_decompression([&] {
             lzma_ret ret = lzma_code(&strm, LZMA_RUN);
@@ -718,24 +707,23 @@ static double duration_to_double(const Duration &d) {
 }
 
 static void benchmark_file(const metadata &metadata, const algorithm_map &algorithms, const benchmark_params &params) {
-    auto input_buffer_size = metadata.size_in_bytes();
-    auto input_buffer = std::unique_ptr<std::byte, malloc_deleter>(
-            static_cast<std::byte*>(malloc(input_buffer_size)));
+    auto input_buffer = scratch_buffer<std::byte>(metadata.size_in_bytes());
 
     auto file_name = metadata.path.string();
-    auto input_file = std::unique_ptr<FILE, decltype((fclose))>(fopen(file_name.c_str(), "rb"), fclose);
+    auto input_file = fopen(file_name.c_str(), "rb");
     if (!input_file) {
         throw std::runtime_error(file_name + ": " + strerror(errno));
     }
+    auto close_input_file = defer([&] { fclose(input_file); });
 
-    if (fread(input_buffer.get(), input_buffer_size, 1, input_file.get()) != 1) {
+    if (fread(input_buffer.data(), input_buffer.size(), 1, input_file) != 1) {
         throw std::runtime_error(file_name + ": " + strerror(errno));
     }
 
     for (auto &[algo_name, benchmark_algo]: algorithms) {
         benchmark_result result;
         try {
-            result = benchmark_algo(input_buffer.get(), metadata, params);
+            result = benchmark_algo(input_buffer.data(), metadata, params);
         } catch (not_implemented &) {
             continue;
         }
