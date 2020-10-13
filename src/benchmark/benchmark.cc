@@ -219,6 +219,10 @@ public:
         return _size;
     }
 
+    const T *data() const {
+        return static_cast<const T*>(_mem);
+    }
+
     T *data() {
         return static_cast<T*>(_mem);
     }
@@ -229,7 +233,16 @@ private:
 };
 
 
-class not_implemented: std::exception {};
+class buffer_mismatch: public std::exception {};
+
+void assert_buffer_equality(const void *left, const void *right, size_t size) {
+    if (memcmp(left, right, size) != 0) {
+        throw buffer_mismatch();
+    }
+}
+
+
+class not_implemented: public std::exception {};
 
 
 template<template<typename, unsigned> typename Encoder, typename Data, unsigned Dims>
@@ -256,6 +269,7 @@ static benchmark_result benchmark_hcde_3(const Data *input_buffer, const hcde::e
         });
     }
 
+    assert_buffer_equality(input_buffer, decompress_buffer.data(), uncompressed_size);
     return std::move(bench).result(uncompressed_size, compressed_size);
 }
 
@@ -332,6 +346,7 @@ static benchmark_result benchmark_fpzip(const void *input_buffer, const metadata
         }
     }
 
+    assert_buffer_equality(input_buffer, decompress_buffer.data(), uncompressed_size);
     return std::move(bench).result(uncompressed_size, compressed_size);
 }
 #endif
@@ -369,6 +384,7 @@ static benchmark_result benchmark_fpc(const void *input_buffer, const metadata &
         }
     }
 
+    assert_buffer_equality(input_buffer, decompress_buffer.data(), uncompressed_size);
     return std::move(bench).result(uncompressed_size, compressed_size);
 }
 
@@ -402,6 +418,7 @@ static benchmark_result benchmark_spdp(const void *input_buffer, const metadata 
         }
     }
 
+    assert_buffer_equality(input_buffer, decompress_buffer.data(), uncompressed_size);
     return std::move(bench).result(uncompressed_size, compressed_size);
 }
 
@@ -437,6 +454,7 @@ static benchmark_result benchmark_gfc(const void *input_buffer, const metadata &
         bench.record_decompression(std::chrono::microseconds(kernel_time_us));
     }
 
+    assert_buffer_equality(input_buffer, decompress_buffer.data(), uncompressed_size);
     return std::move(bench).result(uncompressed_size, compressed_size);
 }
 #endif
@@ -509,6 +527,7 @@ static benchmark_result benchmark_deflate(const void *input_buffer, const metada
         }
     }
 
+    assert_buffer_equality(input_buffer, decompress_buffer.data(), uncompressed_size);
     return std::move(bench).result(uncompressed_size, compressed_size);
 }
 #endif
@@ -549,6 +568,7 @@ static benchmark_result benchmark_lz4(const void *input_buffer, const metadata &
         }
     }
 
+    assert_buffer_equality(input_buffer, decompress_buffer.data(), uncompressed_size);
     return std::move(bench).result(uncompressed_size, compressed_size);
 }
 #endif
@@ -618,6 +638,7 @@ static benchmark_result benchmark_lzma(const void *input_buffer, const metadata 
         });
     }
 
+    assert_buffer_equality(input_buffer, decompress_buffer.data(), uncompressed_size);
     return std::move(bench).result(uncompressed_size, compressed_size);
 }
 #endif
@@ -654,6 +675,7 @@ static benchmark_result benchmark_zstd(const void *input_buffer, const metadata 
         }
     }
 
+    assert_buffer_equality(input_buffer, decompress_buffer.data(), uncompressed_size);
     return std::move(bench).result(uncompressed_size, compressed_size);
 }
 #endif
@@ -771,6 +793,11 @@ static void benchmark_file(const metadata &metadata, const algorithm_map &algori
                 result = algo.benchmark(input_buffer.data(), metadata, params);
             } catch (not_implemented &) {
                 continue;
+            } catch (buffer_mismatch &) {
+                std::ostringstream msg;
+                msg << "mismatch between input an decompressed buffer for " << metadata.path.filename().string()
+                << " with " <<  name << " (tunable=" << tunable << ")";
+                throw std::logic_error(msg.str());
             }
             std::cout << metadata.path.filename().string() << ";"
                       << (metadata.data_type == data_type::t_float ? "float" : "double") << ";"
