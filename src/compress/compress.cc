@@ -46,7 +46,7 @@ void compress_stream(const std::string &in, const std::string &out, const hcde::
     }
     std::cerr << ", compressed = " << compressed_length << " bytes";
     std::cerr << ", ratio = " << std::fixed << std::setprecision(4)
-        << (static_cast<double>(in_file_size) / compressed_length) << "\n";
+        << (static_cast<double>(compressed_length) / in_file_size);
 }
 
 template<typename Encoder>
@@ -206,7 +206,7 @@ int main(int argc, char **argv) {
     try {
         auto duration = hcde::detail::process_stream(decompress, size_components, encoder,
                 data_type, input, output, *io_factory);
-        std::cerr << "finished in " << std::setprecision(3) << std::fixed
+        std::cerr << ", time = " << std::setprecision(3) << std::fixed
             << std::chrono::duration_cast<std::chrono::duration<double>>(duration).count() << "s\n";
         return EXIT_SUCCESS;
     } catch (opts::error &e) {

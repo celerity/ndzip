@@ -45,10 +45,6 @@ class ThroughputStats:
         self.h95 = np.mean([st.t.ppf(1.95 / 2, len(ds) - 1) * st.sem(ds) for ds in samples])
 
 
-def compact_float(f: float, n: int = 0):
-    return f'{{:.{n}f}}'.format(f).lstrip('0')
-
-
 if __name__ == '__main__':
     by_data_type_and_algorithm = defaultdict(lambda: defaultdict(list))
     algorithms = set()
@@ -57,40 +53,46 @@ if __name__ == '__main__':
         column_names = rows[0]
         for r in rows[1:]:
             a = dict(zip(column_names, r))
-            by_data_type_and_algorithm[a['data type']][a['algorithm']].append(a)
+            by_data_type_and_algorithm[a['data type']][a['algorithm'], int(a['tunable'])].append(a)
             algorithms.add(a['algorithm'])
 
     data_type_means = []
     for row, data_type in enumerate(DATA_TYPES):
         means = []
-        for algo, points in by_data_type_and_algorithm[data_type].items():
+        algo_means_dict = defaultdict(list)
+        for (algo, tunable), points in by_data_type_and_algorithm[data_type].items():
             mean_compression_ratio = np.mean([float(a['compressed bytes']) / float(a['uncompressed bytes'])
                                               for a in points])
             throughput_stats = {op: ThroughputStats(points, op) for op in OPERATIONS}
-            means.append((algo, mean_compression_ratio, throughput_stats))
-        means.sort(key=itemgetter(0))
+            means.append((algo, tunable, mean_compression_ratio, throughput_stats))
+            algo_means_dict[algo].append((mean_compression_ratio, throughput_stats))
+
+        means.sort(key=itemgetter(0, 1))
+        for v in algo_means_dict.values():
+            v.sort(key=itemgetter(0))
+        algo_means = sorted(algo_means_dict.items(), key=itemgetter(0))
 
         print(f'({data_type})')
-        print(tabulate([[a, '{:.3f}'.format(r).lstrip('0'),
+        print(tabulate([[f'{a} {u}', '{:.3f}'.format(r).lstrip('0'),
                          *('{:,.0f} ± {:>2,.0f} MB/s'.format(t[o].mean * 1e-6, t[o].h95 * 1e-6) for o in OPERATIONS)]
-                        for a, r, t in means], headers=['algorithm', 'ratio', *OPERATIONS], stralign='right',
+                        for a, u, r, t in means], headers=['algorithm', 'ratio', *OPERATIONS], stralign='right',
                        disable_numparse=True))
         print()
 
-        data_type_means.append((data_type, means))
+        data_type_means.append((data_type, algo_means))
 
     fig, axes = plt.subplots(len(DATA_TYPES), len(OPERATIONS), figsize=(15, 10))
     fig.subplots_adjust(top=0.92, bottom=0.1, left=0.08, right=0.88, wspace=0.2, hspace=0.35)
     algorithm_colors = dict(zip(sorted(algorithms), PALETTE))
-    for row, (data_type, means) in enumerate(data_type_means):
+    for row, (data_type, algo_means) in enumerate(data_type_means):
         for col, operation in enumerate(OPERATIONS):
             ax = axes[row, col]
             throughput_values = []
-            for algo, mean_compression_ratio, throughput in means:
-                t = throughput[operation]
-                throughput_values.append(throughput[operation].mean)
-                ax.errorbar(t.mean, mean_compression_ratio, label=algo, xerr=t.h95,
-                            color=algorithm_colors[algo], marker='D' if algo.startswith('hcde') else 'o')
+            for algo, points in algo_means:
+                throughputs, h95s, ratios = zip(*((t[operation].mean, t[operation].h95, r) for r, t in points))
+                throughput_values += throughputs
+                ax.errorbar(throughputs, ratios, label=algo, xerr=h95s,
+                            color=algorithm_colors[algo], marker='D' if algo.startswith('new') else 'o')
             ax.set_title(f'{data_type} {operation}')
             ax.set_xscale('log')
             if throughput_values:

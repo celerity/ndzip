@@ -693,12 +693,12 @@ const algorithm_map &available_algorithms() {
     using namespace std::placeholders;
 
     static const algorithm_map algorithms{
-        {"hcde/cpu", {benchmark_hcde<hcde::cpu_encoder>}},
+        {"new", {benchmark_hcde<hcde::cpu_encoder>}},
 #if HCDE_OPENMP_SUPPORT
-        {"hcde/cpu-mt", {benchmark_hcde<hcde::mt_cpu_encoder>}},
+        {"new (mt)", {benchmark_hcde<hcde::mt_cpu_encoder>}},
 #endif
 #if HCDE_GPU_SUPPORT
-        // {"hcde/gpu", benchmark_hcde<hcde::gpu_encoder>},
+        // {"new (gpu)", benchmark_hcde<hcde::gpu_encoder>},
 #endif
 #if HCDE_BENCHMARK_HAVE_FPZIP
         {"fpzip", {benchmark_fpzip}},
@@ -772,17 +772,13 @@ static void benchmark_file(const metadata &metadata, const algorithm_map &algori
 
     for (auto &[name, algo]: algorithms) {
         std::vector<int> tunable_values;
-        switch (tunables) {
-            case tuning::min:
-                tunable_values = {algo.tunable_min};
-                break;
-            case tuning::min_max:
-                tunable_values = {algo.tunable_min, algo.tunable_max};
-                break;
-            case tuning::full:
-                tunable_values.resize(algo.tunable_max - algo.tunable_min + 1);
-                std::iota(tunable_values.begin(), tunable_values.end(), algo.tunable_min);
-                break;
+        if (algo.tunable_min == algo.tunable_max || tunables == tuning::min) {
+            tunable_values = {algo.tunable_min};
+        } else if (tunables == tuning::min_max) {
+            tunable_values = {algo.tunable_min, algo.tunable_max};
+        } else {
+            tunable_values.resize(algo.tunable_max - algo.tunable_min + 1);
+            std::iota(tunable_values.begin(), tunable_values.end(), algo.tunable_min);
         }
 
         for (auto tunable: tunable_values) {
@@ -928,7 +924,7 @@ int main(int argc, char **argv) {
     }
 
     try {
-        std::cout << "dataset;data type;dimensions;algorithm;"
+        std::cout << "dataset;data type;dimensions;algorithm;tunable;"
                      "compression times (microseconds);"
                      "decompression times (microseconds);"
                      "uncompressed bytes;compressed bytes\n";
