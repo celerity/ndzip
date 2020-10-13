@@ -481,7 +481,7 @@ size_t zero_bit_decode(const std::byte *stream, typename Profile::bits_type *cub
     size_t pos = 0;
     for (size_t i = 0; i < hc_size; i += detail::bitsof<bits_type>) {
         alignas(simd_width_bytes) bits_type transposed[detail::bitsof<bits_type>];
-        if (load_aligned<bits_type>(stream) == 0) {
+        if (load_aligned<bits_type>(stream + pos) == 0) {
             // fast path (all_zero is relatively common, transpose+compact is expensive)
             memset(cube + i, 0, sizeof transposed);
             pos += sizeof(bits_type);

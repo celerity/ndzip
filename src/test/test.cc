@@ -251,9 +251,14 @@ TEMPLATE_TEST_CASE("encoder reproduces the bit-identical array", "[encoder]",
     using profile = detail::profile<data_type, TestType::dimensions>;
 
     constexpr auto dims = profile::dimensions;
-    const size_t n = profile::hypercube_side_length * 4 - 1;
+    constexpr auto side_length = profile::hypercube_side_length;
+    const size_t n = side_length * 4 - 1;
 
     auto input_data = make_random_vector<data_type>(ipow(n, dims));
+
+    // Regression test: trigger bug in decoder optimization by ensuring first chunk = 0
+    std::fill(input_data.begin(), input_data.begin() + bitsof<data_type>, data_type{});
+
     slice<const data_type, dims> input(input_data.data(), extent<dims>::broadcast(n));
 
     TestType encoder;
