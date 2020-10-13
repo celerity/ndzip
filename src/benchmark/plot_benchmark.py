@@ -7,7 +7,10 @@ import sys
 from collections import defaultdict
 from operator import itemgetter
 
+import numpy as np
+import scipy.stats as st
 from matplotlib import patches, pyplot as plt
+from tabulate import tabulate
 
 DATA_TYPES = ['float', 'double']
 OPERATIONS = ['compression', 'decompression']
@@ -28,6 +31,24 @@ def input_files():
         yield sys.stdin
 
 
+class ThroughputStats:
+    def __init__(self, dataset_points: list, op: str):
+        samples = [np.array(
+            [int(p['uncompressed bytes']) / float(t) * 1e6 for t in p[f'{op} times (microseconds)'].split(',')])
+            for p in dataset_points]
+        sample_means = [np.mean(ds) for ds in samples]
+        self.mean = np.mean(sample_means)
+        self.stddev = np.sqrt(np.mean([np.var(ds) for ds in samples]))
+        self.min = np.mean([np.min(ds) for ds in samples])
+        self.max = np.mean([np.max(ds) for ds in samples])
+        # TODO is averaging error bar sizes correct?
+        self.h95 = np.mean([st.t.ppf(1.95 / 2, len(ds) - 1) * st.sem(ds) for ds in samples])
+
+
+def compact_float(f: float, n: int = 0):
+    return f'{{:.{n}f}}'.format(f).lstrip('0')
+
+
 if __name__ == '__main__':
     by_data_type_and_algorithm = defaultdict(lambda: defaultdict(list))
     algorithms = set()
@@ -39,27 +60,42 @@ if __name__ == '__main__':
             by_data_type_and_algorithm[a['data type']][a['algorithm']].append(a)
             algorithms.add(a['algorithm'])
 
+    data_type_means = []
+    for row, data_type in enumerate(DATA_TYPES):
+        means = []
+        for algo, points in by_data_type_and_algorithm[data_type].items():
+            mean_compression_ratio = np.mean([float(a['compressed bytes']) / float(a['uncompressed bytes'])
+                                              for a in points])
+            throughput_stats = {op: ThroughputStats(points, op) for op in OPERATIONS}
+            means.append((algo, mean_compression_ratio, throughput_stats))
+        means.sort(key=itemgetter(0))
+
+        print(f'({data_type})')
+        print(tabulate([[a, '{:.3f}'.format(r).lstrip('0'),
+                         *('{:,.0f} ± {:>2,.0f} MB/s'.format(t[o].mean * 1e-6, t[o].h95 * 1e-6) for o in OPERATIONS)]
+                        for a, r, t in means], headers=['algorithm', 'ratio', *OPERATIONS], stralign='right',
+                       disable_numparse=True))
+        print()
+
+        data_type_means.append((data_type, means))
+
     fig, axes = plt.subplots(len(DATA_TYPES), len(OPERATIONS), figsize=(15, 10))
     fig.subplots_adjust(top=0.92, bottom=0.1, left=0.08, right=0.88, wspace=0.2, hspace=0.35)
     algorithm_colors = dict(zip(sorted(algorithms), PALETTE))
-    for row, data_type in enumerate(DATA_TYPES):
+    for row, (data_type, means) in enumerate(data_type_means):
         for col, operation in enumerate(OPERATIONS):
             ax = axes[row, col]
             throughput_values = []
-            for algo, points in by_data_type_and_algorithm[data_type].items():
-                mean_compression_ratio = arithmetic_mean(
-                    [float(a['compressed bytes']) / float(a['uncompressed bytes']) for a in points])
-                mean_throughput = arithmetic_mean([float(a['uncompressed bytes'])
-                                                   / float(a[f'fastest {operation} time (seconds)'])
-                                                   for a in points]) * 1e-6
-                throughput_values.append(mean_throughput)
-                ax.scatter(mean_throughput, mean_compression_ratio, label=algo, color=algorithm_colors[algo],
-                           marker='D' if algo.startswith('hcde') else 'o')
+            for algo, mean_compression_ratio, throughput in means:
+                t = throughput[operation]
+                throughput_values.append(throughput[operation].mean)
+                ax.errorbar(t.mean, mean_compression_ratio, label=algo, xerr=t.h95,
+                            color=algorithm_colors[algo], marker='D' if algo.startswith('hcde') else 'o')
             ax.set_title(f'{data_type} {operation}')
             ax.set_xscale('log')
             if throughput_values:
                 ax.set_xlim(min(throughput_values) / 2, max(throughput_values) * 2)
-            ax.set_xlabel('arithmetic mean uncompressed throughput [MB/s]')
+            ax.set_xlabel('arithmetic mean uncompressed throughput [B/s]')
             ax.set_ylabel('arithmetic mean mean compression ratio')
 
     fig.legend(

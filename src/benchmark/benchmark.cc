@@ -59,13 +59,6 @@ struct metadata {
 };
 
 
-struct malloc_deleter {
-    void operator()(void *p) const {
-        free(p);
-    }
-};
-
-
 template<typename F>
 class defer {
     public:
@@ -112,12 +105,10 @@ struct benchmark_params {
 
 
 struct benchmark_result {
-    std::chrono::microseconds compression_time{};
-    std::chrono::microseconds decompression_time{};
-    unsigned compression_reps{};
-    unsigned decompression_reps{};
-    uint64_t uncompressed_bytes{};
-    uint64_t compressed_bytes{};
+    std::vector<std::chrono::microseconds> compression_times;
+    std::vector<std::chrono::microseconds> decompression_times;
+    uint64_t uncompressed_bytes = 0;
+    uint64_t compressed_bytes = 0;
 };
 
 
@@ -155,18 +146,17 @@ public:
         _decompression.record(time);
     }
 
-    benchmark_result result(size_t uncompressed_bytes, size_t compressed_bytes) const {
+    benchmark_result result(size_t uncompressed_bytes, size_t compressed_bytes) && {
         assert(_compression.reps > 0);
         assert(_decompression.reps > 0);
-        return benchmark_result{_compression.min_time, _decompression.min_time,
-                                _compression.reps, _decompression.reps,
+        return benchmark_result{std::move(_compression.times), std::move(_decompression.times),
                                 uncompressed_bytes, compressed_bytes};
     }
 
 private:
     struct accumulator {
+        std::vector<std::chrono::microseconds> times;
         std::chrono::microseconds total_time{};
-        std::chrono::microseconds min_time = std::chrono::microseconds::max();
         unsigned reps{};
 
         bool more(const benchmark_params &params) const {
@@ -187,8 +177,8 @@ private:
         }
 
         void record(std::chrono::microseconds time) {
+            times.push_back(time);
             total_time += time;
-            min_time = std::min(min_time, time);
             ++reps;
         }
     };
@@ -258,7 +248,7 @@ static benchmark_result benchmark_hcde_3(const Data *input_buffer, const hcde::e
         });
     }
 
-    return bench.result(uncompressed_size, compressed_size);
+    return std::move(bench).result(uncompressed_size, compressed_size);
 }
 
 
@@ -334,7 +324,7 @@ static benchmark_result benchmark_fpzip(const void *input_buffer, const metadata
         }
     }
 
-    return bench.result(uncompressed_size, compressed_size);
+    return std::move(bench).result(uncompressed_size, compressed_size);
 }
 #endif
 
@@ -370,7 +360,7 @@ static benchmark_result benchmark_fpc(const void *input_buffer, const metadata &
         }
     }
 
-    return bench.result(uncompressed_size, compressed_size);
+    return std::move(bench).result(uncompressed_size, compressed_size);
 }
 
 
@@ -402,7 +392,7 @@ static benchmark_result benchmark_spdp(const void *input_buffer, const metadata 
         }
     }
 
-    return bench.result(uncompressed_size, compressed_size);
+    return std::move(bench).result(uncompressed_size, compressed_size);
 }
 
 
@@ -437,7 +427,7 @@ static benchmark_result benchmark_gfc(const void *input_buffer, const metadata &
         bench.record_decompression(std::chrono::microseconds(kernel_time_us));
     }
 
-    return bench.result(uncompressed_size, compressed_size);
+    return std::move(bench).result(uncompressed_size, compressed_size);
 }
 #endif
 
@@ -508,7 +498,7 @@ static benchmark_result benchmark_deflate(const void *input_buffer, const metada
         }
     }
 
-    return bench.result(uncompressed_size, compressed_size);
+    return std::move(bench).result(uncompressed_size, compressed_size);
 }
 #endif
 
@@ -548,7 +538,7 @@ static benchmark_result benchmark_lz4(const void *input_buffer, const metadata &
         }
     }
 
-    return bench.result(uncompressed_size, compressed_size);
+    return std::move(bench).result(uncompressed_size, compressed_size);
 }
 #endif
 
@@ -616,7 +606,7 @@ static benchmark_result benchmark_lzma(const void *input_buffer, const metadata 
         });
     }
 
-    return bench.result(uncompressed_size, compressed_size);
+    return std::move(bench).result(uncompressed_size, compressed_size);
 }
 #endif
 
@@ -651,7 +641,7 @@ static benchmark_result benchmark_zstd(const void *input_buffer, const metadata 
         }
     }
 
-    return bench.result(uncompressed_size, compressed_size);
+    return std::move(bench).result(uncompressed_size, compressed_size);
 }
 #endif
 
@@ -701,10 +691,34 @@ const algorithm_map &available_algorithms() {
 }
 
 
-template<typename Duration>
-static double duration_to_double(const Duration &d) {
-    return std::chrono::duration_cast<std::chrono::duration<double>>(d).count();
-}
+struct identity {
+    template<typename T>
+    decltype(auto) operator()(T &&v) const { return std::forward<T>(v); }
+};
+
+
+template<typename Seq, typename Map = identity>
+struct join {
+    const char *joiner;
+    Seq &seq;
+    Map map;
+
+    join(const char *joiner, Seq &seq, Map map = identity{})
+        : joiner(joiner), seq(seq), map(map) {}
+
+    friend std::ostream &operator<<(std::ostream &os, const join &j) {
+        size_t i = 0;
+        for (auto &v: j.seq) {
+            if (i > 0) {
+                os << j.joiner;
+            }
+            os << j.map(v);
+            ++i;
+        }
+        return os;
+    }
+};
+
 
 static void benchmark_file(const metadata &metadata, const algorithm_map &algorithms, const benchmark_params &params) {
     auto input_buffer = scratch_buffer<std::byte>(metadata.size_in_bytes());
@@ -731,10 +745,8 @@ static void benchmark_file(const metadata &metadata, const algorithm_map &algori
                   << (metadata.data_type == data_type::t_float ? "float" : "double") << ";"
                   << metadata.extent.size() << ";"
                   << algo_name << ";"
-                  << result.compression_reps << ";"
-                  << duration_to_double(result.compression_time) << ";"
-                  << result.decompression_reps << ";"
-                  << duration_to_double(result.decompression_time) << ";"
+                  << join(",", result.compression_times, [](auto d) { return d.count(); }) << ";"
+                  << join(",", result.decompression_times, [](auto d) { return d.count(); }) << ";"
                   << result.uncompressed_bytes << ";"
                   << result.compressed_bytes << "\n";
     }
@@ -780,7 +792,7 @@ int main(int argc, char **argv) {
     std::vector<std::string> include_algorithms;
     std::vector<std::string> exclude_algorithms;
     unsigned benchmark_ms = 1000;
-    unsigned benchmark_reps = 2;
+    unsigned benchmark_reps = 3;
 
     auto usage = "Usage: "s + argv[0] + " [options] csv-file\n\n";
 
@@ -840,11 +852,9 @@ int main(int argc, char **argv) {
 
     try {
         std::cout << "dataset;data type;dimensions;algorithm;"
-                     "compression iterations;fastest compression time (seconds);"
-                     "decompression iterations;fastest decompression time (seconds);"
+                     "compression times (microseconds);"
+                     "decompression times (microseconds);"
                      "uncompressed bytes;compressed bytes\n";
-        std::cout.precision(9);
-        std::cout.setf(std::ios::fixed);
         for (auto &metadata : load_metadata_file(metadata_csv_file)) {
             benchmark_file(metadata, selected_algorithms,
                            benchmark_params{std::chrono::milliseconds(benchmark_ms), benchmark_reps});
