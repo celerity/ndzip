@@ -39,7 +39,7 @@ endif ()
 
 set(CMAKE_CXX_STANDARD 17)
 set(HCDE_COMPILE_FLAGS
-    -Wall -Wextra -Werror=return-type -Werror=init-self -Werror=undef -Wno-attributes
+    -Wall -Wextra -Werror=return-type -Werror=init-self -Werror=undef -Wno-attributes -Wimplicit-fallthrough
     # Force colored warnings in Ninja's output, if the compiler has -fdiagnostics-color support.
     # Rationale in https://github.com/ninja-build/ninja/issues/814
     $<$<STREQUAL:${CMAKE_GENERATOR},Ninja>:-fdiagnostics-color=always>)

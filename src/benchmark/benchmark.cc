@@ -693,12 +693,12 @@ const algorithm_map &available_algorithms() {
     using namespace std::placeholders;
 
     static const algorithm_map algorithms{
-        {"new", {benchmark_hcde<hcde::cpu_encoder>}},
+        {"hcde", {benchmark_hcde<hcde::cpu_encoder>}},
 #if HCDE_OPENMP_SUPPORT
-        {"new (mt)", {benchmark_hcde<hcde::mt_cpu_encoder>}},
+        {"hcde-mt", {benchmark_hcde<hcde::mt_cpu_encoder>}},
 #endif
 #if HCDE_GPU_SUPPORT
-        // {"new (gpu)", benchmark_hcde<hcde::gpu_encoder>},
+        // {"hcde-gpu", benchmark_hcde<hcde::gpu_encoder>},
 #endif
 #if HCDE_BENCHMARK_HAVE_FPZIP
         {"fpzip", {benchmark_fpzip}},
@@ -791,7 +791,7 @@ static void benchmark_file(const metadata &metadata, const algorithm_map &algori
                 continue;
             } catch (buffer_mismatch &) {
                 std::ostringstream msg;
-                msg << "mismatch between input an decompressed buffer for " << metadata.path.filename().string()
+                msg << "mismatch between input and decompressed buffer for " << metadata.path.filename().string()
                 << " with " <<  name << " (tunable=" << tunable << ")";
                 throw std::logic_error(msg.str());
             }

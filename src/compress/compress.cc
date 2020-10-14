@@ -23,21 +23,25 @@ void compress_stream(const std::string &in, const std::string &out, const hcde::
     const auto array_chunk_length = static_cast<size_t>(num_elements(size) * sizeof(data_type));
     const auto max_compressed_chunk_length = hcde::compressed_size_bound<data_type>(size);
 
-    auto in_stream = io.create_input_stream(in, array_chunk_length);
-    auto out_stream = io.create_output_stream(out, max_compressed_chunk_length);
-
     size_t compressed_length = 0;
     size_t n_chunks = 0;
-    while (auto *chunk = in_stream->read_exact()) {
-        auto input_buffer = static_cast<const data_type *>(chunk);
-        auto compressed_chunk_length = encoder.compress(
-            hcde::slice<const data_type, Encoder::dimensions>(input_buffer, size),
-            out_stream->get_write_buffer());
-        assert(compressed_chunk_length <= max_compressed_chunk_length);
-        out_stream->commit_chunk(compressed_chunk_length);
-        compressed_length += compressed_chunk_length;
-        ++n_chunks;
+    auto start = std::chrono::steady_clock::now();
+    {
+        auto in_stream = io.create_input_stream(in, array_chunk_length);
+        auto out_stream = io.create_output_stream(out, max_compressed_chunk_length);
+
+        while (auto *chunk = in_stream->read_exact()) {
+            auto input_buffer = static_cast<const data_type *>(chunk);
+            auto compressed_chunk_length = encoder.compress(
+                hcde::slice<const data_type, Encoder::dimensions>(input_buffer, size),
+                out_stream->get_write_buffer());
+            assert(compressed_chunk_length <= max_compressed_chunk_length);
+            out_stream->commit_chunk(compressed_chunk_length);
+            compressed_length += compressed_chunk_length;
+            ++n_chunks;
+        }
     }
+    auto duration = std::chrono::steady_clock::now() - start;
 
     const auto in_file_size = n_chunks * array_chunk_length;
     std::cerr << "raw = " << n_chunks * in_file_size << " bytes";
@@ -47,6 +51,8 @@ void compress_stream(const std::string &in, const std::string &out, const hcde::
     std::cerr << ", compressed = " << compressed_length << " bytes";
     std::cerr << ", ratio = " << std::fixed << std::setprecision(4)
         << (static_cast<double>(compressed_length) / in_file_size);
+    std::cerr << ", time = " << std::setprecision(3) << std::fixed
+        << std::chrono::duration_cast<std::chrono::duration<double>>(duration).count() << "s\n";
 }
 
 template<typename Encoder>
@@ -76,21 +82,18 @@ void decompress_stream(const std::string &in, const std::string &out, const hcde
 }
 
 template<typename Encoder>
-duration process_stream(bool decompress, const std::string &in, const std::string &out,
+void process_stream(bool decompress, const std::string &in, const std::string &out,
         const hcde::extent<Encoder::dimensions> &size, const Encoder &encoder, const hcde::detail::io_factory &io)
 {
-    auto start = std::chrono::system_clock::now();
     if (decompress) {
         decompress_stream(in, out, size, encoder, io);
     } else {
         compress_stream(in, out, size, encoder, io);
     }
-    auto end = std::chrono::system_clock::now();
-    return std::chrono::duration_cast<duration>(end - start);
 }
 
 template<template<typename, unsigned> typename Encoder, typename Data>
-duration process_stream(bool decompress, const std::vector<size_t> &size_components, const std::string &in,
+void process_stream(bool decompress, const std::vector<size_t> &size_components, const std::string &in,
     const std::string &out, const hcde::detail::io_factory &io) {
     switch (size_components.size()) {
         case 1:
@@ -110,17 +113,17 @@ duration process_stream(bool decompress, const std::vector<size_t> &size_compone
 }
 
 template<typename Data>
-duration process_stream(bool decompress, const std::vector<size_t> &size_components,
+void process_stream(bool decompress, const std::vector<size_t> &size_components,
     const std::string &encoder, const std::string &in, const std::string &out, const hcde::detail::io_factory &io) {
     if (encoder == "cpu") {
-        return process_stream<hcde::cpu_encoder, Data>(decompress, size_components, in, out, io);
+        process_stream<hcde::cpu_encoder, Data>(decompress, size_components, in, out, io);
 #if HCDE_OPENMP_SUPPORT
     } else if (encoder == "cpu-mt") {
-        return process_stream<hcde::mt_cpu_encoder, Data>(decompress, size_components, in, out, io);
+        process_stream<hcde::mt_cpu_encoder, Data>(decompress, size_components, in, out, io);
 #endif
 #if HCDE_GPU_SUPPORT
     } else if (encoder == "gpu") {
-        return process_stream<hcde::gpu_encoder, Data>(decompress, size_components, in, out, io);
+        process_stream<hcde::gpu_encoder, Data>(decompress, size_components, in, out, io);
 #endif
     } else {
         throw opts::error("Invalid encoder \"" + encoder + "\" in option -e / --encoder");
@@ -128,13 +131,13 @@ duration process_stream(bool decompress, const std::vector<size_t> &size_compone
 }
 
 
-duration process_stream(bool decompress, const std::vector<size_t> &size_components,
+void process_stream(bool decompress, const std::vector<size_t> &size_components,
     const std::string &encoder, const std::string &data_type, const std::string &in, const std::string &out,
     const hcde::detail::io_factory &io) {
     if (data_type == "float") {
-        return process_stream<float>(decompress, size_components, encoder, in, out, io);
+        process_stream<float>(decompress, size_components, encoder, in, out, io);
     } else if (data_type == "double") {
-        return process_stream<double>(decompress, size_components, encoder, in, out, io);
+        process_stream<double>(decompress, size_components, encoder, in, out, io);
     } else {
         throw opts::error("Invalid option \"" + data_type + "\" in option -t / --data-type");
     }
@@ -204,10 +207,7 @@ int main(int argc, char **argv) {
     }
 
     try {
-        auto duration = hcde::detail::process_stream(decompress, size_components, encoder,
-                data_type, input, output, *io_factory);
-        std::cerr << ", time = " << std::setprecision(3) << std::fixed
-            << std::chrono::duration_cast<std::chrono::duration<double>>(duration).count() << "s\n";
+        hcde::detail::process_stream(decompress, size_components, encoder, data_type, input, output, *io_factory);
         return EXIT_SUCCESS;
     } catch (opts::error &e) {
         std::cerr << e.what() << "\n\n" << usage << desc;
