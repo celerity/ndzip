@@ -239,10 +239,19 @@ inline void inverse_block_transform_horizontal_sequential(Bits *x) {
 template<unsigned SideLength, typename Bits>
 [[gnu::always_inline]]
 inline void inverse_block_transform_horizontal_interleaved(Bits *x) {
-    // FIXME actually interleave
-    for (size_t i = 0; i < ipow(SideLength, 2); i += SideLength) {
+    constexpr auto interleave = 4;
+    Bits vec[interleave];
+    for (size_t i = 0; i < ipow(SideLength, 2); i += SideLength * interleave) {
+        for (size_t k = 0; k < interleave; ++k) {
+            vec[k] = x[i + k * SideLength];
+        }
         for (size_t j = 1; j < SideLength; ++j) {
-            x[i + j] += x[i + j - 1];
+            for (size_t k = 0; k < interleave; ++k) {
+                vec[k] += x[i + j + k * SideLength];
+            }
+            for (size_t k = 0; k < interleave; ++k) {
+                x[i + j + k * SideLength] = vec[k];
+            }
         }
     }
 }
