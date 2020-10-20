@@ -112,6 +112,16 @@ inline void store_aligned_256(void *p, __m256i x) {
 
 template<typename Bits>
 [[gnu::always_inline]]
+__m256i add_packed(__m256i a, __m256i b) {
+    if constexpr (bitsof<Bits> == 32) {
+        return _mm256_add_epi32(a, b);
+    } else {
+        return _mm256_add_epi64(a, b);
+    }
+}
+
+template<typename Bits>
+[[gnu::always_inline]]
 __m256i subtract_packed(__m256i a, __m256i b) {
     if constexpr (bitsof<Bits> == 32) {
         return _mm256_sub_epi32(a, b);
@@ -147,6 +157,7 @@ void block_transform_horizontal_avx2(Bits *line) {
 template<unsigned SideLength, typename Bits>
 [[gnu::always_inline]]
 inline void block_transform_vertical_avx2(Bits *x) {
+    // TODO investigate whether SW pipelining leads to spilling / reloading for 2D double (2*64/4 = 32 YMM registers)
     constexpr auto n_256bit_lanes = sizeof(Bits) * SideLength / simd_width_bytes;
 
     __m256i lanes_a[n_256bit_lanes];
@@ -217,6 +228,94 @@ void block_transform_avx2(typename Profile::bits_type *x) {
     }
 }
 
+template<unsigned SideLength, typename Bits>
+[[gnu::always_inline]]
+inline void inverse_block_transform_horizontal_sequential(Bits *x) {
+    for (size_t i = 1; i < SideLength; ++i) {
+        x[i] += x[i-1];
+    }
+}
+
+template<unsigned SideLength, typename Bits>
+[[gnu::always_inline]]
+inline void inverse_block_transform_horizontal_interleaved(Bits *x) {
+    // FIXME actually interleave
+    for (size_t i = 0; i < ipow(SideLength, 2); i += SideLength) {
+        for (size_t j = 1; j < SideLength; ++j) {
+            x[i + j] += x[i + j - 1];
+        }
+    }
+}
+
+template<unsigned SideLength, typename Bits>
+[[gnu::always_inline]]
+inline void inverse_block_transform_vertical_avx2(Bits *x) {
+    constexpr auto n_256bit_lanes = sizeof(Bits) * SideLength / simd_width_bytes;
+    constexpr auto words_per_256bit_lane = simd_width_bytes / sizeof(Bits);
+
+    __m256i lanes_a[n_256bit_lanes];
+    __builtin_memcpy(lanes_a, assume_simd_aligned(x), sizeof lanes_a);
+
+    for (size_t i = 1; i < SideLength; ++i) {
+        for (size_t j = 0; j < n_256bit_lanes; ++j) {
+            __m256i b = load_aligned_256(x + i * SideLength + j * words_per_256bit_lane);
+            lanes_a[j] = add_packed<Bits>(lanes_a[j], b);
+        }
+        __builtin_memcpy(assume_simd_aligned(x + i * SideLength), lanes_a, sizeof lanes_a);
+    }
+}
+
+template<unsigned SideLength, typename Bits>
+[[gnu::always_inline]]
+inline void inverse_block_transform_planes_avx2(Bits *x) {
+    constexpr auto n_256bit_lanes = sizeof(Bits) * SideLength / simd_width_bytes;
+    constexpr auto words_per_256bit_lane = simd_width_bytes / sizeof(Bits);
+    constexpr auto n = SideLength;
+
+    for (size_t i = 0; i < n*n; i += n) {
+        __m256i lanes_a[n_256bit_lanes];
+        __builtin_memcpy(lanes_a, assume_simd_aligned(x + i), sizeof lanes_a);
+        for (size_t j = n*n; j < n*n*n; j += n*n) {
+            for (size_t k = 0; k < n_256bit_lanes; ++k) {
+                __m256i b = load_aligned_256(x + i + j + k * words_per_256bit_lane);
+                lanes_a[k] = add_packed<Bits>(lanes_a[k], b);
+            }
+            __builtin_memcpy(assume_simd_aligned(x + i + j), lanes_a, sizeof lanes_a);
+        }
+    }
+}
+
+template<typename Profile>
+void inverse_block_transform_avx2(typename Profile::bits_type *x) {
+    constexpr size_t dims = Profile::dimensions;
+    constexpr size_t side_length = Profile::hypercube_side_length;
+
+    x = assume_simd_aligned(x);
+
+    for (size_t i = 0; i < ipow(side_length, Profile::dimensions); ++i) {
+        x[i] = complement_negative(x[i]);
+    }
+
+    if constexpr (dims == 1) {
+        inverse_block_transform_horizontal_sequential<side_length>(x);
+    } else if constexpr (dims == 2) {
+        inverse_block_transform_horizontal_interleaved<side_length>(x);
+        inverse_block_transform_vertical_avx2<side_length>(x);
+    } else if constexpr (dims == 3) {
+        for (size_t i = 0; i < ipow(side_length, 3); i += ipow(side_length, 2)) {
+            inverse_block_transform_horizontal_interleaved<side_length>(x + i);
+        }
+        for (size_t i = 0; i < ipow(side_length, 3); i += ipow(side_length, 2)) {
+            inverse_block_transform_vertical_avx2<side_length>(x + i);
+        }
+        inverse_block_transform_planes_avx2<side_length>(x);
+    }
+
+    for (size_t i = 0; i < ipow(side_length, Profile::dimensions); ++i) {
+        x[i] = rotate_right_1(x[i]);
+    }
+}
+
 #endif // __AVX2__
 
 template<typename Profile>
@@ -232,7 +331,11 @@ void block_transform(typename Profile::bits_type *x) {
 template<typename Profile>
 [[gnu::noinline]]
 void inverse_block_transform(typename Profile::bits_type *x) {
+#ifdef __AVX2__
+    inverse_block_transform_avx2<Profile>(x);
+#else
     hcde::detail::inverse_block_transform(x, Profile::dimensions, Profile::hypercube_side_length);
+#endif
 }
 
 
