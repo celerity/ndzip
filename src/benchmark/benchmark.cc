@@ -1,4 +1,5 @@
 #include <hcde/hcde.hh>
+#include <io/io.hh>
 
 #include <chrono>
 #include <cstdio>
@@ -756,19 +757,11 @@ struct join {
 
 
 static void benchmark_file(const metadata &metadata, const algorithm_map &algorithms,
-     std::chrono::microseconds min_time, unsigned min_reps, tuning tunables) {
-    auto input_buffer = scratch_buffer<std::byte>(metadata.size_in_bytes());
+     std::chrono::microseconds min_time, unsigned min_reps, tuning tunables,
+     const hcde::detail::io_factory &io_factory) {
 
-    auto file_name = metadata.path.string();
-    auto input_file = fopen(file_name.c_str(), "rb");
-    if (!input_file) {
-        throw std::runtime_error(file_name + ": " + strerror(errno));
-    }
-    auto close_input_file = defer([&] { fclose(input_file); });
-
-    if (fread(input_buffer.data(), input_buffer.size(), 1, input_file) != 1) {
-        throw std::runtime_error(file_name + ": " + strerror(errno));
-    }
+    auto input_stream = io_factory.create_input_stream(metadata.path.string(), metadata.size_in_bytes());
+    auto input_buffer = input_stream->read_exact();
 
     for (auto &[name, algo]: algorithms) {
         std::vector<int> tunable_values;
@@ -786,7 +779,7 @@ static void benchmark_file(const metadata &metadata, const algorithm_map &algori
 
             benchmark_result result;
             try {
-                result = algo.benchmark(input_buffer.data(), metadata, params);
+                result = algo.benchmark(input_buffer, metadata, params);
             } catch (not_implemented &) {
                 continue;
             } catch (buffer_mismatch &) {
@@ -850,6 +843,7 @@ int main(int argc, char **argv) {
     tuning tunables = tuning::min;
     unsigned benchmark_ms = 1000;
     unsigned benchmark_reps = 3;
+    bool no_mmap = false;
 
     auto usage = "Usage: "s + argv[0] + " [options] csv-file\n\n";
 
@@ -863,7 +857,8 @@ int main(int argc, char **argv) {
                 "algorithms to NOT evaluate (see --help)")
             ("time-each,t", opts::value(&benchmark_ms), "repeat each for at least t ms (default 1000)")
             ("reps-each,r", opts::value(&benchmark_reps), "repeat each at least n times (default 3)")
-            ("tunables", opts::value<std::string>(), "tunables min|minmax|full (default min)");
+            ("tunables", opts::value<std::string>(), "tunables min|minmax|full (default min)")
+            ("no-mmap", opts::bool_switch(&no_mmap), "do not use memory-mapped I/O");
     opts::positional_options_description pos_desc;
     pos_desc.add("csv-file", 1);
 
@@ -923,6 +918,16 @@ int main(int argc, char **argv) {
         }
     }
 
+    std::unique_ptr<hcde::detail::io_factory> io_factory;
+#if HCDE_SUPPORT_MMAP
+    if (!no_mmap) {
+        io_factory = std::make_unique<hcde::detail::mmap_io_factory>();
+    }
+#endif
+    if (!io_factory) {
+        io_factory = std::make_unique<hcde::detail::stdio_io_factory>();
+    }
+
     try {
         std::cout << "dataset;data type;dimensions;algorithm;tunable;"
                      "compression times (microseconds);"
@@ -930,7 +935,7 @@ int main(int argc, char **argv) {
                      "uncompressed bytes;compressed bytes\n";
         for (auto &metadata : load_metadata_file(metadata_csv_file)) {
             benchmark_file(metadata, selected_algorithms, std::chrono::milliseconds(benchmark_ms),
-                benchmark_reps, tunables);
+                benchmark_reps, tunables, *io_factory);
         }
         return EXIT_SUCCESS;
     } catch (std::exception &e) {

@@ -1,5 +1,5 @@
 #include <hcde/hcde.hh>
-#include "io.hh"
+#include <io/io.hh>
 
 #include <chrono>
 #include <cstdlib>

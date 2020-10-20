@@ -159,7 +159,7 @@ class mmap_input_stream final
                 throw io_error("fstat: " + file_name + ": " + strerror(errno));
             }
             _size = static_cast<size_t>(buf.st_size);
-            _map = mmap(nullptr, _size, PROT_READ, MAP_SHARED, _fd, 0);
+            _map = mmap(nullptr, _size, PROT_READ, MAP_PRIVATE | MAP_POPULATE, _fd, 0);
             if (_map == MAP_FAILED) {
                 if (_fd != STDIN_FILENO) {
                     close(_fd);

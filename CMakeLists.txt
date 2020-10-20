@@ -74,14 +74,19 @@ if (HCDE_USE_HIPSYCL)
     target_link_libraries(hcde-gpu PUBLIC hcde)
 endif ()
 
+add_library(io STATIC
+    src/io/io.cc
+    src/io/io.hh
+)
+
+target_include_directories(io INTERFACE src)
 
 add_executable(compress
     src/compress/compress.cc
-    src/compress/io.cc
-    src/compress/io.hh
 )
+
 target_compile_options(compress PRIVATE ${HCDE_COMPILE_FLAGS})
-target_link_libraries(compress PRIVATE hcde Boost::program_options)
+target_link_libraries(compress PRIVATE hcde io Boost::program_options)
 if (HCDE_USE_HIPSYCL)
     target_link_libraries(compress PRIVATE hcde-gpu)
 endif ()
@@ -118,7 +123,7 @@ if (HCDE_BUILD_BENCHMARK)
 
     add_executable(benchmark src/benchmark/benchmark.cc)
     target_compile_options(benchmark PRIVATE ${HCDE_COMPILE_FLAGS})
-    target_link_libraries(benchmark PRIVATE hcde Boost::program_options fpc spdp)
+    target_link_libraries(benchmark PRIVATE hcde io Boost::program_options fpc spdp)
     target_compile_definitions(benchmark PRIVATE
         "-DHCDE_BENCHMARK_HAVE_ZLIB=$<BOOL:${ZLIB_FOUND}>"
         "-DHCDE_BENCHMARK_HAVE_LZ4=$<BOOL:${LZ4_FOUND}>"
