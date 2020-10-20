@@ -58,7 +58,7 @@ struct metadata {
     }
 
     size_t size_in_bytes() const {
-        auto size = data_type == data_type::t_float ? 4 : 8;
+        size_t size = data_type == data_type::t_float ? 4 : 8;
         for (auto e : extent) {
             size *= e;
         }
