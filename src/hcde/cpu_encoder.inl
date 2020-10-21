@@ -10,7 +10,12 @@
 #endif
 
 #ifdef HCDE_OPENMP_SUPPORT
+#   include <atomic>
 #   include <boost/thread/thread.hpp>
+#   include <queue>
+#   include <boost/lockfree/queue.hpp>
+#   include <boost/container/static_vector.hpp>
+#   include <omp.h>
 #endif
 
 
@@ -678,11 +683,6 @@ size_t hcde::cpu_encoder<T, Dims>::decompress(
 
 #if HCDE_OPENMP_SUPPORT
 
-#define HCDE_PRAGMA(...) _Pragma(#__VA_ARGS__)
-#define HCDE_OMP_PARALLEL(directives) HCDE_PRAGMA(omp parallel directives)
-#define HCDE_OMP_ORDERED HCDE_PRAGMA(omp ordered)
-#define HCDE_OMP_FOR(directives) HCDE_PRAGMA(omp for directives)
-
 template<typename T, unsigned Dims>
 size_t hcde::mt_cpu_encoder<T, Dims>::compress(const slice<const data_type, dimensions> &data, void *stream) const {
     using profile = detail::profile<T, Dims>;
@@ -696,67 +696,101 @@ size_t hcde::mt_cpu_encoder<T, Dims>::compress(const slice<const data_type, dime
     }
 
     const detail::file<profile> file(data.size());
-    size_t global_stream_pos = file.file_header_length();
-
-    const size_t num_threads = boost::thread::physical_concurrency();
+    const size_t num_threads = 2;//boost::thread::physical_concurrency();
     const size_t max_thread_blocks_at_once = 64;
-    const size_t thread_blocks_at_once = std::min(2 * num_threads, max_thread_blocks_at_once);
 
-    HCDE_OMP_PARALLEL(num_threads(num_threads)) {
-        detail::cpu::simd_aligned_buffer<bits_type> cube(hc_size);
-        detail::cpu::simd_aligned_buffer<std::byte> stream_buffer(
-            profile::compressed_block_size_bound * thread_blocks_at_once);
+    constexpr unsigned num_write_buffers = 10;
 
-        const auto num_hypercubes = file.num_hypercubes();
-        const auto num_iterations = (num_hypercubes + (thread_blocks_at_once - 1)) / thread_blocks_at_once;
+    using write_buffer = detail::cpu::simd_aligned_buffer<std::byte>;
+    struct write_task_data {
+        size_t hc_index;
+        write_buffer *stream;
+        size_t n_bytes;
 
-        HCDE_OMP_FOR(schedule(static, 1) ordered)
-        for (size_t i = 0; i < num_iterations; ++i) {
-            const size_t chunk_first_hc_index = i * thread_blocks_at_once;
-            const size_t chunk_num_hypercubes = std::min(thread_blocks_at_once, num_hypercubes - chunk_first_hc_index);
+        bool operator<(const write_task_data &other) const {
+            return hc_index > other.hc_index;
+        }
+    };
+    std::priority_queue<write_task_data> write_task_queue;
 
-            size_t stream_buffer_cursor = 0;
-            detail::file_offset_type stream_buffer_offsets[max_thread_blocks_at_once];
+    boost::container::static_vector<write_buffer, num_write_buffers> write_buffers;
+    for (unsigned i = 0; i < num_write_buffers; ++i) {
+        write_buffers.emplace_back(profile::compressed_block_size_bound);
+    }
+    boost::lockfree::queue<write_buffer *> free_write_buffers(10);
+    for (auto &b: write_buffers) {
+        free_write_buffers.push(&b);
+    }
 
-            for (size_t j = 0; j < chunk_num_hypercubes; ++j) {
-                stream_buffer_offsets[j] = stream_buffer_cursor;
+    std::atomic<size_t> next_hc_index_to_read = 0;
+    std::atomic<size_t> next_hc_index_to_write = 0;
+    size_t stream_offset = file.file_header_length();
 
-                auto hc_index = chunk_first_hc_index + j;
-                auto hc_offset = detail::extent_from_linear_id(hc_index, data.size() / side_length) * side_length;
+    const auto num_hypercubes = file.num_hypercubes();
 
-                detail::cpu::load_hypercube<profile>(hc_offset, data, cube.data());
-                detail::cpu::block_transform<profile>(cube.data());
-                stream_buffer_cursor += detail::cpu::zero_bit_encode<profile>(cube.data(),
-                    stream_buffer.data() + stream_buffer_cursor);
-            }
+#pragma omp parallel num_threads(num_threads)
+    {
+#pragma omp single
+        {
+            for (unsigned t = 0; t < num_threads; ++t) {
+#pragma omp task
+                while (next_hc_index_to_write < num_hypercubes) {
+                    std::optional<write_task_data> write_task;
+                    size_t task_stream_offset;
+#pragma omp critical(write_task_queue)
+                    if (!write_task_queue.empty() && write_task_queue.top().hc_index == next_hc_index_to_write) {
+                        write_task = write_task_queue.top();
+                        write_task_queue.pop();
+                        fprintf(stderr, "%2d next write %zu with %zu bytes to %zu first %lx\n", omp_get_thread_num(), write_task->hc_index, write_task->n_bytes, stream_offset, detail::load_unaligned<uint64_t>(write_task->stream->data()));
+                        ++next_hc_index_to_write;
+                        task_stream_offset = stream_offset;
+                        stream_offset += write_task->n_bytes;
+                    }
 
-            size_t stream_output_pos;
-            HCDE_OMP_ORDERED {
-                stream_output_pos = global_stream_pos;
-                global_stream_pos += stream_buffer_cursor;
-            }
+                    if (write_task) {
+                        memcpy(static_cast<std::byte *>(stream) + task_stream_offset, write_task->stream->data(),
+                            write_task->n_bytes);
+                        if (write_task->hc_index > 0) {
+                            auto file_offset_address = static_cast<std::byte *>(stream)
+                                + (write_task->hc_index - 1) * sizeof(detail::file_offset_type);
+                            detail::store_aligned(file_offset_address, detail::endian_transform(task_stream_offset));
+                        }
+                        free_write_buffers.push(write_task->stream);
+                    } else {
+                        write_buffer *stream_buffer;
+                        if (free_write_buffers.pop(stream_buffer)) {
+                            auto hc_index = next_hc_index_to_read++;
+                            //fprintf(stderr, "%2d write hc_index %zu\n", omp_get_thread_num(), hc_index);
+                            thread_local detail::cpu::simd_aligned_buffer<bits_type> cube(hc_size);
 
-            memcpy(static_cast<std::byte *>(stream) + stream_output_pos, stream_buffer.data(), stream_buffer_cursor);
-            for (size_t j = 0; j < chunk_num_hypercubes; ++j) {
-                auto hc_index = chunk_first_hc_index + j;
-                if (hc_index > 0) {
-                    auto file_offset_address = static_cast<std::byte *>(stream)
-                        + (hc_index - 1) * sizeof(detail::file_offset_type);
-                    auto file_offset = static_cast<detail::file_offset_type>(
-                        stream_output_pos + stream_buffer_offsets[j]);
-                    detail::store_aligned(file_offset_address, detail::endian_transform(file_offset));
+                            if (hc_index < num_hypercubes) {
+                                auto hc_offset =
+                                    detail::extent_from_linear_id(hc_index, data.size() / side_length) * side_length;
+                                detail::cpu::load_hypercube<profile>(hc_offset, data, cube.data());
+                                detail::cpu::block_transform<profile>(cube.data());
+                                size_t compressed_size = detail::cpu::zero_bit_encode<profile>(cube.data(),
+                                    stream_buffer->data());
+#pragma omp critical(write_task_queue)
+                                write_task_queue.push({hc_index, stream_buffer, compressed_size});
+                            } else {
+                                //fprintf(stderr, "%2d push back hc_index %zu\n", omp_get_thread_num(), hc_index);
+                                free_write_buffers.push(stream_buffer);
+                            }
+                        }
+                    }
                 }
             }
+#pragma omp taskwait
         }
     }
 
     if (file.num_hypercubes() > 0) {
         auto file_offset_address
                 = static_cast<char *>(stream) + (file.num_hypercubes() - 1) * sizeof(detail::file_offset_type);
-        detail::store_aligned(file_offset_address, detail::endian_transform(global_stream_pos));
+        detail::store_aligned(file_offset_address, detail::endian_transform(stream_offset));
     }
-    global_stream_pos += detail::pack_border(static_cast<char *>(stream) + global_stream_pos, data, side_length);
-    return global_stream_pos;
+    stream_offset += detail::pack_border(static_cast<char *>(stream) + stream_offset, data, side_length);
+    return stream_offset;
 }
 
 
@@ -775,12 +809,13 @@ size_t hcde::mt_cpu_encoder<T, Dims>::decompress(
 
     detail::file<profile> file(data.size());
 
-    HCDE_OMP_PARALLEL(num_threads(boost::thread::physical_concurrency())) {
+#pragma omp parallel num_threads(boost::thread::physical_concurrency())
+    {
         detail::cpu::simd_aligned_buffer<bits_type> cube(hc_size);
 
         const auto num_hypercubes = file.num_hypercubes();
 
-        HCDE_OMP_FOR(schedule(static))
+#pragma omp for schedule(static)
         for (size_t hc_index = 0; hc_index < num_hypercubes; ++hc_index) {
             auto hc_offset = detail::extent_from_linear_id(hc_index, data.size() / side_length) * side_length;
 
