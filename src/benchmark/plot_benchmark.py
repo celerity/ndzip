@@ -74,7 +74,7 @@ if __name__ == '__main__':
 
         print(f'({data_type})')
         print(tabulate([[f'{a} {u}', '{:.3f}'.format(r).lstrip('0'),
-                         *('{:,.0f} ± {:>2,.0f} MB/s'.format(t[o].mean * 1e-6, t[o].h95 * 1e-6) for o in OPERATIONS)]
+                         *('{:,.0f} ± {:>3,.0f} MB/s'.format(t[o].mean * 1e-6, t[o].h95 * 1e-6) for o in OPERATIONS)]
                         for a, u, r, t in means], headers=['algorithm', 'ratio', *OPERATIONS], stralign='right',
                        disable_numparse=True))
         print()
