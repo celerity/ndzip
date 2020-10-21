@@ -540,33 +540,78 @@ static benchmark_result benchmark_lz4(const void *input_buffer, const metadata &
     const auto uncompressed_size = metadata.size_in_bytes();
     auto bench = benchmark{params};
 
-    auto compress_buffer = scratch_buffer<char>{
-            static_cast<size_t>(LZ4_compressBound(static_cast<int>(uncompressed_size)))};
-    size_t compressed_size;
-    while (bench.compress_more()) {
-        int result;
-        bench.time_compression([&] {
-            result = LZ4_compress_default(static_cast<const char *>(input_buffer), compress_buffer.data(),
-                                          static_cast<int>(uncompressed_size),
-                                          static_cast<int>(compress_buffer.size()));
-        });
-        if (result == 0) {
-            throw std::runtime_error("LZ4_compress_default");
+    size_t compressed_size_bound = 0;
+    size_t max_n_compressed_chunks = 0;
+    {
+        // LZ4 API is based on 32-bit signed integers, we need to chunk in case size > 2GB
+        auto remaining = uncompressed_size;
+        for (;;) {
+            auto chunk = std::min(remaining, size_t{LZ4_MAX_INPUT_SIZE});
+            compressed_size_bound += LZ4_compressBound(static_cast<int>(chunk));
+            ++max_n_compressed_chunks;
+            if (chunk == remaining) {
+                break;
+            }
+            remaining -= chunk;
         }
-        compressed_size = static_cast<size_t>(result);
+    }
+    auto compress_buffer = scratch_buffer<char>{compressed_size_bound};
+
+    size_t compressed_size;
+    std::vector<size_t> compressed_chunk_sizes;
+    compressed_chunk_sizes.reserve(max_n_compressed_chunks);
+    while (bench.compress_more()) {
+        auto stream = LZ4_createStream();
+        auto free_stream = defer([&] { LZ4_freeStream(stream); });
+
+        compressed_size = 0;
+        compressed_chunk_sizes.clear();
+        bench.time_compression([&] {
+            // LZ4 API is based on 32-bit signed integers, we need to chunk in case size > 2GB
+            for (size_t input_offset = 0; input_offset < uncompressed_size;) {
+                auto input_chunk_size = std::min(uncompressed_size - input_offset, size_t{LZ4_MAX_INPUT_SIZE});
+                auto result = LZ4_compress_fast_continue(stream,
+                    static_cast<const char *>(input_buffer) + input_offset,
+                    compress_buffer.data() + compressed_size, static_cast<int>(input_chunk_size),
+                    static_cast<int>(std::min(static_cast<size_t>(INT_MAX), compress_buffer.size() - compressed_size)),
+                    1 /* default */);
+                if (result == 0) {
+                    throw std::runtime_error("LZ4_compress_fast_continue");
+                }
+                auto output_chunk_size = static_cast<size_t>(result);
+                compressed_chunk_sizes.push_back(output_chunk_size);
+                compressed_size += output_chunk_size;
+                input_offset += input_chunk_size;
+            }
+        });
     }
 
     auto decompress_buffer = scratch_buffer<char>{uncompressed_size};
     while (bench.decompress_more()) {
-        int result;
+        auto stream = LZ4_createStreamDecode();
+        auto free_stream = defer([&] { LZ4_freeStreamDecode(stream); });
+
         bench.time_decompression([&] {
-            result = LZ4_decompress_safe(compress_buffer.data(), decompress_buffer.data(),
-                                          static_cast<int>(compressed_size),
-                                          static_cast<int>(decompress_buffer.size()));
+            size_t input_offset = 0;
+            size_t output_offset = 0;
+            for (auto input_chunk_size: compressed_chunk_sizes) {
+                auto result = LZ4_decompress_safe_continue(stream, compress_buffer.data() + input_offset,
+                    decompress_buffer.data() + output_offset, static_cast<int>(input_chunk_size),
+                    static_cast<int>(std::min(static_cast<size_t>(INT_MAX), decompress_buffer.size() - output_offset)));
+                if (result == 0) {
+                    throw std::runtime_error("LZ4_decompress_safe_continue");
+                }
+                auto decompressed_chunk_size = static_cast<size_t>(result);
+                auto expected_chunk_size = std::min(uncompressed_size - output_offset, size_t{LZ4_MAX_INPUT_SIZE});
+                if (decompressed_chunk_size != expected_chunk_size) {
+                    throw std::runtime_error("Expected LZ4_decompress_safe_continue to decode "
+                        + std::to_string(expected_chunk_size) + " bytes, got "
+                        + std::to_string(decompressed_chunk_size) + " bytes");
+                }
+                output_offset += decompressed_chunk_size;
+                input_offset += input_chunk_size;
+            }
         });
-        if (result == 0) {
-            throw std::runtime_error("LZ4_decompress_safe");
-        }
     }
 
     assert_buffer_equality(input_buffer, decompress_buffer.data(), uncompressed_size);
