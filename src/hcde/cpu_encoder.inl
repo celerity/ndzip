@@ -847,7 +847,8 @@ size_t hcde::mt_cpu_encoder<T, Dims>::compress(const slice<const data_type, dime
                 }
             }
 
-            if (write_task) {
+            if (write_task)
+            {
                 memcpy(static_cast<std::byte *>(stream) + task_stream_offset, write_task->stream.data(),
                        write_task->compressed_size());
                 auto task_file_offset = task_stream_offset;
@@ -858,13 +859,14 @@ size_t hcde::mt_cpu_encoder<T, Dims>::compress(const slice<const data_type, dime
                         auto file_offset_address = static_cast<std::byte *>(stream)
                                                    + (hc_index - 1) * sizeof(detail::file_offset_type);
                         detail::store_aligned<detail::file_offset_type>(file_offset_address,
-                                                                        detail::endian_transform(
-                                                                                task_file_offset));
+                                                                        detail::endian_transform(task_file_offset));
                     }
                     task_file_offset = task_stream_offset + write_task->offsets_after_hcs[task_hc_index];
                 }
                 free_write_buffers.push(write_task);
-            } else {
+            }
+            else // compression task
+            {
                 if (free_write_buffers.pop(write_task)) {
                     // memory_order_relaxed: There is no synchronization involved, only atomicity is required. The
                     // ordering of the following operations is determined by the returned value.

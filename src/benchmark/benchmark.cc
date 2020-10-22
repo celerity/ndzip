@@ -114,6 +114,7 @@ struct benchmark_params {
     int tunable = 1;
     std::chrono::microseconds min_time = std::chrono::seconds(1);
     unsigned min_reps = 1;
+    bool warm_up = true;
 };
 
 
@@ -139,11 +140,11 @@ public:
 
     template<typename F>
     void time_compression(const F &f) {
-        _compression.time(f);
+        _compression.time(_params, f);
     }
 
     void record_compression(std::chrono::microseconds time) {
-        _compression.record(time);
+        _compression.record(_params, time);
     }
 
     bool decompress_more() const {
@@ -152,11 +153,11 @@ public:
 
     template<typename F>
     void time_decompression(const F &f) {
-        _decompression.time(f);
+        _decompression.time(_params, f);
     }
 
     void record_decompression(std::chrono::microseconds time) {
-        _decompression.record(time);
+        _decompression.record(_params, time);
     }
 
     benchmark_result result(size_t uncompressed_bytes, size_t compressed_bytes) && {
@@ -171,17 +172,20 @@ private:
         std::vector<std::chrono::microseconds> times;
         std::chrono::microseconds total_time{};
         unsigned reps{};
+        bool warmed_up = false;
 
         bool more(const benchmark_params &params) const {
-            return total_time < params.min_time || reps < std::max(1u, params.min_reps);
+            return (params.warm_up && !warmed_up)
+                   || total_time < params.min_time
+                   || reps < std::max(1u, params.min_reps);
         }
 
         template<typename F>
-        void time(const F &f) {
+        void time(const benchmark_params &params, const F &f) {
             auto start = std::chrono::steady_clock::now();
             run(f);
             auto finish = std::chrono::steady_clock::now();
-            record(std::chrono::duration_cast<std::chrono::microseconds>(finish - start));
+            record(params, std::chrono::duration_cast<std::chrono::microseconds>(finish - start));
         }
 
         template<typename F>
@@ -189,10 +193,14 @@ private:
             f();
         }
 
-        void record(std::chrono::microseconds time) {
-            times.push_back(time);
-            total_time += time;
-            ++reps;
+        void record(const benchmark_params &params, std::chrono::microseconds time) {
+            if (params.warm_up && !warmed_up) {
+                warmed_up = true;
+            } else {
+                times.push_back(time);
+                total_time += time;
+                ++reps;
+            }
         }
     };
 
@@ -205,12 +213,9 @@ private:
 template<typename T = std::byte>
 class scratch_buffer {
 public:
-    [[gnu::noinline]] explicit scratch_buffer(size_t size)
-    {
+    explicit scratch_buffer(size_t size) {
         _mem = malloc(size * sizeof(T));
         _size = size;
-        // memset the to ensure all pages of the allocated buffer have been mapped by the OS
-        memset(_mem, 0, size * sizeof(T));
     }
 
     scratch_buffer(const scratch_buffer &) = delete;
@@ -869,7 +874,7 @@ struct join {
 };
 
 
-static void benchmark_file(const metadata &metadata, const algorithm_map &algorithms,
+static void benchmark_file(const metadata &metadata, const algorithm_map &algorithms, bool warm_up,
      std::chrono::microseconds min_time, unsigned min_reps, tuning tunables,
      const hcde::detail::io_factory &io_factory) {
 
@@ -888,7 +893,7 @@ static void benchmark_file(const metadata &metadata, const algorithm_map &algori
         }
 
         for (auto tunable: tunable_values) {
-            auto params = benchmark_params{tunable, min_time, min_reps};
+            auto params = benchmark_params{tunable, min_time, min_reps, warm_up};
 
             benchmark_result result;
             try {
@@ -955,8 +960,9 @@ int main(int argc, char **argv) {
     std::vector<std::string> exclude_algorithms;
     tuning tunables = tuning::min;
     unsigned benchmark_ms = 1000;
-    unsigned benchmark_reps = 3;
+    unsigned benchmark_reps = 1;
     bool no_mmap = false;
+    bool no_warmup = false;
 
     auto usage = "Usage: "s + argv[0] + " [options] csv-file\n\n";
 
@@ -971,7 +977,8 @@ int main(int argc, char **argv) {
             ("time-each,t", opts::value(&benchmark_ms), "repeat each for at least t ms (default 1000)")
             ("reps-each,r", opts::value(&benchmark_reps), "repeat each at least n times (default 3)")
             ("tunables", opts::value<std::string>(), "tunables min|minmax|full (default min)")
-            ("no-mmap", opts::bool_switch(&no_mmap), "do not use memory-mapped I/O");
+            ("no-mmap", opts::bool_switch(&no_mmap), "do not use memory-mapped I/O")
+            ("no-warmup", opts::bool_switch(&no_warmup), "do not perform an additional warm-up step per benchmark");
     opts::positional_options_description pos_desc;
     pos_desc.add("csv-file", 1);
 
@@ -1047,7 +1054,7 @@ int main(int argc, char **argv) {
                      "decompression times (microseconds);"
                      "uncompressed bytes;compressed bytes\n";
         for (auto &metadata : load_metadata_file(metadata_csv_file)) {
-            benchmark_file(metadata, selected_algorithms, std::chrono::milliseconds(benchmark_ms),
+            benchmark_file(metadata, selected_algorithms, !no_warmup, std::chrono::milliseconds(benchmark_ms),
                 benchmark_reps, tunables, *io_factory);
         }
         return EXIT_SUCCESS;
