@@ -719,16 +719,22 @@ struct hcde::mt_cpu_encoder<T, Dims>::impl {
     constexpr static unsigned num_hcs_per_chunk = 64 / sizeof(data_type);
     constexpr static unsigned num_write_buffers = 30;
 
-    using write_buffer = detail::cpu::simd_aligned_buffer<std::byte>;
+    struct cube_buffer {
+        alignas(detail::cpu::simd_width_bytes) std::array<bits_type, hc_size> cube;
 
-    struct write_task_data {
-        size_t first_hc_index;
-        write_buffer *stream;
-        boost::container::static_vector<uint32_t, num_hcs_per_chunk> offsets_after_hcs;
-
-        bool operator<(const write_task_data &other) const {
-            return first_hc_index > other.first_hc_index;
+        bits_type *data() {
+            return detail::cpu::assume_simd_aligned(cube.data());
         }
+
+        const bits_type *data() const {
+            return detail::cpu::assume_simd_aligned(cube.data());
+        }
+    };
+
+    struct write_buffer {
+        size_t first_hc_index = SIZE_MAX;
+        alignas(8) std::array<std::byte, profile::compressed_block_size_bound * num_hcs_per_chunk> stream;
+        boost::container::static_vector<uint32_t, num_hcs_per_chunk> offsets_after_hcs;
 
         size_t num_hypercubes() const {
             return offsets_after_hcs.size();
@@ -739,26 +745,31 @@ struct hcde::mt_cpu_encoder<T, Dims>::impl {
         }
     };
 
+    struct hc_index_order {
+        bool operator()(write_buffer *left, write_buffer *right) const {
+            return left->first_hc_index > right->first_hc_index; // >: priority_queue is a max-heap
+        }
+    };
+
     const size_t num_threads;
-    std::priority_queue<write_task_data> write_task_queue;
-    std::vector<write_buffer> write_buffers;
-    std::vector<detail::cpu::simd_aligned_buffer<bits_type>> thread_cubes;
-    boost::lockfree::queue<write_buffer *> free_write_buffers{num_write_buffers};
+    std::vector<cube_buffer> thread_cubes{num_threads};
+    std::vector<write_buffer> write_buffers{num_write_buffers};
+    std::priority_queue<write_buffer *, std::vector<write_buffer *>, hc_index_order> write_task_queue;
+    boost::lockfree::queue<write_buffer *, boost::lockfree::capacity<num_write_buffers>> free_write_buffers;
 
     impl(std::optional<size_t> opt_num_threads)
-            : num_threads(opt_num_threads ? opt_num_threads.value() : boost::thread::physical_concurrency()) {
-        write_buffers.reserve(num_write_buffers);
-        for (size_t i = 0; i < num_write_buffers; ++i) {
-            write_buffers.emplace_back(profile::compressed_block_size_bound * num_hcs_per_chunk);
-        }
-        thread_cubes.reserve(num_threads);
-        for (size_t i = 0; i < num_threads; ++i) {
-            thread_cubes.emplace_back(hc_size);
+            : num_threads(opt_num_threads ? opt_num_threads.value() : boost::thread::physical_concurrency())
+    {
+        // priority_queue does not expose vector::reserve, push nonsense instead which will be cleared by prepare()
+        for (auto &wb: write_buffers) {
+            write_task_queue.push(&wb);
         }
     }
 
     void prepare() {
-        write_task_queue = {};
+        while (!write_task_queue.empty()) {
+            write_task_queue.pop();
+        }
         free_write_buffers.consume_all([](auto){});
         for (auto &b: write_buffers) {
             free_write_buffers.push(&b);
@@ -783,7 +794,6 @@ size_t hcde::mt_cpu_encoder<T, Dims>::compress(const slice<const data_type, dime
     using profile = detail::profile<T, Dims>;
     using bits_type = typename profile::bits_type;
     using write_buffer = typename impl::write_buffer;
-    using write_task_data = typename impl::write_task_data;
 
     constexpr auto side_length = profile::hypercube_side_length;
     constexpr auto num_hcs_per_chunk = impl::num_hcs_per_chunk;
@@ -808,7 +818,7 @@ size_t hcde::mt_cpu_encoder<T, Dims>::compress(const slice<const data_type, dime
 
 #pragma omp parallel num_threads(num_threads)
 #pragma omp single nowait
-    for (unsigned tid = 0; tid < num_threads; ++tid)
+    for (size_t tid = 0; tid < num_threads; ++tid)
 #pragma omp task firstprivate(tid)
     {
         auto &cube = _pimpl->thread_cubes[tid];
@@ -817,19 +827,19 @@ size_t hcde::mt_cpu_encoder<T, Dims>::compress(const slice<const data_type, dime
         // critical section; outside, we can tolerate missed updates (the loop can produce no-op iterations,
         // the conditional around the critical section is just an optimization to reduce contention)
         while (next_hc_index_to_write.load(std::memory_order_relaxed) < num_hypercubes) {
-            std::optional<write_task_data> write_task;
-            size_t task_stream_offset;
+            write_buffer *write_task = nullptr;
+            size_t task_stream_offset = 0;
 
             if (next_available_write_task_hc_index.load(std::memory_order_relaxed)
                 == next_hc_index_to_write.load(std::memory_order_relaxed)) // reduce contention of critical section
 #pragma omp critical(queue)
             {
-                if (!write_task_queue.empty() && write_task_queue.top().first_hc_index
+                if (!write_task_queue.empty() && write_task_queue.top()->first_hc_index
                                                  == next_hc_index_to_write.load(std::memory_order_relaxed)) {
                     write_task = write_task_queue.top();
                     write_task_queue.pop();
                     next_available_write_task_hc_index.store(
-                            write_task_queue.empty() ? SIZE_MAX : write_task_queue.top().first_hc_index,
+                            write_task_queue.empty() ? SIZE_MAX : write_task_queue.top()->first_hc_index,
                             std::memory_order_relaxed);
                     next_hc_index_to_write.fetch_add(write_task->num_hypercubes(), std::memory_order_relaxed);
                     task_stream_offset = stream_offset;
@@ -838,7 +848,7 @@ size_t hcde::mt_cpu_encoder<T, Dims>::compress(const slice<const data_type, dime
             }
 
             if (write_task) {
-                memcpy(static_cast<std::byte *>(stream) + task_stream_offset, write_task->stream->data(),
+                memcpy(static_cast<std::byte *>(stream) + task_stream_offset, write_task->stream.data(),
                        write_task->compressed_size());
                 auto task_file_offset = task_stream_offset;
                 for (size_t task_hc_index = 0; task_hc_index < write_task->num_hypercubes();
@@ -853,17 +863,16 @@ size_t hcde::mt_cpu_encoder<T, Dims>::compress(const slice<const data_type, dime
                     }
                     task_file_offset = task_stream_offset + write_task->offsets_after_hcs[task_hc_index];
                 }
-                free_write_buffers.push(write_task->stream);
+                free_write_buffers.push(write_task);
             } else {
-                write_buffer *stream_buffer;
-                if (free_write_buffers.pop(stream_buffer)) {
+                if (free_write_buffers.pop(write_task)) {
                     // memory_order_relaxed: There is no synchronization involved, only atomicity is required. The
                     // ordering of the following operations is determined by the returned value.
                     auto first_hc_index = next_hc_index_to_read.fetch_add(num_hcs_per_chunk, std::memory_order_relaxed);
 
                     if (first_hc_index < num_hypercubes) {
-                        write_task_data write_task{first_hc_index, stream_buffer, {}};
-                        size_t task_stream_offset = 0;
+                        write_task->first_hc_index = first_hc_index;
+                        write_task->offsets_after_hcs.clear();
                         for (size_t task_hc_index = 0; task_hc_index + first_hc_index < num_hypercubes
                                                        && task_hc_index < num_hcs_per_chunk; ++task_hc_index) {
                             auto hc_index = first_hc_index + task_hc_index;
@@ -874,18 +883,18 @@ size_t hcde::mt_cpu_encoder<T, Dims>::compress(const slice<const data_type, dime
                             detail::cpu::block_transform<profile>(cube.data());
 
                             task_stream_offset += detail::cpu::zero_bit_encode<profile>(
-                                    cube.data(), stream_buffer->data() + task_stream_offset);
-                            write_task.offsets_after_hcs.push_back(task_stream_offset);
+                                    cube.data(), write_task->stream.data() + task_stream_offset);
+                            write_task->offsets_after_hcs.push_back(task_stream_offset);
                         }
 
 #pragma omp critical(queue)
                         {
                             write_task_queue.push(write_task);
                             next_available_write_task_hc_index.store(
-                                    write_task_queue.top().first_hc_index, std::memory_order_relaxed);
+                                    write_task_queue.top()->first_hc_index, std::memory_order_relaxed);
                         }
                     } else {
-                        free_write_buffers.push(stream_buffer);
+                        free_write_buffers.push(write_task);
                     }
                 }
             }
