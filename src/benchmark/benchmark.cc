@@ -14,6 +14,10 @@
 
 #include <boost/program_options.hpp>
 
+#if HCDE_OPENMP_SUPPORT
+#   include <boost/thread/thread.hpp>
+#endif
+
 #if HCDE_BENCHMARK_HAVE_ZLIB
 #    define ZLIB_CONST
 #    include <zlib.h>
@@ -714,7 +718,7 @@ static benchmark_result benchmark_zstd(const void *input_buffer, const metadata 
         size_t result;
         bench.time_decompression([&] {
             result = ZSTD_decompress(decompress_buffer.data(), decompress_buffer.size(), compress_buffer.data(),
-                            compressed_size);
+                                     compressed_size);
         });
         if (ZSTD_isError(result)) {
             throw std::runtime_error(std::string{"ZSTD_decompress: "} + ZSTD_getErrorName(result));
@@ -725,6 +729,68 @@ static benchmark_result benchmark_zstd(const void *input_buffer, const metadata 
     return std::move(bench).result(uncompressed_size, compressed_size);
 }
 #endif
+
+
+static benchmark_result benchmark_memcpy(const void *input_buffer, const metadata &metadata,
+                                         const benchmark_params &params) {
+    const auto uncompressed_size = metadata.size_in_bytes();
+    auto bench = benchmark{params};
+
+    auto compress_buffer = scratch_buffer{uncompressed_size};
+    while (bench.compress_more()) {
+        bench.time_compression([&] {
+            memcpy(compress_buffer.data(), input_buffer, uncompressed_size);
+        });
+    }
+
+    auto decompress_buffer = scratch_buffer{uncompressed_size};
+    while (bench.decompress_more()) {
+        bench.time_decompression([&] {
+            memcpy(decompress_buffer.data(), compress_buffer.data(), uncompressed_size);
+        });
+    }
+
+    assert_buffer_equality(input_buffer, decompress_buffer.data(), uncompressed_size);
+    return std::move(bench).result(uncompressed_size, uncompressed_size);
+}
+
+
+#if HCDE_OPENMP_SUPPORT
+
+void memcpy_mt(void *dst, const void *src, size_t n) {
+    const auto num_threads = boost::thread::physical_concurrency();
+    const auto chunk_size = (n + num_threads - 1) / num_threads;
+#pragma omp parallel num_threads(num_threads)
+#pragma omp for schedule(static)
+    for (size_t i = 0; i < n; i += chunk_size) {
+        memcpy(static_cast<std::byte *>(dst) + i, static_cast<const std::byte *>(src) + i, std::min(chunk_size, n - i));
+    }
+}
+
+static benchmark_result benchmark_memcpy_mt(const void *input_buffer, const metadata &metadata,
+                                            const benchmark_params &params) {
+    const auto uncompressed_size = metadata.size_in_bytes();
+    auto bench = benchmark{params};
+
+    auto compress_buffer = scratch_buffer{uncompressed_size};
+    while (bench.compress_more()) {
+        bench.time_compression([&] {
+            memcpy_mt(compress_buffer.data(), input_buffer, uncompressed_size);
+        });
+    }
+
+    auto decompress_buffer = scratch_buffer{uncompressed_size};
+    while (bench.decompress_more()) {
+        bench.time_decompression([&] {
+            memcpy_mt(decompress_buffer.data(), compress_buffer.data(), uncompressed_size);
+        });
+    }
+
+    assert_buffer_equality(input_buffer, decompress_buffer.data(), uncompressed_size);
+    return std::move(bench).result(uncompressed_size, uncompressed_size);
+}
+
+#endif // HCDE_OPENMP_SUPPORT
 
 
 struct algorithm {
@@ -739,8 +805,10 @@ const algorithm_map &available_algorithms() {
     using namespace std::placeholders;
 
     static const algorithm_map algorithms{
+        {"memcpy", {benchmark_memcpy}},
         {"hcde", {benchmark_hcde<hcde::cpu_encoder>}},
 #if HCDE_OPENMP_SUPPORT
+        {"memcpy-mt", {benchmark_memcpy_mt}},
         {"hcde-mt", {benchmark_hcde<hcde::mt_cpu_encoder>}},
 #endif
 #if HCDE_GPU_SUPPORT

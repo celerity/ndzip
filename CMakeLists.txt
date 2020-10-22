@@ -132,6 +132,9 @@ if (HCDE_BUILD_BENCHMARK)
         "-DHCDE_BENCHMARK_HAVE_GFC=$<BOOL:${CUDAToolkit_FOUND}>"
         "-DHCDE_BENCHMARK_HAVE_ZSTD=$<BOOL:${ZSTD_FOUND}>"
     )
+    if (HCDE_USE_OPENMP)
+        target_link_libraries(benchmark PRIVATE OpenMP::OpenMP_CXX Boost::thread)
+    endif ()
     if (HCDE_USE_HIPSYCL)
         target_link_libraries(benchmark PRIVATE hcde-gpu)
     endif ()
