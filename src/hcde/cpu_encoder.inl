@@ -801,6 +801,7 @@ size_t hcde::mt_cpu_encoder<T, Dims>::compress(const slice<const data_type, dime
 
     std::atomic<size_t> next_hc_index_to_read = 0;
     std::atomic<size_t> next_hc_index_to_write = 0;
+    std::atomic<size_t> next_available_write_task_hc_index = SIZE_MAX;
     size_t stream_offset = file.file_header_length();
 
     const auto num_hypercubes = file.num_hypercubes();
@@ -811,16 +812,29 @@ size_t hcde::mt_cpu_encoder<T, Dims>::compress(const slice<const data_type, dime
 #pragma omp task firstprivate(tid)
     {
         auto &cube = _pimpl->thread_cubes[tid];
-        while (next_hc_index_to_write < num_hypercubes) {
+
+        // memory_order_relaxed: we only depend on next_hc_index_to_write for correctness and modify it inside a
+        // critical section; outside, we can tolerate missed updates (the loop can produce no-op iterations,
+        // the conditional around the critical section is just an optimization to reduce contention)
+        while (next_hc_index_to_write.load(std::memory_order_relaxed) < num_hypercubes) {
             std::optional<write_task_data> write_task;
             size_t task_stream_offset;
+
+            if (next_available_write_task_hc_index.load(std::memory_order_relaxed)
+                == next_hc_index_to_write.load(std::memory_order_relaxed)) // reduce contention of critical section
 #pragma omp critical(queue)
-            if (!write_task_queue.empty() && write_task_queue.top().first_hc_index == next_hc_index_to_write) {
-                write_task = write_task_queue.top();
-                write_task_queue.pop();
-                next_hc_index_to_write += write_task->num_hypercubes();
-                task_stream_offset = stream_offset;
-                stream_offset += write_task->compressed_size();
+            {
+                if (!write_task_queue.empty() && write_task_queue.top().first_hc_index
+                                                 == next_hc_index_to_write.load(std::memory_order_relaxed)) {
+                    write_task = write_task_queue.top();
+                    write_task_queue.pop();
+                    next_available_write_task_hc_index.store(
+                            write_task_queue.empty() ? SIZE_MAX : write_task_queue.top().first_hc_index,
+                            std::memory_order_relaxed);
+                    next_hc_index_to_write.fetch_add(write_task->num_hypercubes(), std::memory_order_relaxed);
+                    task_stream_offset = stream_offset;
+                    stream_offset += write_task->compressed_size();
+                }
             }
 
             if (write_task) {
@@ -843,7 +857,10 @@ size_t hcde::mt_cpu_encoder<T, Dims>::compress(const slice<const data_type, dime
             } else {
                 write_buffer *stream_buffer;
                 if (free_write_buffers.pop(stream_buffer)) {
-                    auto first_hc_index = next_hc_index_to_read.fetch_add(num_hcs_per_chunk);
+                    // memory_order_relaxed: There is no synchronization involved, only atomicity is required. The
+                    // ordering of the following operations is determined by the returned value.
+                    auto first_hc_index = next_hc_index_to_read.fetch_add(num_hcs_per_chunk, std::memory_order_relaxed);
+
                     if (first_hc_index < num_hypercubes) {
                         write_task_data write_task{first_hc_index, stream_buffer, {}};
                         size_t task_stream_offset = 0;
@@ -860,8 +877,13 @@ size_t hcde::mt_cpu_encoder<T, Dims>::compress(const slice<const data_type, dime
                                     cube.data(), stream_buffer->data() + task_stream_offset);
                             write_task.offsets_after_hcs.push_back(task_stream_offset);
                         }
+
 #pragma omp critical(queue)
-                        write_task_queue.push(write_task);
+                        {
+                            write_task_queue.push(write_task);
+                            next_available_write_task_hc_index.store(
+                                    write_task_queue.top().first_hc_index, std::memory_order_relaxed);
+                        }
                     } else {
                         free_write_buffers.push(stream_buffer);
                     }
