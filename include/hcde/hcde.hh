@@ -218,9 +218,21 @@ public:
     using data_type = T;
     constexpr static unsigned dimensions = Dims;
 
+    cpu_encoder();
+
+    cpu_encoder(cpu_encoder &&) noexcept = default;
+
+    ~cpu_encoder();
+
+    cpu_encoder &operator=(cpu_encoder &&) noexcept = default;
+
     size_t compress(const slice<const data_type, dimensions> &data, void *stream) const;
 
     size_t decompress(const void *stream, size_t bytes, const slice<data_type, dimensions> &data) const;
+
+private:
+    struct impl;
+    std::unique_ptr<impl> _pimpl;
 };
 
 #if HCDE_OPENMP_SUPPORT
@@ -231,9 +243,23 @@ public:
     using data_type = T;
     constexpr static unsigned dimensions = Dims;
 
+    mt_cpu_encoder();
+
+    explicit mt_cpu_encoder(size_t num_threads);
+
+    mt_cpu_encoder(mt_cpu_encoder &&) noexcept = default;
+
+    ~mt_cpu_encoder();
+
+    mt_cpu_encoder &operator=(mt_cpu_encoder &&) noexcept = default;
+
     size_t compress(const slice<const data_type, dimensions> &data, void *stream) const;
 
     size_t decompress(const void *stream, size_t bytes, const slice<data_type, dimensions> &data) const;
+
+private:
+    struct impl;
+    std::unique_ptr<impl> _pimpl;
 };
 
 #endif // HCDE_OPENMP_SUPPORT
