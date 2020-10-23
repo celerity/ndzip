@@ -19,7 +19,6 @@
 #endif
 
 #if HCDE_BENCHMARK_HAVE_ZLIB
-#    define ZLIB_CONST
 #    include <zlib.h>
 #endif
 #if HCDE_BENCHMARK_HAVE_LZ4
@@ -477,63 +476,33 @@ static benchmark_result benchmark_deflate(const void *input_buffer, const metada
     const int level = params.tunable;
     auto bench = benchmark{params};
 
-    auto strm_init = z_stream{};
-    strm_init.next_in = static_cast<const Bytef*>(input_buffer);
-    strm_init.avail_in = static_cast<uInt>(uncompressed_size);
-
-    size_t output_buffer_size;
-    {
-        auto strm = strm_init;
-        if (deflateInit(&strm, level) != Z_OK) {
-            throw std::runtime_error("deflateInit");
-        }
-        output_buffer_size = deflateBound(&strm_init, strm_init.avail_in);
-        deflateEnd(&strm_init);
-    }
-
-    auto compress_buffer = scratch_buffer<Bytef>{output_buffer_size}; // no bound function, just guess large enough
-    strm_init.next_out = compress_buffer.data();
-    strm_init.avail_out = static_cast<uInt>(output_buffer_size);
-
+    auto compress_buffer = scratch_buffer<Bytef>(compressBound(uncompressed_size));
     size_t compressed_size;
     while (bench.compress_more()) {
-        auto strm = strm_init;
-        if (deflateInit(&strm, level) != Z_OK) {
-            throw std::runtime_error("deflateInit");
-        }
-        auto end_deflate = defer([&] { deflateEnd(&strm); });
-
         int result;
+        uLongf dest_len = compress_buffer.size();
         bench.time_compression([&] {
-            result = deflate(&strm, Z_SYNC_FLUSH);
+            result = compress2(compress_buffer.data(), &dest_len,
+                    static_cast<const Bytef*>(input_buffer), uncompressed_size, level);
         });
 
         if (result != Z_OK) {
-            throw std::runtime_error("deflate");
+            throw std::runtime_error(std::string{"compress2: "} + zError(result));
         }
-        compressed_size = strm.total_out;
+        compressed_size = dest_len;
     }
 
     auto decompress_buffer = scratch_buffer<Bytef>{uncompressed_size};
-    strm_init.next_in = compress_buffer.data();
-    strm_init.avail_in = static_cast<uInt>(compressed_size);
-    strm_init.next_out = decompress_buffer.data();
-    strm_init.avail_out = static_cast<uInt>(uncompressed_size);
-
     while (bench.decompress_more()) {
-        auto strm = strm_init;
-        if (inflateInit(&strm) != Z_OK) {
-            throw std::runtime_error("inflateInit");
-        }
-        auto end_inflate = defer([&] { inflateEnd(&strm); });
-
         int result;
+        uLongf dest_len = decompress_buffer.size();
         bench.time_decompression([&] {
-            result = inflate(&strm, Z_SYNC_FLUSH);
+            result = uncompress(decompress_buffer.data(), &dest_len, compress_buffer.data(),
+                    compressed_size);
         });
 
         if (result != Z_OK) {
-            throw std::runtime_error("inflate");
+            throw std::runtime_error(std::string{"uncompress: "} + zError(result));
         }
     }
 
@@ -905,6 +874,11 @@ static void benchmark_file(const metadata &metadata, const algorithm_map &algori
                 msg << "mismatch between input and decompressed buffer for " << metadata.path.filename().string()
                 << " with " <<  name << " (tunable=" << tunable << ")";
                 throw std::logic_error(msg.str());
+            } catch (std::exception &e) {
+                std::ostringstream msg;
+                msg << "exception raised by " << name << " benchmark (tunable=" << tunable << ") with "
+                    << metadata.path.filename().string() << ": " << e.what();
+                throw std::runtime_error(msg.str());
             }
             std::cout << metadata.path.filename().string() << ";"
                       << (metadata.data_type == data_type::t_float ? "float" : "double") << ";"
