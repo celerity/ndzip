@@ -60,12 +60,12 @@ if __name__ == '__main__':
     for row, data_type in enumerate(DATA_TYPES):
         means = []
         algo_means_dict = defaultdict(list)
-        for (algo, tunable), points in by_data_type_and_algorithm[data_type].items():
+        for (algo, tunable), results in by_data_type_and_algorithm[data_type].items():
             mean_compression_ratio = np.mean([float(a['compressed bytes']) / float(a['uncompressed bytes'])
-                                              for a in points])
-            throughput_stats = {op: ThroughputStats(points, op) for op in OPERATIONS}
+                                              for a in results])
+            throughput_stats = {op: ThroughputStats(results, op) for op in OPERATIONS}
             means.append((algo, tunable, mean_compression_ratio, throughput_stats))
-            algo_means_dict[algo].append((mean_compression_ratio, throughput_stats))
+            algo_means_dict[algo].append((tunable, mean_compression_ratio, throughput_stats))
 
         means.sort(key=itemgetter(0, 1))
         for v in algo_means_dict.values():
@@ -81,26 +81,50 @@ if __name__ == '__main__':
 
         data_type_means.append((data_type, algo_means))
 
-    fig, axes = plt.subplots(len(DATA_TYPES), len(OPERATIONS), figsize=(15, 10))
+    fig, axes = plt.subplots(len(DATA_TYPES), len(OPERATIONS), figsize=(10, 6))
     fig.subplots_adjust(top=0.92, bottom=0.1, left=0.08, right=0.88, wspace=0.2, hspace=0.35)
     algorithm_colors = dict(zip(sorted(algorithms), PALETTE))
     for row, (data_type, algo_means) in enumerate(data_type_means):
         for col, operation in enumerate(OPERATIONS):
             ax = axes[row, col]
             throughput_values = []
-            for algo, points in algo_means:
-                throughputs, h95s, ratios = zip(*((t[operation].mean, t[operation].h95, r) for r, t in points))
+            for algo, results in algo_means:
+                points = [(t[operation].mean, t[operation].h95, r) for _, r, t in results]
+                points.sort(key=itemgetter(0))
+                throughputs, h95s, ratios = zip(*points)
                 throughput_values += throughputs
-                ax.errorbar(throughputs, ratios, label=algo, xerr=h95s,
-                            color=algorithm_colors[algo], marker='D' if algo.startswith('new') else 'o')
+                if len(points) > 1:
+                    marker = None
+                elif algo.startswith('hcde'):
+                    marker = 'D'
+                else:
+                    marker = 'o'
+                ax.errorbar(throughputs, ratios, label=algo, xerr=h95s, color=algorithm_colors[algo], marker=marker,
+                            linewidth=2)
             ax.set_title(f'{data_type} {operation}')
             ax.set_xscale('log')
             if throughput_values:
                 ax.set_xlim(min(throughput_values) / 2, max(throughput_values) * 2)
             ax.set_xlabel('arithmetic mean uncompressed throughput [B/s]')
-            ax.set_ylabel('arithmetic mean mean compression ratio')
+            ax.set_ylabel('arithmetic mean compression ratio')
 
     fig.legend(
         handles=[patches.Patch(color=c, label=a) for a, c in sorted(algorithm_colors.items(), key=itemgetter(0))],
         loc='center right')
-    plt.show()
+    plt.savefig('benchmark.pgf')
+
+    fig, ax = plt.subplots()
+    for data_type, algo_means in data_type_means:
+        algo, results = next((a, r) for a, r in algo_means if a == 'hcde-mt')
+        for operation in OPERATIONS:
+            points = [(threads, t[operation].mean, t[operation].h95) for threads, _, t in results]
+            print(points)
+            points.sort(key=itemgetter(0))
+            threads, throughputs, h95s = zip(*points)
+            ax.errorbar(threads, throughputs, label=f'{data_type} {operation}', yerr=h95s, marker='o')
+    ax.set_xlabel('number of threads')
+    ax.set_ylabel('arithmetic mean uncompressed throughput [B/s]')
+    ax.set_xscale('log')
+    ax.set_yscale('log')
+    plt.legend()
+    plt.savefig('scaling.pgf')
