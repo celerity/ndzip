@@ -8,6 +8,7 @@ For Software License Terms and Conditions, see http://users.ices.utexas.edu/~bur
 #include "pFPC.h"
 
 #include <stdlib.h>
+#include <stdio.h>
 #include <stdint.h>
 #include <pthread.h>
 #include <assert.h>
@@ -356,21 +357,15 @@ static void Decompress(int num, unsigned char **inter, ull *outbuf, int predsize
 }
 
 
-static unsigned char *AlignedAlloc(int size, int factor)
+static unsigned char *AlignedAlloc(size_t size, size_t factor)
 {
-  register int diff;
-  register unsigned char *buf;
-
-  // allocate memory and zero out
-  buf = (unsigned char *)calloc(size + ALIGNSIZE - 1, factor);
-  assert(NULL != buf);
-
-  // adjust buffer beginning to align size
-  diff = ((long)buf) % ALIGNSIZE;
-  if (0 != diff) {
-    buf += ALIGNSIZE - diff;
+  void *buf;
+  int error = posix_memalign(&buf, ALIGNSIZE, size * factor);
+  if (error != 0) {
+      fprintf(stderr, "posix_memalign(%zu, %zu): %s", ALIGNSIZE, size * factor, strerror(error));
+      abort();
   }
-
+  memset(buf, 0, size * factor);
   return buf;
 }
 
@@ -428,6 +423,22 @@ size_t pFPC_Compress_Memory(const void *in_stream, size_t in_bytes, void *out_st
       Compress(num, input, inter, predsizem1, threads, chunksize, fcm, dfcm, out_stream, &out_cursor);
       num = stream_read(input, 8, BUFSIZE >> 3, in_stream, in_bytes, &in_cursor);
   }
+
+  // free buffers
+  for (i = 0; i < threads; i++) {
+      free(inter[i]);
+  }
+  free(inter);
+  free(input);
+
+  // free predictors
+  for (i = 0; i < threads; i++) {
+      free(fcm[i]);
+      free(dfcm[i]);
+  }
+  free(fcm);
+  free(dfcm);
+
   return out_cursor;
 }
 
@@ -437,7 +448,7 @@ size_t pFPC_Decompress_Memory(const void *in_stream, size_t in_bytes, void *out_
   int predsizelg2, threads, chunksize;
   int i, num, chunkrepeat, predsizem1, val, cnt, in;
   register ull **fcm, **dfcm;
-  register ull *input, *output;
+  register ull *output;
   register unsigned char **inter;
 
   // read in header
@@ -488,6 +499,22 @@ size_t pFPC_Decompress_Memory(const void *in_stream, size_t in_bytes, void *out_
 
       cnt = stream_read(&num, 4, 1, in_stream, in_bytes, &in_cursor);
   }
+
+  // free buffers
+  for (i = 0; i < threads; i++) {
+      free(inter[i]);
+  }
+  free(inter);
+  free(output);
+
+  // free predictors
+  for (i = 0; i < threads; i++) {
+      free(fcm[i]);
+      free(dfcm[i]);
+  }
+  free(fcm);
+  free(dfcm);
+
   return out_cursor;
 }
 

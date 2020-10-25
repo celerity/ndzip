@@ -196,6 +196,9 @@ size_t FPC_Compress_Memory(const void *in_stream, size_t in_bytes, void *out_str
     intot = stream_read(inbuf, 8, SIZE, in_stream, in_bytes, &in_cursor);
   }
 
+  free(fcm);
+  free(dfcm);
+
   return out_cursor;
 }
 
@@ -316,6 +319,9 @@ size_t FPC_Decompress_Memory(const void *in_stream, size_t in_bytes, void *out_s
       assert(SIZE >= intot);
     } while (0 < intot);
   }
+
+  free(fcm);
+  free(dfcm);
 
   return in_cursor;
 }
