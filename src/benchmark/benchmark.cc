@@ -47,7 +47,7 @@ enum class data_type {
 };
 
 enum class tuning {
-    min,
+    good,
     min_max,
     full,
 };
@@ -112,6 +112,7 @@ static std::vector<metadata> load_metadata_file(const std::filesystem::path &pat
 
 struct benchmark_params {
     int tunable = 1;
+    size_t num_threads = 1;
     std::chrono::microseconds min_time = std::chrono::seconds(1);
     unsigned min_reps = 1;
     bool warm_up = true;
@@ -263,7 +264,7 @@ struct hcde_encoder_factory {
 template<typename Data, unsigned Dims>
 struct hcde_encoder_factory<hcde::mt_cpu_encoder<Data, Dims>> {
     hcde::mt_cpu_encoder<Data, Dims> create(const benchmark_params &params) const {
-        return hcde::mt_cpu_encoder<Data, Dims>{static_cast<size_t>(params.tunable)};
+        return hcde::mt_cpu_encoder<Data, Dims>{params.num_threads};
     }
 };
 
@@ -420,7 +421,7 @@ static benchmark_result benchmark_pfpc(const void *input_buffer, const metadata 
     const auto uncompressed_size = metadata.size_in_bytes();
     const int pred_size = params.tunable;
     const int chunksize = 1 << 24; // 16 MiB
-    const int threads = static_cast<int>(std::thread::hardware_concurrency());
+    const int threads = static_cast<int>(params.num_threads);
     auto bench = benchmark{params};
 
     auto compress_buffer = scratch_buffer{2 * uncompressed_size + 1000}; // no bound function, just guess large enough
@@ -784,8 +785,7 @@ static benchmark_result benchmark_memcpy(const void *input_buffer, const metadat
 
 #if HCDE_OPENMP_SUPPORT
 
-void memcpy_mt(void *dst, const void *src, size_t n) {
-    const auto num_threads = std::thread::hardware_concurrency();
+void memcpy_mt(void *dst, const void *src, size_t n, size_t num_threads) {
     const auto chunk_size = (n + num_threads - 1) / num_threads;
 #pragma omp parallel num_threads(num_threads)
 #pragma omp for schedule(static)
@@ -802,14 +802,14 @@ static benchmark_result benchmark_memcpy_mt(const void *input_buffer, const meta
     auto compress_buffer = scratch_buffer{uncompressed_size};
     while (bench.compress_more()) {
         bench.time_compression([&] {
-            memcpy_mt(compress_buffer.data(), input_buffer, uncompressed_size);
+            memcpy_mt(compress_buffer.data(), input_buffer, uncompressed_size, params.num_threads);
         });
     }
 
     auto decompress_buffer = scratch_buffer{uncompressed_size};
     while (bench.decompress_more()) {
         bench.time_decompression([&] {
-            memcpy_mt(decompress_buffer.data(), compress_buffer.data(), uncompressed_size);
+            memcpy_mt(decompress_buffer.data(), compress_buffer.data(), uncompressed_size, params.num_threads);
         });
     }
 
@@ -823,7 +823,10 @@ static benchmark_result benchmark_memcpy_mt(const void *input_buffer, const meta
 struct algorithm {
     std::function<benchmark_result(const void *, const metadata&, benchmark_params)> benchmark;
     int tunable_min = 1;
+    int tunable_good = 1;
     int tunable_max = 1;
+    bool multithreaded = false;
+    size_t good_num_threads = std::thread::hardware_concurrency();
 };
 
 using algorithm_map = std::unordered_map<std::string, algorithm>;
@@ -835,9 +838,8 @@ const algorithm_map &available_algorithms() {
         {"memcpy", {benchmark_memcpy}},
         {"hcde", {benchmark_hcde<hcde::cpu_encoder>}},
 #if HCDE_OPENMP_SUPPORT
-        {"memcpy-mt", {benchmark_memcpy_mt}},
-        {"hcde-mt", {benchmark_hcde<hcde::mt_cpu_encoder>,
-                        1, static_cast<int>(std::thread::hardware_concurrency())}},
+        {"memcpy-mt", {benchmark_memcpy_mt, 1, 1, 1, true /* multithreaded */}},
+        {"hcde-mt", {benchmark_hcde<hcde::mt_cpu_encoder>, 1, 1, 1, true /* multithreaded */}},
 #endif
 #if HCDE_GPU_SUPPORT
         // {"hcde-gpu", benchmark_hcde<hcde::gpu_encoder>},
@@ -845,23 +847,23 @@ const algorithm_map &available_algorithms() {
 #if HCDE_BENCHMARK_HAVE_FPZIP
         {"fpzip", {benchmark_fpzip}},
 #endif
-        {"fpc", {benchmark_fpc, 1, 30}},
-        {"pfpc", {benchmark_pfpc, 1, 30}},
-        {"spdp", {benchmark_spdp, 1, 9}},
+        {"fpc", {benchmark_fpc, 1, 10, 25}},
+        {"pfpc", {benchmark_pfpc, 1, 10, 25, true /* multithreaded */}},
+        {"spdp", {benchmark_spdp, 1, 5, 9}},
 #if HCDE_BENCHMARK_HAVE_GFC
         {"gfc", {benchmark_gfc}},
 #endif
 #if HCDE_BENCHMARK_HAVE_ZLIB
-        {"deflate", {benchmark_deflate, 1, 9}},
+        {"deflate", {benchmark_deflate, 1, 6, 9}},
 #endif
 #if HCDE_BENCHMARK_HAVE_LZ4
         {"lz4", {benchmark_lz4}},
 #endif
 #if HCDE_BENCHMARK_HAVE_ZSTD
-        {"zstd", {benchmark_zstd, 1, 19}},
+        {"zstd", {benchmark_zstd, 1, 3, 19}},
 #endif
 #if HCDE_BENCHMARK_HAVE_LZMA
-        {"lzma", {benchmark_lzma, 1, 9}},
+        {"lzma", {benchmark_lzma, 1, 6, 9}},
 #endif
     };
 
@@ -899,7 +901,7 @@ struct join {
 
 
 static void benchmark_file(const metadata &metadata, const algorithm_map &algorithms, bool warm_up,
-     std::chrono::microseconds min_time, unsigned min_reps, tuning tunables,
+     std::chrono::microseconds min_time, unsigned min_reps, tuning tunables, bool benchmark_scaling,
      const hcde::detail::io_factory &io_factory) {
 
     auto input_stream = io_factory.create_input_stream(metadata.path.string(), metadata.size_in_bytes());
@@ -907,8 +909,8 @@ static void benchmark_file(const metadata &metadata, const algorithm_map &algori
 
     for (auto &[name, algo]: algorithms) {
         std::vector<int> tunable_values;
-        if (algo.tunable_min == algo.tunable_max || tunables == tuning::min) {
-            tunable_values = {algo.tunable_min};
+        if (algo.tunable_min == algo.tunable_max || tunables == tuning::good) {
+            tunable_values = {algo.tunable_good};
         } else if (tunables == tuning::min_max) {
             tunable_values = {algo.tunable_min, algo.tunable_max};
         } else {
@@ -916,34 +918,47 @@ static void benchmark_file(const metadata &metadata, const algorithm_map &algori
             std::iota(tunable_values.begin(), tunable_values.end(), algo.tunable_min);
         }
 
-        for (auto tunable: tunable_values) {
-            auto params = benchmark_params{tunable, min_time, min_reps, warm_up};
-
-            benchmark_result result;
-            try {
-                result = algo.benchmark(input_buffer, metadata, params);
-            } catch (not_implemented &) {
-                continue;
-            } catch (buffer_mismatch &) {
-                std::ostringstream msg;
-                msg << "mismatch between input and decompressed buffer for " << metadata.path.filename().string()
-                << " with " <<  name << " (tunable=" << tunable << ")";
-                throw std::logic_error(msg.str());
-            } catch (std::exception &e) {
-                std::ostringstream msg;
-                msg << "exception raised by " << name << " benchmark (tunable=" << tunable << ") with "
-                    << metadata.path.filename().string() << ": " << e.what();
-                throw std::runtime_error(msg.str());
+        size_t min_num_threads = 1, max_num_threads = 1;
+        if (algo.multithreaded) {
+            if (benchmark_scaling) {
+                min_num_threads = 1;
+                max_num_threads = std::thread::hardware_concurrency();
+            } else {
+                min_num_threads = max_num_threads = algo.good_num_threads;
             }
-            std::cout << metadata.path.filename().string() << ";"
-                      << (metadata.data_type == data_type::t_float ? "float" : "double") << ";"
-                      << metadata.extent.size() << ";"
-                      << name << ";"
-                      << tunable << ";"
-                      << join(",", result.compression_times, [](auto d) { return d.count(); }) << ";"
-                      << join(",", result.decompression_times, [](auto d) { return d.count(); }) << ";"
-                      << result.uncompressed_bytes << ";"
-                      << result.compressed_bytes << "\n";
+        }
+
+        for (auto tunable: tunable_values) {
+            for (size_t num_threads = min_num_threads; num_threads <= max_num_threads; ++num_threads) {
+                auto params = benchmark_params{tunable, num_threads, min_time, min_reps, warm_up};
+
+                benchmark_result result;
+                try {
+                    result = algo.benchmark(input_buffer, metadata, params);
+                } catch (not_implemented &) {
+                    continue;
+                } catch (buffer_mismatch &) {
+                    std::ostringstream msg;
+                    msg << "mismatch between input and decompressed buffer for " << metadata.path.filename().string()
+                    << " with " <<  name << " (tunable=" << tunable << ")";
+                    throw std::logic_error(msg.str());
+                } catch (std::exception &e) {
+                    std::ostringstream msg;
+                    msg << "exception raised by " << name << " benchmark (tunable=" << tunable << ") with "
+                        << metadata.path.filename().string() << ": " << e.what();
+                    throw std::runtime_error(msg.str());
+                }
+                std::cout << metadata.path.filename().string() << ";"
+                        << (metadata.data_type == data_type::t_float ? "float" : "double") << ";"
+                        << metadata.extent.size() << ";"
+                        << name << ";"
+                        << tunable << ";"
+                        << num_threads << ";"
+                        << join(",", result.compression_times, [](auto d) { return d.count(); }) << ";"
+                        << join(",", result.decompression_times, [](auto d) { return d.count(); }) << ";"
+                        << result.uncompressed_bytes << ";"
+                        << result.compressed_bytes << "\n";
+            }
         }
     }
 }
@@ -993,11 +1008,12 @@ int main(int argc, char **argv) {
     std::string metadata_csv_file;
     std::vector<std::string> include_algorithms;
     std::vector<std::string> exclude_algorithms;
-    tuning tunables = tuning::min;
+    tuning tunables = tuning::good;
     unsigned benchmark_ms = 1000;
     unsigned benchmark_reps = 1;
     bool no_mmap = false;
     bool no_warmup = false;
+    bool benchmark_scaling = false;
 
     auto usage = "Usage: "s + argv[0] + " [options] csv-file\n\n";
 
@@ -1011,7 +1027,8 @@ int main(int argc, char **argv) {
                 "algorithms to NOT evaluate (see --help)")
             ("time-each,t", opts::value(&benchmark_ms), "repeat each for at least t ms (default 1000)")
             ("reps-each,r", opts::value(&benchmark_reps), "repeat each at least n times (default 3)")
-            ("tunables", opts::value<std::string>(), "tunables min|minmax|full (default min)")
+            ("tunables", opts::value<std::string>(), "tunables good|minmax|full (default good)")
+            ("scaling", opts::bool_switch(&benchmark_scaling), "vary number of threads for multi-threaded algorithms")
             ("no-mmap", opts::bool_switch(&no_mmap), "do not use memory-mapped I/O")
             ("no-warmup", opts::bool_switch(&no_warmup), "do not perform an additional warm-up step per benchmark");
     opts::positional_options_description pos_desc;
@@ -1036,14 +1053,14 @@ int main(int argc, char **argv) {
 
         if (vars.count("tunables")) {
             auto &str = vars["tunables"].as<std::string>();
-            if (str == "min") {
-                tunables = tuning::min;
+            if (str == "good") {
+                tunables = tuning::good;
             } else if (str == "minmax") {
                 tunables = tuning::min_max;
             } else if (str == "full") {
                 tunables = tuning::full;
             } else {
-                throw boost::program_options::invalid_option_value("--tunables must be min, minmax or full");
+                throw boost::program_options::invalid_option_value("--tunables must be good, minmax or full");
             }
         }
 
@@ -1084,13 +1101,12 @@ int main(int argc, char **argv) {
     }
 
     try {
-        std::cout << "dataset;data type;dimensions;algorithm;tunable;"
-                     "compression times (microseconds);"
-                     "decompression times (microseconds);"
+        std::cout << "dataset;data type;dimensions;algorithm;tunable;num_threads;"
+                     "compression times (microseconds);decompression times (microseconds);"
                      "uncompressed bytes;compressed bytes\n";
         for (auto &metadata : load_metadata_file(metadata_csv_file)) {
             benchmark_file(metadata, selected_algorithms, !no_warmup, std::chrono::milliseconds(benchmark_ms),
-                benchmark_reps, tunables, *io_factory);
+                benchmark_reps, tunables, benchmark_scaling, *io_factory);
         }
         return EXIT_SUCCESS;
     } catch (std::exception &e) {
