@@ -257,3 +257,7 @@ size_t SPDP_Decompress_Memory(const void *in_stream, size_t in_bytes, void *out_
 
     return in_cursor;
 }
+
+
+const char *SPDP_Version_String = "SPDP v1.1";
+

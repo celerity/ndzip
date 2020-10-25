@@ -320,3 +320,5 @@ size_t FPC_Decompress_Memory(const void *in_stream, size_t in_bytes, void *out_s
   return in_cursor;
 }
 
+const char *FPC_Version_String = "FPC v1.1";
+

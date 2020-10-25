@@ -113,6 +113,7 @@ if (HCDE_BUILD_BENCHMARK)
     endif ()
 
     add_subdirectory(contrib/fpc)
+    add_subdirectory(contrib/pfpc)
     add_subdirectory(contrib/spdp)
 
     if (CUDAToolkit_FOUND)
@@ -123,7 +124,7 @@ if (HCDE_BUILD_BENCHMARK)
 
     add_executable(benchmark src/benchmark/benchmark.cc)
     target_compile_options(benchmark PRIVATE ${HCDE_COMPILE_FLAGS})
-    target_link_libraries(benchmark PRIVATE hcde io Boost::program_options fpc spdp)
+    target_link_libraries(benchmark PRIVATE hcde io Boost::program_options fpc pfpc spdp)
     target_compile_definitions(benchmark PRIVATE
         "-DHCDE_BENCHMARK_HAVE_ZLIB=$<BOOL:${ZLIB_FOUND}>"
         "-DHCDE_BENCHMARK_HAVE_LZ4=$<BOOL:${LZ4_FOUND}>"

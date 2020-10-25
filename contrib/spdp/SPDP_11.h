@@ -12,6 +12,8 @@ size_t SPDP_Compress_Memory(const void *in_stream, size_t in_bytes, void *out_st
 
 size_t SPDP_Decompress_Memory(const void *in_stream, size_t in_bytes, void *out_stream);
 
+extern const char *SPDP_Version_String;
+
 #ifdef __cplusplus
 }
 #endif

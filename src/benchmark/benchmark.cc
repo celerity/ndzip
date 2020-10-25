@@ -15,7 +15,7 @@
 #include <boost/program_options.hpp>
 
 #if HCDE_OPENMP_SUPPORT
-#   include <boost/thread/thread.hpp>
+#   include <thread>
 #endif
 
 #if HCDE_BENCHMARK_HAVE_ZLIB
@@ -34,6 +34,7 @@
 #   include <fpzip.h>
 #endif
 #include <fpc.h>
+#include <pFPC.h>
 #include <SPDP_11.h>
 #if HCDE_BENCHMARK_HAVE_GFC
 #   include <GFC_22.h>
@@ -254,13 +255,25 @@ void assert_buffer_equality(const void *left, const void *right, size_t size) {
 class not_implemented: public std::exception {};
 
 
+template<typename Encoder>
+struct hcde_encoder_factory {
+    Encoder create(const benchmark_params &) const { return Encoder{}; }
+};
+
+template<typename Data, unsigned Dims>
+struct hcde_encoder_factory<hcde::mt_cpu_encoder<Data, Dims>> {
+    hcde::mt_cpu_encoder<Data, Dims> create(const benchmark_params &params) const {
+        return hcde::mt_cpu_encoder<Data, Dims>{static_cast<size_t>(params.tunable)};
+    }
+};
+
 template<template<typename, unsigned> typename Encoder, typename Data, unsigned Dims>
 static benchmark_result benchmark_hcde_3(const Data *input_buffer, const hcde::extent<Dims> &size,
                                          const benchmark_params &params) {
     const auto uncompressed_size = hcde::num_elements(size) * sizeof(Data);
     const auto input_slice = hcde::slice{input_buffer, size};
     auto bench = benchmark{params};
-    auto encoder = Encoder<Data, Dims>{};
+    auto encoder = hcde_encoder_factory<Encoder<Data, Dims>>{}.create(params);
 
     auto compress_buffer = scratch_buffer{hcde::compressed_size_bound<Data>(size)};
     size_t compressed_size;
@@ -390,6 +403,46 @@ static benchmark_result benchmark_fpc(const void *input_buffer, const metadata &
         });
         if (result == 0) {
             throw std::runtime_error("FPC_Decompress_Memory");
+        }
+    }
+
+    assert_buffer_equality(input_buffer, decompress_buffer.data(), uncompressed_size);
+    return std::move(bench).result(uncompressed_size, compressed_size);
+}
+
+
+static benchmark_result benchmark_pfpc(const void *input_buffer, const metadata &metadata,
+    const benchmark_params &params) {
+    if (metadata.data_type != data_type::t_double) {
+        throw not_implemented{};
+    }
+
+    const auto uncompressed_size = metadata.size_in_bytes();
+    const int pred_size = params.tunable;
+    const int chunksize = 1 << 24; // 16 MiB
+    const int threads = static_cast<int>(std::thread::hardware_concurrency());
+    auto bench = benchmark{params};
+
+    auto compress_buffer = scratch_buffer{2 * uncompressed_size + 1000}; // no bound function, just guess large enough
+    size_t compressed_size;
+    while (bench.compress_more()) {
+        bench.time_compression([&] {
+            compressed_size = pFPC_Compress_Memory(input_buffer, uncompressed_size, compress_buffer.data(),
+                    pred_size, threads, chunksize);
+        });
+        if (compressed_size == 0) {
+            throw std::runtime_error("pFPC_Compress_Memory");
+        }
+    }
+
+    auto decompress_buffer = scratch_buffer{uncompressed_size};
+    while (bench.decompress_more()) {
+        size_t result;
+        bench.time_decompression([&] {
+            result = pFPC_Decompress_Memory(compress_buffer.data(), compressed_size, decompress_buffer.data());
+        });
+        if (result == 0) {
+            throw std::runtime_error("pFPC_Decompress_Memory");
         }
     }
 
@@ -732,7 +785,7 @@ static benchmark_result benchmark_memcpy(const void *input_buffer, const metadat
 #if HCDE_OPENMP_SUPPORT
 
 void memcpy_mt(void *dst, const void *src, size_t n) {
-    const auto num_threads = boost::thread::physical_concurrency();
+    const auto num_threads = std::thread::hardware_concurrency();
     const auto chunk_size = (n + num_threads - 1) / num_threads;
 #pragma omp parallel num_threads(num_threads)
 #pragma omp for schedule(static)
@@ -783,7 +836,8 @@ const algorithm_map &available_algorithms() {
         {"hcde", {benchmark_hcde<hcde::cpu_encoder>}},
 #if HCDE_OPENMP_SUPPORT
         {"memcpy-mt", {benchmark_memcpy_mt}},
-        {"hcde-mt", {benchmark_hcde<hcde::mt_cpu_encoder>}},
+        {"hcde-mt", {benchmark_hcde<hcde::mt_cpu_encoder>,
+                        1, static_cast<int>(std::thread::hardware_concurrency())}},
 #endif
 #if HCDE_GPU_SUPPORT
         // {"hcde-gpu", benchmark_hcde<hcde::gpu_encoder>},
@@ -791,7 +845,8 @@ const algorithm_map &available_algorithms() {
 #if HCDE_BENCHMARK_HAVE_FPZIP
         {"fpzip", {benchmark_fpzip}},
 #endif
-        {"fpc", {benchmark_fpc, 10, 20}},
+        {"fpc", {benchmark_fpc, 1, 30}},
+        {"pfpc", {benchmark_pfpc, 1, 30}},
         {"spdp", {benchmark_spdp, 1, 9}},
 #if HCDE_BENCHMARK_HAVE_GFC
         {"gfc", {benchmark_gfc}},
@@ -916,12 +971,18 @@ static void print_library_versions() {
 #if HCDE_BENCHMARK_HAVE_LZMA
     printf("LZMA version %s\n", lzma_version_string());
 #endif
+#if HCDE_BENCHMARK_HAVE_ZSTD
+    printf("Zstandard version %s\n", ZSTD_versionString());
+#endif
 #if HCDE_BENCHMARK_HAVE_FPZIP
-    printf("%s\n", fpzip_version_string);
+    puts(fpzip_version_string);
 #endif
 #if HCDE_BENCHMARK_HAVE_GFC
     printf("GFC %s\n", GFC_Version_String);
 #endif
+    puts(FPC_Version_String);
+    puts(pFPC_Version_String);
+    puts(SPDP_Version_String);
 }
 
 
