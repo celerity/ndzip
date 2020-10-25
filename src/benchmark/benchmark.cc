@@ -847,8 +847,8 @@ const algorithm_map &available_algorithms() {
 #if HCDE_BENCHMARK_HAVE_FPZIP
         {"fpzip", {benchmark_fpzip}},
 #endif
-        {"fpc", {benchmark_fpc, 1, 10, 25}},
-        {"pfpc", {benchmark_pfpc, 1, 10, 25, true /* multithreaded */}},
+        {"fpc", {benchmark_fpc, 1, 15, 25}},
+        {"pfpc", {benchmark_pfpc, 1, 15, 25, true /* multithreaded */}},
         {"spdp", {benchmark_spdp, 1, 5, 9}},
 #if HCDE_BENCHMARK_HAVE_GFC
         {"gfc", {benchmark_gfc}},
