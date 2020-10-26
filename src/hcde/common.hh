@@ -268,7 +268,8 @@ class profile {
         using bits_type = detail::bits_type<T>;
 
         constexpr static unsigned dimensions = Dims;
-        constexpr static unsigned hypercube_side_length = Dims == 1 ? 4096 : Dims == 2 ? 64 : 16;
+        //constexpr static unsigned hypercube_side_length = Dims == 1 ? 4096 : Dims == 2 ? 64 : 16;
+        constexpr static unsigned hypercube_side_length = Dims == 1 ? 2048 : Dims == 2 ? 32 : 8;
         constexpr static size_t compressed_block_size_bound = detail::ipow(hypercube_side_length, Dims)
                 / bitsof<bits_type> * (bitsof<bits_type> + 1) * sizeof(bits_type);
 };

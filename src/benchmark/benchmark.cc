@@ -1101,7 +1101,7 @@ int main(int argc, char **argv) {
     }
 
     try {
-        std::cout << "dataset;data type;dimensions;algorithm;tunable;num_threads;"
+        std::cout << "dataset;data type;dimensions;algorithm;tunable;number of threads;"
                      "compression times (microseconds);decompression times (microseconds);"
                      "uncompressed bytes;compressed bytes\n";
         for (auto &metadata : load_metadata_file(metadata_csv_file)) {
