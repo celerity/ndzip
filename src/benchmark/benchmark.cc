@@ -11,12 +11,9 @@
 #include <string>
 #include <utility>
 #include <vector>
+#include <thread>
 
 #include <boost/program_options.hpp>
-
-#if HCDE_OPENMP_SUPPORT
-#   include <thread>
-#endif
 
 #if HCDE_BENCHMARK_HAVE_ZLIB
 #    include <zlib.h>
@@ -127,6 +124,19 @@ struct benchmark_result {
 };
 
 
+[[gnu::noinline]]
+void trash_cache() {
+    constexpr size_t cache_size_upper_bound = 1u << 28u;  // 256MB
+    static std::vector<unsigned long> buffer(cache_size_upper_bound / sizeof(long));
+#ifdef _OPENMP
+#pragma omp parallel for num_threads(std::thread::hardware_concurrency()) schedule(static)
+#endif
+    for (size_t i = 0; i < buffer.size(); ++i) {
+        buffer[i] += i;
+    }
+}
+
+
 class benchmark {
 public:
     explicit benchmark(const benchmark_params &params) : _params(params) {}
@@ -183,6 +193,7 @@ private:
 
         template<typename F>
         void time(const benchmark_params &params, const F &f) {
+            trash_cache();
             auto start = std::chrono::steady_clock::now();
             run(f);
             auto finish = std::chrono::steady_clock::now();
