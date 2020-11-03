@@ -431,7 +431,7 @@ static benchmark_result benchmark_pfpc(const void *input_buffer, const metadata 
 
     const auto uncompressed_size = metadata.size_in_bytes();
     const int pred_size = params.tunable;
-    const int chunksize = 1 << 24; // 16 MiB
+    const int chunksize = 1 << 16; // 64 KiB
     const int threads = static_cast<int>(params.num_threads);
     auto bench = benchmark{params};
 
