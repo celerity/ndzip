@@ -9,7 +9,7 @@
 #   include <immintrin.h>
 #endif
 
-#ifdef HCDE_OPENMP_SUPPORT
+#ifdef NDZIP_OPENMP_SUPPORT
 #   include <atomic>
 #   include <boost/thread/thread.hpp>
 #   include <queue>
@@ -19,7 +19,7 @@
 #endif
 
 
-namespace hcde::detail::cpu {
+namespace ndzip::detail::cpu {
 
 constexpr static const size_t simd_width_bytes = 32;
 
@@ -352,7 +352,7 @@ void block_transform(typename Profile::bits_type *x) {
 #ifdef __AVX2__
     block_transform_avx2<Profile>(x);
 #else
-    hcde::detail::block_transform(x, Profile::dimensions, Profile::hypercube_side_length);
+    ndzip::detail::block_transform(x, Profile::dimensions, Profile::hypercube_side_length);
 #endif
 }
 
@@ -362,7 +362,7 @@ void inverse_block_transform(typename Profile::bits_type *x) {
 #ifdef __AVX2__
     inverse_block_transform_avx2<Profile>(x);
 #else
-    hcde::detail::inverse_block_transform(x, Profile::dimensions, Profile::hypercube_side_length);
+    ndzip::detail::inverse_block_transform(x, Profile::dimensions, Profile::hypercube_side_length);
 #endif
 }
 
@@ -627,7 +627,7 @@ size_t zero_bit_decode(const std::byte *stream, typename Profile::bits_type *cub
 }
 
 template<typename T, unsigned Dims>
-struct hcde::cpu_encoder<T, Dims>::impl {
+struct ndzip::cpu_encoder<T, Dims>::impl {
     using profile = detail::profile<T, Dims>;
     using bits_type = typename profile::bits_type;
     constexpr static auto side_length = profile::hypercube_side_length;
@@ -638,14 +638,14 @@ struct hcde::cpu_encoder<T, Dims>::impl {
 
 
 template<typename T, unsigned Dims>
-hcde::cpu_encoder<T, Dims>::cpu_encoder()
+ndzip::cpu_encoder<T, Dims>::cpu_encoder()
     : _pimpl(std::make_unique<impl>()) {}
 
 template<typename T, unsigned Dims>
-hcde::cpu_encoder<T, Dims>::~cpu_encoder() = default;
+ndzip::cpu_encoder<T, Dims>::~cpu_encoder() = default;
 
 template<typename T, unsigned Dims>
-size_t hcde::cpu_encoder<T, Dims>::compress(const slice<const data_type, dimensions> &data, void *stream) const {
+size_t ndzip::cpu_encoder<T, Dims>::compress(const slice<const data_type, dimensions> &data, void *stream) const {
     using profile = detail::profile<T, Dims>;
     using bits_type = typename profile::bits_type;
 
@@ -682,7 +682,7 @@ size_t hcde::cpu_encoder<T, Dims>::compress(const slice<const data_type, dimensi
 
 
 template<typename T, unsigned Dims>
-size_t hcde::cpu_encoder<T, Dims>::decompress(
+size_t ndzip::cpu_encoder<T, Dims>::decompress(
     const void *stream, size_t bytes, const slice<data_type, dimensions> &data) const {
     using profile = detail::profile<T, Dims>;
     using bits_type = typename profile::bits_type;
@@ -707,10 +707,10 @@ size_t hcde::cpu_encoder<T, Dims>::decompress(
 }
 
 
-#if HCDE_OPENMP_SUPPORT
+#if NDZIP_OPENMP_SUPPORT
 
 template<typename T, unsigned Dims>
-struct hcde::mt_cpu_encoder<T, Dims>::impl {
+struct ndzip::mt_cpu_encoder<T, Dims>::impl {
     using profile = detail::profile<T, Dims>;
     using bits_type = typename profile::bits_type;
 
@@ -779,18 +779,18 @@ struct hcde::mt_cpu_encoder<T, Dims>::impl {
 
 
 template<typename T, unsigned Dims>
-hcde::mt_cpu_encoder<T, Dims>::mt_cpu_encoder()
+ndzip::mt_cpu_encoder<T, Dims>::mt_cpu_encoder()
         : _pimpl(std::make_unique<impl>(std::nullopt)) {}
 
 template<typename T, unsigned Dims>
-hcde::mt_cpu_encoder<T, Dims>::mt_cpu_encoder(size_t num_threads)
+ndzip::mt_cpu_encoder<T, Dims>::mt_cpu_encoder(size_t num_threads)
         : _pimpl(std::make_unique<impl>(num_threads)) {}
 
 template<typename T, unsigned Dims>
-hcde::mt_cpu_encoder<T, Dims>::~mt_cpu_encoder() = default;
+ndzip::mt_cpu_encoder<T, Dims>::~mt_cpu_encoder() = default;
 
 template<typename T, unsigned Dims>
-size_t hcde::mt_cpu_encoder<T, Dims>::compress(const slice<const data_type, dimensions> &data, void *stream) const {
+size_t ndzip::mt_cpu_encoder<T, Dims>::compress(const slice<const data_type, dimensions> &data, void *stream) const {
     using profile = detail::profile<T, Dims>;
     using bits_type = typename profile::bits_type;
     using write_buffer = typename impl::write_buffer;
@@ -914,7 +914,7 @@ size_t hcde::mt_cpu_encoder<T, Dims>::compress(const slice<const data_type, dime
 
 
 template<typename T, unsigned Dims>
-size_t hcde::mt_cpu_encoder<T, Dims>::decompress(
+size_t ndzip::mt_cpu_encoder<T, Dims>::decompress(
         const void *stream, size_t bytes, const slice<data_type, dimensions> &data) const {
     using profile = detail::profile<T, Dims>;
     using bits_type = typename profile::bits_type;
@@ -969,10 +969,10 @@ size_t hcde::mt_cpu_encoder<T, Dims>::decompress(
     return stream_pos;
 }
 
-#endif // HCDE_OPENMP_SUPPORT
+#endif // NDZIP_OPENMP_SUPPORT
 
 
-namespace hcde {
+namespace ndzip {
     extern template class cpu_encoder<float, 1>;
     extern template class cpu_encoder<float, 2>;
     extern template class cpu_encoder<float, 3>;
@@ -980,12 +980,12 @@ namespace hcde {
     extern template class cpu_encoder<double, 2>;
     extern template class cpu_encoder<double, 3>;
 
-#if HCDE_OPENMP_SUPPORT
+#if NDZIP_OPENMP_SUPPORT
     extern template class mt_cpu_encoder<float, 1>;
     extern template class mt_cpu_encoder<float, 2>;
     extern template class mt_cpu_encoder<float, 3>;
     extern template class mt_cpu_encoder<double, 1>;
     extern template class mt_cpu_encoder<double, 2>;
     extern template class mt_cpu_encoder<double, 3>;
-#endif // HCDE_OPENMP_SUPPORT
+#endif // NDZIP_OPENMP_SUPPORT
 }

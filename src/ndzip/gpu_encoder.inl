@@ -8,7 +8,7 @@
 #include <SYCL/sycl.hpp>
 
 
-namespace hcde::detail::gpu {
+namespace ndzip::detail::gpu {
 
 template<unsigned Dims, typename U, typename T>
 U extent_cast(const T &e) {
@@ -76,22 +76,22 @@ void block_transform(const BlockTransformAccessor &block_transform_acc, sycl::nd
             block_transform_step(x, n, 1);
         }
     } else if constexpr (Profile::dimensions == 2) {
-        for (size_t i = tid; i < n*n; i += n*HCDE_WARP_SIZE) {
+        for (size_t i = tid; i < n*n; i += n*NDZIP_WARP_SIZE) {
             block_transform_step(x + i, n, 1);
         }
-        for (size_t i = tid; i < n; i += HCDE_WARP_SIZE) {
+        for (size_t i = tid; i < n; i += NDZIP_WARP_SIZE) {
             block_transform_step(x + i, n, n);
         }
     } else if constexpr (Profile::dimensions == 3) {
-        for (size_t i = tid; i < n*n*n; i += n*n*HCDE_WARP_SIZE) {
+        for (size_t i = tid; i < n*n*n; i += n*n*NDZIP_WARP_SIZE) {
             for (size_t j = 0; j < n; ++j) {
                 block_transform_step(x + i + j, n, n);
             }
         }
-        for (size_t i = tid; i < n*n*n; i += n*HCDE_WARP_SIZE) {
+        for (size_t i = tid; i < n*n*n; i += n*NDZIP_WARP_SIZE) {
             block_transform_step(x + i, n, 1);
         }
-        for (size_t i = tid; i < n*n; i += HCDE_WARP_SIZE) {
+        for (size_t i = tid; i < n*n; i += NDZIP_WARP_SIZE) {
             block_transform_step(x + i, n, n * n);
         }
     }
@@ -129,22 +129,22 @@ template<typename, unsigned> class border_compaction_kernel;
 
 
 template<typename T, unsigned Dims>
-struct hcde::gpu_encoder<T, Dims>::impl {
+struct ndzip::gpu_encoder<T, Dims>::impl {
     sycl::queue q;
 };
 
 template<typename T, unsigned Dims>
-hcde::gpu_encoder<T, Dims>::gpu_encoder()
+ndzip::gpu_encoder<T, Dims>::gpu_encoder()
     : _pimpl(std::make_unique<impl>())
 {
 }
 
 template<typename T, unsigned Dims>
-hcde::gpu_encoder<T, Dims>::~gpu_encoder() = default;
+ndzip::gpu_encoder<T, Dims>::~gpu_encoder() = default;
 
 
 template<typename T, unsigned Dims>
-size_t hcde::gpu_encoder<T, Dims>::compress(const slice<const data_type, dimensions> &data, void *stream) const {
+size_t ndzip::gpu_encoder<T, Dims>::compress(const slice<const data_type, dimensions> &data, void *stream) const {
     using profile = detail::profile<T, Dims>;
     using bits_type = typename profile::bits_type;
 
@@ -175,7 +175,7 @@ size_t hcde::gpu_encoder<T, Dims>::compress(const slice<const data_type, dimensi
             sycl::access::target::local>{max_compressed_block_uints, cgh};
 
         cgh.parallel_for<detail::gpu::block_compression_kernel<T, Dims>>(
-            sycl::nd_range<2>{sycl::range<2>{file.num_hypercubes(), HCDE_WARP_SIZE}, sycl::range<2>{1, HCDE_WARP_SIZE}},
+            sycl::nd_range<2>{sycl::range<2>{file.num_hypercubes(), NDZIP_WARP_SIZE}, sycl::range<2>{1, NDZIP_WARP_SIZE}},
             [=](sycl::nd_item<2> item) {
                 auto hc_index = item.get_global_range(0);
 
@@ -196,7 +196,7 @@ size_t hcde::gpu_encoder<T, Dims>::compress(const slice<const data_type, dimensi
         auto compressed_block_offsets_acc = compressed_block_offsets_buffer.get_access<
             sycl::access::mode::discard_read_write>(cgh);
 
-        cgh.parallel_for<detail::gpu::length_sum_kernel<T, Dims>>(sycl::range<1>{HCDE_WARP_SIZE},
+        cgh.parallel_for<detail::gpu::length_sum_kernel<T, Dims>>(sycl::range<1>{NDZIP_WARP_SIZE},
             [=](sycl::item<1> item) {
             // parallel prefix sum lengths -> offsets
         });
@@ -222,7 +222,7 @@ size_t hcde::gpu_encoder<T, Dims>::compress(const slice<const data_type, dimensi
         auto data_acc = stream_buffer.template get_access<sycl::access::mode::write>(cgh);
         auto stream_acc = stream_buffer.get_access<sycl::access::mode::discard_write>(cgh);
 
-        cgh.parallel_for<detail::gpu::border_compaction_kernel<T, Dims>>(sycl::range<1>{HCDE_WARP_SIZE},
+        cgh.parallel_for<detail::gpu::border_compaction_kernel<T, Dims>>(sycl::range<1>{NDZIP_WARP_SIZE},
             [=](sycl::item<1> item) {
                 // sequentially append border slices
             });
@@ -242,13 +242,13 @@ size_t hcde::gpu_encoder<T, Dims>::compress(const slice<const data_type, dimensi
 
 
 template<typename T, unsigned Dims>
-size_t hcde::gpu_encoder<T, Dims>::decompress(
+size_t ndzip::gpu_encoder<T, Dims>::decompress(
     const void *stream, size_t bytes, const slice<data_type, dimensions> &data) const {
     return 0;
 }
 
 
-namespace hcde {
+namespace ndzip {
     extern template class gpu_encoder<float, 1>;
     extern template class gpu_encoder<float, 2>;
     extern template class gpu_encoder<float, 3>;

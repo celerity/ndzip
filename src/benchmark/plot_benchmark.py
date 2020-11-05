@@ -105,7 +105,7 @@ def plot_throughput_vs_ratio(algorithms, by_data_type_and_algorithm, output_pgf)
                 throughput_values += throughputs
                 if len(points) > 1:
                     marker = None
-                elif algo.startswith('hcde'):
+                elif algo.startswith('ndzip'):
                     marker = 'D'
                 else:
                     marker = 'o'

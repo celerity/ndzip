@@ -1,4 +1,4 @@
-#include <hcde/hcde.hh>
+#include <ndzip/ndzip.hh>
 #include <io/io.hh>
 
 #include <chrono>
@@ -15,25 +15,25 @@
 
 #include <boost/program_options.hpp>
 
-#if HCDE_BENCHMARK_HAVE_ZLIB
+#if NDZIP_BENCHMARK_HAVE_ZLIB
 #    include <zlib.h>
 #endif
-#if HCDE_BENCHMARK_HAVE_LZ4
+#if NDZIP_BENCHMARK_HAVE_LZ4
 #    include <lz4.h>
 #endif
-#if HCDE_BENCHMARK_HAVE_LZMA
+#if NDZIP_BENCHMARK_HAVE_LZMA
 #    include <lzma.h>
 #endif
-#if HCDE_BENCHMARK_HAVE_ZSTD
+#if NDZIP_BENCHMARK_HAVE_ZSTD
 #   include <zstd.h>
 #endif
-#if HCDE_BENCHMARK_HAVE_FPZIP
+#if NDZIP_BENCHMARK_HAVE_FPZIP
 #   include <fpzip.h>
 #endif
 #include <fpc.h>
 #include <pFPC.h>
 #include <SPDP_11.h>
-#if HCDE_BENCHMARK_HAVE_GFC
+#if NDZIP_BENCHMARK_HAVE_GFC
 #   include <GFC_22.h>
 #endif
 
@@ -268,26 +268,26 @@ class not_implemented: public std::exception {};
 
 
 template<typename Encoder>
-struct hcde_encoder_factory {
+struct ndzip_encoder_factory {
     Encoder create(const benchmark_params &) const { return Encoder{}; }
 };
 
 template<typename Data, unsigned Dims>
-struct hcde_encoder_factory<hcde::mt_cpu_encoder<Data, Dims>> {
-    hcde::mt_cpu_encoder<Data, Dims> create(const benchmark_params &params) const {
-        return hcde::mt_cpu_encoder<Data, Dims>{params.num_threads};
+struct ndzip_encoder_factory<ndzip::mt_cpu_encoder<Data, Dims>> {
+    ndzip::mt_cpu_encoder<Data, Dims> create(const benchmark_params &params) const {
+        return ndzip::mt_cpu_encoder<Data, Dims>{params.num_threads};
     }
 };
 
 template<template<typename, unsigned> typename Encoder, typename Data, unsigned Dims>
-static benchmark_result benchmark_hcde_3(const Data *input_buffer, const hcde::extent<Dims> &size,
+static benchmark_result benchmark_ndzip_3(const Data *input_buffer, const ndzip::extent<Dims> &size,
                                          const benchmark_params &params) {
-    const auto uncompressed_size = hcde::num_elements(size) * sizeof(Data);
-    const auto input_slice = hcde::slice{input_buffer, size};
+    const auto uncompressed_size = ndzip::num_elements(size) * sizeof(Data);
+    const auto input_slice = ndzip::slice{input_buffer, size};
     auto bench = benchmark{params};
-    auto encoder = hcde_encoder_factory<Encoder<Data, Dims>>{}.create(params);
+    auto encoder = ndzip_encoder_factory<Encoder<Data, Dims>>{}.create(params);
 
-    auto compress_buffer = scratch_buffer{hcde::compressed_size_bound<Data>(size)};
+    auto compress_buffer = scratch_buffer{ndzip::compressed_size_bound<Data>(size)};
     size_t compressed_size;
     while (bench.compress_more()) {
         bench.time_compression([&] {
@@ -295,8 +295,8 @@ static benchmark_result benchmark_hcde_3(const Data *input_buffer, const hcde::e
         });
     }
 
-    auto decompress_buffer = scratch_buffer<Data>(hcde::num_elements(size));
-    const auto decompress_slice = hcde::slice{decompress_buffer.data(), size};
+    auto decompress_buffer = scratch_buffer<Data>(ndzip::num_elements(size));
+    const auto decompress_slice = ndzip::slice{decompress_buffer.data(), size};
     while (bench.decompress_more()) {
         bench.time_decompression([&] {
             encoder.decompress(compress_buffer.data(), compressed_size, decompress_slice);
@@ -309,15 +309,15 @@ static benchmark_result benchmark_hcde_3(const Data *input_buffer, const hcde::e
 
 
 template<template<typename, unsigned> typename Encoder, typename Data>
-static benchmark_result benchmark_hcde_2(const Data *input_buffer, const metadata &meta,
+static benchmark_result benchmark_ndzip_2(const Data *input_buffer, const metadata &meta,
                                          const benchmark_params &params) {
     auto &e = meta.extent;
     if (e.size() == 1) {
-        return benchmark_hcde_3<Encoder, Data, 1>(input_buffer, hcde::extent{e[0]}, params);
+        return benchmark_ndzip_3<Encoder, Data, 1>(input_buffer, ndzip::extent{e[0]}, params);
     } else if (e.size() == 2) {
-        return benchmark_hcde_3<Encoder, Data, 2>(input_buffer, hcde::extent{e[0], e[1]}, params);
+        return benchmark_ndzip_3<Encoder, Data, 2>(input_buffer, ndzip::extent{e[0], e[1]}, params);
     } else if (e.size() == 3) {
-        return benchmark_hcde_3<Encoder, Data, 3>(input_buffer, hcde::extent{e[0], e[1], e[2]}, params);
+        return benchmark_ndzip_3<Encoder, Data, 3>(input_buffer, ndzip::extent{e[0], e[1], e[2]}, params);
     } else {
         throw not_implemented{};
     }
@@ -325,17 +325,17 @@ static benchmark_result benchmark_hcde_2(const Data *input_buffer, const metadat
 
 
 template<template<typename, unsigned> typename Encoder>
-static benchmark_result benchmark_hcde(const void *input_buffer, const metadata &meta,
+static benchmark_result benchmark_ndzip(const void *input_buffer, const metadata &meta,
                                        const benchmark_params &params) {
     if (meta.data_type == data_type::t_float) {
-        return benchmark_hcde_2<Encoder, float>(static_cast<const float*>(input_buffer), meta, params);
+        return benchmark_ndzip_2<Encoder, float>(static_cast<const float*>(input_buffer), meta, params);
     } else {
-        return benchmark_hcde_2<Encoder, double>(static_cast<const double*>(input_buffer), meta, params);
+        return benchmark_ndzip_2<Encoder, double>(static_cast<const double*>(input_buffer), meta, params);
     }
 }
 
 
-#if HCDE_BENCHMARK_HAVE_FPZIP
+#if NDZIP_BENCHMARK_HAVE_FPZIP
 static benchmark_result benchmark_fpzip(const void *input_buffer, const metadata &meta,
                                         const benchmark_params &params) {
     const auto uncompressed_size = meta.size_in_bytes();
@@ -497,7 +497,7 @@ static benchmark_result benchmark_spdp(const void *input_buffer, const metadata 
 }
 
 
-#if HCDE_BENCHMARK_HAVE_GFC
+#if NDZIP_BENCHMARK_HAVE_GFC
 static benchmark_result benchmark_gfc(const void *input_buffer, const metadata &metadata,
                                       const benchmark_params &params) {
     if (metadata.data_type != data_type::t_double) {
@@ -534,7 +534,7 @@ static benchmark_result benchmark_gfc(const void *input_buffer, const metadata &
 #endif
 
 
-#if HCDE_BENCHMARK_HAVE_ZLIB
+#if NDZIP_BENCHMARK_HAVE_ZLIB
 static benchmark_result benchmark_deflate(const void *input_buffer, const metadata &metadata,
         const benchmark_params &params) {
     const auto uncompressed_size = metadata.size_in_bytes();
@@ -577,7 +577,7 @@ static benchmark_result benchmark_deflate(const void *input_buffer, const metada
 #endif
 
 
-#if HCDE_BENCHMARK_HAVE_LZ4
+#if NDZIP_BENCHMARK_HAVE_LZ4
 static benchmark_result benchmark_lz4(const void *input_buffer, const metadata &metadata,
                                       const benchmark_params &params) {
     const auto uncompressed_size = metadata.size_in_bytes();
@@ -663,7 +663,7 @@ static benchmark_result benchmark_lz4(const void *input_buffer, const metadata &
 #endif
 
 
-#if HCDE_BENCHMARK_HAVE_LZMA
+#if NDZIP_BENCHMARK_HAVE_LZMA
 static benchmark_result benchmark_lzma(const void *input_buffer, const metadata &metadata,
                                        const benchmark_params &params) {
     const auto uncompressed_size = metadata.size_in_bytes();
@@ -733,7 +733,7 @@ static benchmark_result benchmark_lzma(const void *input_buffer, const metadata 
 #endif
 
 
-#if HCDE_BENCHMARK_HAVE_ZSTD
+#if NDZIP_BENCHMARK_HAVE_ZSTD
 static benchmark_result benchmark_zstd(const void *input_buffer, const metadata &metadata,
                                        const benchmark_params &params) {
     const auto uncompressed_size = metadata.size_in_bytes();
@@ -794,7 +794,7 @@ static benchmark_result benchmark_memcpy(const void *input_buffer, const metadat
 }
 
 
-#if HCDE_OPENMP_SUPPORT
+#if NDZIP_OPENMP_SUPPORT
 
 void memcpy_mt(void *dst, const void *src, size_t n, size_t num_threads) {
     const auto chunk_size = (n + num_threads - 1) / num_threads;
@@ -828,7 +828,7 @@ static benchmark_result benchmark_memcpy_mt(const void *input_buffer, const meta
     return std::move(bench).result(uncompressed_size, uncompressed_size);
 }
 
-#endif // HCDE_OPENMP_SUPPORT
+#endif // NDZIP_OPENMP_SUPPORT
 
 
 struct algorithm {
@@ -847,33 +847,33 @@ const algorithm_map &available_algorithms() {
 
     static const algorithm_map algorithms{
         {"memcpy", {benchmark_memcpy}},
-        {"hcde", {benchmark_hcde<hcde::cpu_encoder>}},
-#if HCDE_OPENMP_SUPPORT
+        {"ndzip", {benchmark_ndzip<ndzip::cpu_encoder>}},
+#if NDZIP_OPENMP_SUPPORT
         {"memcpy-mt", {benchmark_memcpy_mt, 1, 1, 1, true /* multithreaded */}},
-        {"hcde-mt", {benchmark_hcde<hcde::mt_cpu_encoder>, 1, 1, 1, true /* multithreaded */}},
+        {"ndzip-mt", {benchmark_ndzip<ndzip::mt_cpu_encoder>, 1, 1, 1, true /* multithreaded */}},
 #endif
-#if HCDE_GPU_SUPPORT
-        // {"hcde-gpu", benchmark_hcde<hcde::gpu_encoder>},
+#if NDZIP_GPU_SUPPORT
+        // {"ndzip-gpu", benchmark_ndzip<ndzip::gpu_encoder>},
 #endif
-#if HCDE_BENCHMARK_HAVE_FPZIP
+#if NDZIP_BENCHMARK_HAVE_FPZIP
         {"fpzip", {benchmark_fpzip}},
 #endif
         {"fpc", {benchmark_fpc, 1, 15, 25}},
         {"pfpc", {benchmark_pfpc, 1, 15, 25, true /* multithreaded */}},
         {"spdp", {benchmark_spdp, 1, 5, 9}},
-#if HCDE_BENCHMARK_HAVE_GFC
+#if NDZIP_BENCHMARK_HAVE_GFC
         {"gfc", {benchmark_gfc}},
 #endif
-#if HCDE_BENCHMARK_HAVE_ZLIB
+#if NDZIP_BENCHMARK_HAVE_ZLIB
         {"deflate", {benchmark_deflate, 1, 6, 9}},
 #endif
-#if HCDE_BENCHMARK_HAVE_LZ4
+#if NDZIP_BENCHMARK_HAVE_LZ4
         {"lz4", {benchmark_lz4}},
 #endif
-#if HCDE_BENCHMARK_HAVE_ZSTD
+#if NDZIP_BENCHMARK_HAVE_ZSTD
         {"zstd", {benchmark_zstd, 1, 3, 19}},
 #endif
-#if HCDE_BENCHMARK_HAVE_LZMA
+#if NDZIP_BENCHMARK_HAVE_LZMA
         {"lzma", {benchmark_lzma, 1, 6, 9}},
 #endif
     };
@@ -913,7 +913,7 @@ struct join {
 
 static void benchmark_file(const metadata &metadata, const algorithm_map &algorithms, bool warm_up,
      std::chrono::microseconds min_time, unsigned min_reps, tuning tunables, bool benchmark_scaling,
-     const hcde::detail::io_factory &io_factory) {
+     const ndzip::detail::io_factory &io_factory) {
 
     auto input_stream = io_factory.create_input_stream(metadata.path.string(), metadata.size_in_bytes());
     auto input_buffer = input_stream->read_exact();
@@ -988,22 +988,22 @@ static std::string available_algorithms_string() {
 
 
 static void print_library_versions() {
-#if HCDE_BENCHMARK_HAVE_ZLIB
+#if NDZIP_BENCHMARK_HAVE_ZLIB
     printf("zlib version %s\n", zlibVersion());
 #endif
-#if HCDE_BENCHMARK_HAVE_LZ4
+#if NDZIP_BENCHMARK_HAVE_LZ4
     printf("LZ4 version %s\n", LZ4_versionString());
 #endif
-#if HCDE_BENCHMARK_HAVE_LZMA
+#if NDZIP_BENCHMARK_HAVE_LZMA
     printf("LZMA version %s\n", lzma_version_string());
 #endif
-#if HCDE_BENCHMARK_HAVE_ZSTD
+#if NDZIP_BENCHMARK_HAVE_ZSTD
     printf("Zstandard version %s\n", ZSTD_versionString());
 #endif
-#if HCDE_BENCHMARK_HAVE_FPZIP
+#if NDZIP_BENCHMARK_HAVE_FPZIP
     puts(fpzip_version_string);
 #endif
-#if HCDE_BENCHMARK_HAVE_GFC
+#if NDZIP_BENCHMARK_HAVE_GFC
     printf("GFC %s\n", GFC_Version_String);
 #endif
     puts(FPC_Version_String);
@@ -1101,14 +1101,14 @@ int main(int argc, char **argv) {
         }
     }
 
-    std::unique_ptr<hcde::detail::io_factory> io_factory;
-#if HCDE_SUPPORT_MMAP
+    std::unique_ptr<ndzip::detail::io_factory> io_factory;
+#if NDZIP_SUPPORT_MMAP
     if (!no_mmap) {
-        io_factory = std::make_unique<hcde::detail::mmap_io_factory>();
+        io_factory = std::make_unique<ndzip::detail::mmap_io_factory>();
     }
 #endif
     if (!io_factory) {
-        io_factory = std::make_unique<hcde::detail::stdio_io_factory>();
+        io_factory = std::make_unique<ndzip::detail::stdio_io_factory>();
     }
 
     try {

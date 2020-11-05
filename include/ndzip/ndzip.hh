@@ -5,7 +5,7 @@
 #include <memory>
 
 
-namespace hcde {
+namespace ndzip {
 
 template<unsigned Dims>
 class extent {
@@ -152,12 +152,12 @@ size_t linear_offset(extent<Dims> space, extent<Dims> position) {
     return offset;
 }
 
-} // namespace hcde
+} // namespace ndzip
 
-namespace hcde::detail {
+namespace ndzip::detail {
 
     template<unsigned Dims>
-    size_t linear_index(const hcde::extent<Dims> &size, const hcde::extent<Dims> &pos) {
+    size_t linear_index(const ndzip::extent<Dims> &size, const ndzip::extent<Dims> &pos) {
         size_t l = pos[0];
         for (unsigned d = 1; d < Dims; ++d) {
             l = l * size[d] + pos[d];
@@ -165,9 +165,9 @@ namespace hcde::detail {
         return l;
     }
 
-} // namespace hcde::detail
+} // namespace ndzip::detail
 
-namespace hcde {
+namespace ndzip {
 
 template<typename T, unsigned Dims>
 class slice {
@@ -194,11 +194,11 @@ class slice {
             return _data;
         }
 
-        size_t linear_index(const hcde::extent<Dims> &pos) const {
+        size_t linear_index(const ndzip::extent<Dims> &pos) const {
             return detail::linear_index(_size, pos);
         }
 
-        T &operator[](const hcde::extent<Dims> &pos) const {
+        T &operator[](const ndzip::extent<Dims> &pos) const {
             return _data[linear_index(pos)];
         }
 
@@ -235,7 +235,7 @@ private:
     std::unique_ptr<impl> _pimpl;
 };
 
-#if HCDE_OPENMP_SUPPORT
+#if NDZIP_OPENMP_SUPPORT
 
 template<typename T, unsigned Dims>
 class mt_cpu_encoder {
@@ -262,9 +262,9 @@ private:
     std::unique_ptr<impl> _pimpl;
 };
 
-#endif // HCDE_OPENMP_SUPPORT
+#endif // NDZIP_OPENMP_SUPPORT
 
-#if HCDE_GPU_SUPPORT
+#if NDZIP_GPU_SUPPORT
 
 template<typename T, unsigned Dims>
 class gpu_encoder {
@@ -286,7 +286,7 @@ class gpu_encoder {
         std::unique_ptr<impl> _pimpl;
 };
 
-#endif // HCDE_GPU_SUPPORT
+#endif // NDZIP_GPU_SUPPORT
 
-} // namespace hcde
+} // namespace ndzip
 

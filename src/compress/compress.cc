@@ -1,4 +1,4 @@
-#include <hcde/hcde.hh>
+#include <ndzip/ndzip.hh>
 #include <io/io.hh>
 
 #include <chrono>
@@ -11,17 +11,17 @@
 
 namespace opts = boost::program_options;
 
-namespace hcde::detail {
+namespace ndzip::detail {
 
 using duration = std::chrono::system_clock::duration;
 
 template<typename Encoder>
-void compress_stream(const std::string &in, const std::string &out, const hcde::extent<Encoder::dimensions> &size,
-    const Encoder &encoder, const hcde::detail::io_factory &io) {
+void compress_stream(const std::string &in, const std::string &out, const ndzip::extent<Encoder::dimensions> &size,
+    const Encoder &encoder, const ndzip::detail::io_factory &io) {
     using data_type = typename Encoder::data_type;
 
     const auto array_chunk_length = static_cast<size_t>(num_elements(size) * sizeof(data_type));
-    const auto max_compressed_chunk_length = hcde::compressed_size_bound<data_type>(size);
+    const auto max_compressed_chunk_length = ndzip::compressed_size_bound<data_type>(size);
 
     size_t compressed_length = 0;
     size_t n_chunks = 0;
@@ -33,7 +33,7 @@ void compress_stream(const std::string &in, const std::string &out, const hcde::
         while (auto *chunk = in_stream->read_exact()) {
             auto input_buffer = static_cast<const data_type *>(chunk);
             auto compressed_chunk_length = encoder.compress(
-                hcde::slice<const data_type, Encoder::dimensions>(input_buffer, size),
+                ndzip::slice<const data_type, Encoder::dimensions>(input_buffer, size),
                 out_stream->get_write_buffer());
             assert(compressed_chunk_length <= max_compressed_chunk_length);
             out_stream->commit_chunk(compressed_chunk_length);
@@ -56,10 +56,10 @@ void compress_stream(const std::string &in, const std::string &out, const hcde::
 }
 
 template<typename Encoder>
-void decompress_stream(const std::string &in, const std::string &out, const hcde::extent<Encoder::dimensions> &size,
-    const Encoder &encoder, const hcde::detail::io_factory &io) {
+void decompress_stream(const std::string &in, const std::string &out, const ndzip::extent<Encoder::dimensions> &size,
+    const Encoder &encoder, const ndzip::detail::io_factory &io) {
     using data_type = typename Encoder::data_type;
-    const auto max_compressed_chunk_length = hcde::compressed_size_bound<data_type>(size);
+    const auto max_compressed_chunk_length = ndzip::compressed_size_bound<data_type>(size);
     const auto array_chunk_length = static_cast<size_t>(num_elements(size) * sizeof(data_type));
 
     const auto in_stream = io.create_input_stream(in, max_compressed_chunk_length);
@@ -74,7 +74,7 @@ void decompress_stream(const std::string &in, const std::string &out, const hcde
 
         auto output_buffer = static_cast<data_type *>(out_stream->get_write_buffer());
         auto compressed_size = encoder.decompress(chunk, bytes_in_chunk,
-            hcde::slice<data_type, Encoder::dimensions>(output_buffer, size));
+            ndzip::slice<data_type, Encoder::dimensions>(output_buffer, size));
         assert(compressed_size <= bytes_in_chunk);
         out_stream->commit_chunk(array_chunk_length);
         compressed_bytes_left = bytes_in_chunk - compressed_size;
@@ -83,7 +83,7 @@ void decompress_stream(const std::string &in, const std::string &out, const hcde
 
 template<typename Encoder>
 void process_stream(bool decompress, const std::string &in, const std::string &out,
-        const hcde::extent<Encoder::dimensions> &size, const Encoder &encoder, const hcde::detail::io_factory &io)
+        const ndzip::extent<Encoder::dimensions> &size, const Encoder &encoder, const ndzip::detail::io_factory &io)
 {
     if (decompress) {
         decompress_stream(in, out, size, encoder, io);
@@ -94,18 +94,18 @@ void process_stream(bool decompress, const std::string &in, const std::string &o
 
 template<template<typename, unsigned> typename Encoder, typename Data>
 void process_stream(bool decompress, const std::vector<size_t> &size_components, const std::string &in,
-    const std::string &out, const hcde::detail::io_factory &io) {
+    const std::string &out, const ndzip::detail::io_factory &io) {
     switch (size_components.size()) {
         case 1:
-            return process_stream(decompress, in, out, hcde::extent{size_components[0]}, Encoder<Data, 1>{}, io);
+            return process_stream(decompress, in, out, ndzip::extent{size_components[0]}, Encoder<Data, 1>{}, io);
         case 2:
-            return process_stream(decompress, in, out, hcde::extent{size_components[0], size_components[1]},
+            return process_stream(decompress, in, out, ndzip::extent{size_components[0], size_components[1]},
                 Encoder<Data, 2>{}, io);
         case 3:
-            return process_stream(decompress, in, out, hcde::extent{size_components[0], size_components[1],
+            return process_stream(decompress, in, out, ndzip::extent{size_components[0], size_components[1],
                 size_components[2]}, Encoder<Data, 3>{}, io);
         // case 4:
-        //     return process_stream(decompress, in, out, hcde::extent{size_components[0], size_components[1],
+        //     return process_stream(decompress, in, out, ndzip::extent{size_components[0], size_components[1],
         //             size_components[2], size_components[3]}, Encoder<Profile<Data, 4>>{}, io);
         default:
             throw opts::error("Invalid number of dimensions in -n / --array-size");
@@ -114,16 +114,16 @@ void process_stream(bool decompress, const std::vector<size_t> &size_components,
 
 template<typename Data>
 void process_stream(bool decompress, const std::vector<size_t> &size_components,
-    const std::string &encoder, const std::string &in, const std::string &out, const hcde::detail::io_factory &io) {
+    const std::string &encoder, const std::string &in, const std::string &out, const ndzip::detail::io_factory &io) {
     if (encoder == "cpu") {
-        process_stream<hcde::cpu_encoder, Data>(decompress, size_components, in, out, io);
-#if HCDE_OPENMP_SUPPORT
+        process_stream<ndzip::cpu_encoder, Data>(decompress, size_components, in, out, io);
+#if NDZIP_OPENMP_SUPPORT
     } else if (encoder == "cpu-mt") {
-        process_stream<hcde::mt_cpu_encoder, Data>(decompress, size_components, in, out, io);
+        process_stream<ndzip::mt_cpu_encoder, Data>(decompress, size_components, in, out, io);
 #endif
-#if HCDE_GPU_SUPPORT
+#if NDZIP_GPU_SUPPORT
     } else if (encoder == "gpu") {
-        process_stream<hcde::gpu_encoder, Data>(decompress, size_components, in, out, io);
+        process_stream<ndzip::gpu_encoder, Data>(decompress, size_components, in, out, io);
 #endif
     } else {
         throw opts::error("Invalid encoder \"" + encoder + "\" in option -e / --encoder");
@@ -133,7 +133,7 @@ void process_stream(bool decompress, const std::vector<size_t> &size_components,
 
 void process_stream(bool decompress, const std::vector<size_t> &size_components,
     const std::string &encoder, const std::string &data_type, const std::string &in, const std::string &out,
-    const hcde::detail::io_factory &io) {
+    const ndzip::detail::io_factory &io) {
     if (data_type == "float") {
         process_stream<float>(decompress, size_components, encoder, in, out, io);
     } else if (data_type == "double") {
@@ -166,10 +166,10 @@ int main(int argc, char **argv) {
             "array size (one value per dimension, first-major)")
         ("data-type,t", opts::value(&data_type), "float|double (default float)")
         ("encoder,e", opts::value(&encoder), "cpu"
-#if HCDE_OPENMP_SUPPORT
+#if NDZIP_OPENMP_SUPPORT
                                              "|cpu-mt"
 #endif
-#if HCDE_GPU_SUPPORT
+#if NDZIP_GPU_SUPPORT
                                              "|gpu"
 #endif
                                              " (default cpu)")
@@ -196,18 +196,18 @@ int main(int argc, char **argv) {
         return EXIT_FAILURE;
     }
 
-    std::unique_ptr<hcde::detail::io_factory> io_factory;
-#if HCDE_SUPPORT_MMAP
+    std::unique_ptr<ndzip::detail::io_factory> io_factory;
+#if NDZIP_SUPPORT_MMAP
     if (!no_mmap) {
-        io_factory = std::make_unique<hcde::detail::mmap_io_factory>();
+        io_factory = std::make_unique<ndzip::detail::mmap_io_factory>();
     }
 #endif
     if (!io_factory) {
-        io_factory = std::make_unique<hcde::detail::stdio_io_factory>();
+        io_factory = std::make_unique<ndzip::detail::stdio_io_factory>();
     }
 
     try {
-        hcde::detail::process_stream(decompress, size_components, encoder, data_type, input, output, *io_factory);
+        ndzip::detail::process_stream(decompress, size_components, encoder, data_type, input, output, *io_factory);
         return EXIT_SUCCESS;
     } catch (opts::error &e) {
         std::cerr << e.what() << "\n\n" << usage << desc;

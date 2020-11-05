@@ -1,6 +1,6 @@
 #include "gpu_encoder.inl"
 
-namespace hcde {
+namespace ndzip {
     template class gpu_encoder<float, 1>;
     template class gpu_encoder<float, 2>;
     template class gpu_encoder<float, 3>;

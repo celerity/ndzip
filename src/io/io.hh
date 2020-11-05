@@ -7,13 +7,13 @@
 
 
 #ifdef __unix__
-#   define HCDE_SUPPORT_MMAP 1
+#   define NDZIP_SUPPORT_MMAP 1
 #else
-#   define HCDE_SUPPORT_MMAP 0
+#   define NDZIP_SUPPORT_MMAP 0
 #endif
 
 
-namespace hcde::detail {
+namespace ndzip::detail {
 
 class io_error
     : public std::runtime_error {
@@ -57,7 +57,7 @@ class stdio_io_factory
         create_output_stream(const std::string &file_name, size_t max_chunk_length) const override;
 };
 
-#if HCDE_SUPPORT_MMAP
+#if NDZIP_SUPPORT_MMAP
 
 class mmap_io_factory
     : public io_factory {

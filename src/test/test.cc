@@ -1,12 +1,12 @@
-#include <hcde/common.hh>
-#include <hcde/cpu_encoder.inl>
+#include <ndzip/common.hh>
+#include <ndzip/cpu_encoder.inl>
 
 #define CATCH_CONFIG_MAIN
 #include <catch2/catch.hpp>
 
 
-using namespace hcde;
-using namespace hcde::detail;
+using namespace ndzip;
+using namespace ndzip::detail;
 
 
 template<typename Arithmetic>
@@ -196,7 +196,7 @@ TEMPLATE_TEST_CASE("encoder produces the expected bit stream", "[encoder]",
     REQUIRE(f.num_hypercubes() > 1);
 
     TestType encoder;
-    std::vector<std::byte> stream(hcde::compressed_size_bound<data_type>(array.size()));
+    std::vector<std::byte> stream(ndzip::compressed_size_bound<data_type>(array.size()));
     size_t size = encoder.compress(array, stream.data());
 
     CHECK(size <= stream.size());
@@ -242,7 +242,7 @@ TEMPLATE_TEST_CASE("encoder produces the expected bit stream", "[encoder]",
 TEMPLATE_TEST_CASE("encoder reproduces the bit-identical array", "[encoder]",
     (cpu_encoder<float, 1>), (cpu_encoder<float, 2>), (cpu_encoder<float, 3>),
     (cpu_encoder<double, 1>), (cpu_encoder<double, 2>), (cpu_encoder<double, 3>)
-#if HCDE_OPENMP_SUPPORT
+#if NDZIP_OPENMP_SUPPORT
     , (mt_cpu_encoder<float, 1>), (mt_cpu_encoder<float, 2>), (mt_cpu_encoder<float, 3>),
     (mt_cpu_encoder<double, 1>), (mt_cpu_encoder<double, 2>), (mt_cpu_encoder<double, 3>)
 #endif
@@ -262,7 +262,7 @@ TEMPLATE_TEST_CASE("encoder reproduces the bit-identical array", "[encoder]",
     slice<const data_type, dims> input(input_data.data(), extent<dims>::broadcast(n));
 
     TestType encoder;
-    std::vector<std::byte> stream(hcde::compressed_size_bound<typename TestType::data_type>(input.size()));
+    std::vector<std::byte> stream(ndzip::compressed_size_bound<typename TestType::data_type>(input.size()));
     stream.resize(encoder.compress(input, stream.data()));
 
     std::vector<data_type> output_data(ipow(n, dims));
@@ -278,7 +278,7 @@ TEST_CASE("load hypercube in GPU warp", "[gpu]") {
         std::vector<uint32_t> array{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12};
         std::vector<uint32_t> buffer(4);
         hypercube<profile<uint32_t, 1>> hc(extent<1>{2});
-        for (unsigned tid = 0; tid < HCDE_WARP_SIZE; ++tid) {
+        for (unsigned tid = 0; tid < NDZIP_WARP_SIZE; ++tid) {
             load_hypercube_warp(tid, hc, slice<uint32_t, 1>(array.data(), array.size()),
                     buffer.data());
         }
@@ -298,7 +298,7 @@ TEST_CASE("load hypercube in GPU warp", "[gpu]") {
         };
         std::vector<uint32_t> buffer(6);
         hypercube<profile<uint32_t, 2>> hc(extent<2>{2, 3});
-        for (unsigned tid = 0; tid < HCDE_WARP_SIZE; ++tid) {
+        for (unsigned tid = 0; tid < NDZIP_WARP_SIZE; ++tid) {
             load_hypercube_warp(tid, hc, slice<uint32_t, 2>(array.data(), extent{8, 9}),
                     buffer.data());
         }
@@ -339,7 +339,7 @@ TEST_CASE("load hypercube in GPU warp", "[gpu]") {
         };
         std::vector<uint32_t> buffer(10);
         hypercube<profile<uint32_t, 3>> hc(extent<3>{1, 2, 3});
-        for (unsigned tid = 0; tid < HCDE_WARP_SIZE; ++tid) {
+        for (unsigned tid = 0; tid < NDZIP_WARP_SIZE; ++tid) {
             load_hypercube_warp(tid, hc, slice<uint32_t, 3>(array.data(), extent{5, 5, 5}),
                     buffer.data());
         }

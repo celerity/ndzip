@@ -1,6 +1,6 @@
 #pragma once
 
-#include <hcde/hcde.hh>
+#include <ndzip/ndzip.hh>
 
 #include <algorithm>
 #include <cassert>
@@ -11,33 +11,33 @@
 #include <optional>
 
 
-#define HCDE_BIG_ENDIAN 0
-#define HCDE_LITTLE_ENDIAN 1
+#define NDZIP_BIG_ENDIAN 0
+#define NDZIP_LITTLE_ENDIAN 1
 
 #if defined(__BYTE_ORDER)
 #   if __BYTE_ORDER == __BIG_ENDIAN
-#       define HCDE_ENDIAN HCDE_BIG_ENDIAN
+#       define NDZIP_ENDIAN NDZIP_BIG_ENDIAN
 #   else
-#       define HCDE_ENDIAN HCDE_LITTLE_ENDIAN
+#       define NDZIP_ENDIAN NDZIP_LITTLE_ENDIAN
 #   endif
 #elif defined(__BIG_ENDIAN__) || \
     defined(__ARMEB__) || \
     defined(__THUMBEB__) || \
     defined(__AARCH64EB__) || \
     defined(_MIBSEB) || defined(__MIBSEB) || defined(__MIBSEB__)
-#   define HCDE_ENDIAN HCDE_BIG_ENDIAN
+#   define NDZIP_ENDIAN NDZIP_BIG_ENDIAN
 #elif defined(__LITTLE_ENDIAN__) || \
     defined(__ARMEL__) || \
     defined(__THUMBEL__) || \
     defined(__AARCH64EL__) || \
     defined(_MIPSEL) || defined(__MIPSEL) || defined(__MIPSEL__)
-#   define HCDE_ENDIAN HCDE_LITTLE_ENDIAN
+#   define NDZIP_ENDIAN NDZIP_LITTLE_ENDIAN
 #else
 #   error "Unknown endianess"
 #endif
 
 
-namespace hcde::detail {
+namespace ndzip::detail {
 
 template<typename Integer>
 constexpr inline Integer ipow(Integer base, unsigned exponent) {
@@ -75,7 +75,7 @@ template<typename Fn, typename Index, typename T>
 
 template<typename Integer>
 Integer endian_transform(Integer value) {
-    if constexpr (HCDE_ENDIAN == HCDE_LITTLE_ENDIAN) {
+    if constexpr (NDZIP_ENDIAN == NDZIP_LITTLE_ENDIAN) {
         if constexpr (std::is_same_v<Integer, uint64_t>) {
             return __builtin_bswap64(value);
         } else if constexpr (std::is_same_v<Integer, uint32_t>) {
@@ -377,7 +377,7 @@ inline void inverse_block_transform(T *x, unsigned dims, size_t n) {
 }
 
 
-#define HCDE_WARP_SIZE (size_t{32})
+#define NDZIP_WARP_SIZE (size_t{32})
 
 template<typename Profile>
 void load_hypercube_warp(size_t tid, const extent<Profile::dimensions> &hc_offset,
@@ -386,7 +386,7 @@ void load_hypercube_warp(size_t tid, const extent<Profile::dimensions> &hc_offse
     using bits_type = typename Profile::bits_type;
     const auto side_length = Profile::hypercube_side_length;
     const auto hc_size = ipow(side_length, Profile::dimensions);
-    const auto warp_size = HCDE_WARP_SIZE;
+    const auto warp_size = NDZIP_WARP_SIZE;
     if constexpr (Profile::dimensions == 1) {
         auto start = linear_offset(src.size(), hc_offset);
         auto src_ptr = src.data() + start;
@@ -471,4 +471,4 @@ extent<Dims> extent_from_linear_id(size_t linear_id, const extent<Dims> &size) {
     return ext;
 }
 
-} // namespace hcde::detail
+} // namespace ndzip::detail

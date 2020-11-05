@@ -1,28 +1,28 @@
 cmake_minimum_required(VERSION 3.10)
 
-project(hcde)
+project(ndzip)
 
-option(HCDE_BUILD_TEST "Build unit tests" ON)
-option(HCDE_BUILD_BENCHMARK "Build benchmarks against other algorithms" ON)
-option(HCDE_WITH_MT "Enable parallel CPU implementation through OpenMP if available " ON)
-option(HCDE_WITH_GPU "Enable GPU implementation through hipSYCL if available" ON)
+option(NDZIP_BUILD_TEST "Build unit tests" ON)
+option(NDZIP_BUILD_BENCHMARK "Build benchmarks against other algorithms" ON)
+option(NDZIP_WITH_MT "Enable parallel CPU implementation through OpenMP if available " ON)
+option(NDZIP_WITH_GPU "Enable GPU implementation through hipSYCL if available" ON)
 
 find_package(Boost REQUIRED COMPONENTS thread program_options)
 
-if (HCDE_WITH_MT)
+if (NDZIP_WITH_MT)
     find_package(OpenMP)
-    set(HCDE_USE_OPENMP "${OpenMP_FOUND}")
+    set(NDZIP_USE_OPENMP "${OpenMP_FOUND}")
 endif ()
-if (HCDE_WITH_GPU)
+if (NDZIP_WITH_GPU)
     find_package(hipSYCL CONFIG)
-    set(HCDE_USE_HIPSYCL "${hipSYCL_FOUND}")
+    set(NDZIP_USE_HIPSYCL "${hipSYCL_FOUND}")
 endif ()
 
-if (HCDE_BUILD_TEST)
+if (NDZIP_BUILD_TEST)
     find_package(Catch2)
 endif()
 
-if (HCDE_BUILD_BENCHMARK)
+if (NDZIP_BUILD_BENCHMARK)
     find_package(ZLIB QUIET)
     find_package(PkgConfig)
     pkg_check_modules(LZMA liblzma>=5.0.0 QUIET IMPORTED_TARGET)
@@ -38,40 +38,40 @@ endif ()
 
 
 set(CMAKE_CXX_STANDARD 17)
-set(HCDE_COMPILE_FLAGS
+set(NDZIP_COMPILE_FLAGS
     -Wall -Wextra -Werror=return-type -Werror=init-self -Werror=undef -Wno-attributes -Wimplicit-fallthrough
     # Force colored warnings in Ninja's output, if the compiler has -fdiagnostics-color support.
     # Rationale in https://github.com/ninja-build/ninja/issues/814
     $<$<STREQUAL:${CMAKE_GENERATOR},Ninja>:-fdiagnostics-color=always>)
 
-add_library(hcde SHARED
-    include/hcde/hcde.hh
-    src/hcde/common.hh
-    src/hcde/common.cc
-    src/hcde/cpu_encoder.inl
-    src/hcde/cpu_encoder.cc
+add_library(ndzip SHARED
+    include/ndzip/ndzip.hh
+    src/ndzip/common.hh
+    src/ndzip/common.cc
+    src/ndzip/cpu_encoder.inl
+    src/ndzip/cpu_encoder.cc
 )
 
-target_include_directories(hcde PUBLIC include)
-target_compile_definitions(hcde PUBLIC
-    -DHCDE_GPU_SUPPORT=$<BOOL:${HCDE_USE_HIPSYCL}>
-    -DHCDE_OPENMP_SUPPORT=$<BOOL:${OpenMP_FOUND}>
+target_include_directories(ndzip PUBLIC include)
+target_compile_definitions(ndzip PUBLIC
+    -DNDZIP_GPU_SUPPORT=$<BOOL:${NDZIP_USE_HIPSYCL}>
+    -DNDZIP_OPENMP_SUPPORT=$<BOOL:${OpenMP_FOUND}>
 )
-target_compile_options(hcde PRIVATE ${HCDE_COMPILE_FLAGS})
+target_compile_options(ndzip PRIVATE ${NDZIP_COMPILE_FLAGS})
 
-if (HCDE_USE_OPENMP)
-    target_link_libraries(hcde PRIVATE OpenMP::OpenMP_CXX Boost::thread)
+if (NDZIP_USE_OPENMP)
+    target_link_libraries(ndzip PRIVATE OpenMP::OpenMP_CXX Boost::thread)
 endif ()
 
-if (HCDE_USE_HIPSYCL)
-    add_library(hcde-gpu SHARED
-        src/hcde/gpu_encoder.inl
-        src/hcde/gpu_encoder.cc
+if (NDZIP_USE_HIPSYCL)
+    add_library(ndzip-gpu SHARED
+        src/ndzip/gpu_encoder.inl
+        src/ndzip/gpu_encoder.cc
     )
-    target_include_directories(hcde-gpu PUBLIC include)
-    target_compile_options(hcde-gpu PRIVATE ${HCDE_COMPILE_FLAGS})
-    add_sycl_to_target(TARGET hcde-gpu)
-    target_link_libraries(hcde-gpu PUBLIC hcde)
+    target_include_directories(ndzip-gpu PUBLIC include)
+    target_compile_options(ndzip-gpu PRIVATE ${NDZIP_COMPILE_FLAGS})
+    add_sycl_to_target(TARGET ndzip-gpu)
+    target_link_libraries(ndzip-gpu PUBLIC ndzip)
 endif ()
 
 add_library(io STATIC
@@ -85,25 +85,25 @@ add_executable(compress
     src/compress/compress.cc
 )
 
-target_compile_options(compress PRIVATE ${HCDE_COMPILE_FLAGS})
-target_link_libraries(compress PRIVATE hcde io Boost::program_options)
-if (HCDE_USE_HIPSYCL)
-    target_link_libraries(compress PRIVATE hcde-gpu)
+target_compile_options(compress PRIVATE ${NDZIP_COMPILE_FLAGS})
+target_link_libraries(compress PRIVATE ndzip io Boost::program_options)
+if (NDZIP_USE_HIPSYCL)
+    target_link_libraries(compress PRIVATE ndzip-gpu)
 endif ()
 
 
-if (HCDE_BUILD_TEST AND Catch2_FOUND)
+if (NDZIP_BUILD_TEST AND Catch2_FOUND)
     add_executable(test src/test/test.cc)
     target_include_directories(test PRIVATE src)
-    target_compile_options(test PRIVATE ${HCDE_COMPILE_FLAGS})
-    target_link_libraries(test PRIVATE hcde Catch2::Catch2)
-    if (HCDE_USE_HIPSYCL)
-        target_link_libraries(test PRIVATE hcde-gpu)
+    target_compile_options(test PRIVATE ${NDZIP_COMPILE_FLAGS})
+    target_link_libraries(test PRIVATE ndzip Catch2::Catch2)
+    if (NDZIP_USE_HIPSYCL)
+        target_link_libraries(test PRIVATE ndzip-gpu)
     endif ()
 endif ()
 
 
-if (HCDE_BUILD_BENCHMARK)
+if (NDZIP_BUILD_BENCHMARK)
     find_package(CUDAToolkit)
 
     if (FPZIP_FOUND)
@@ -123,21 +123,21 @@ if (HCDE_BUILD_BENCHMARK)
     endif ()
 
     add_executable(benchmark src/benchmark/benchmark.cc)
-    target_compile_options(benchmark PRIVATE ${HCDE_COMPILE_FLAGS})
-    target_link_libraries(benchmark PRIVATE hcde io Boost::program_options fpc pfpc spdp)
+    target_compile_options(benchmark PRIVATE ${NDZIP_COMPILE_FLAGS})
+    target_link_libraries(benchmark PRIVATE ndzip io Boost::program_options fpc pfpc spdp)
     target_compile_definitions(benchmark PRIVATE
-        "-DHCDE_BENCHMARK_HAVE_ZLIB=$<BOOL:${ZLIB_FOUND}>"
-        "-DHCDE_BENCHMARK_HAVE_LZ4=$<BOOL:${LZ4_FOUND}>"
-        "-DHCDE_BENCHMARK_HAVE_LZMA=$<BOOL:${LZMA_FOUND}>"
-        "-DHCDE_BENCHMARK_HAVE_FPZIP=$<BOOL:${FPZIP_FOUND}>"
-        "-DHCDE_BENCHMARK_HAVE_GFC=$<BOOL:${CUDAToolkit_FOUND}>"
-        "-DHCDE_BENCHMARK_HAVE_ZSTD=$<BOOL:${ZSTD_FOUND}>"
+        "-DNDZIP_BENCHMARK_HAVE_ZLIB=$<BOOL:${ZLIB_FOUND}>"
+        "-DNDZIP_BENCHMARK_HAVE_LZ4=$<BOOL:${LZ4_FOUND}>"
+        "-DNDZIP_BENCHMARK_HAVE_LZMA=$<BOOL:${LZMA_FOUND}>"
+        "-DNDZIP_BENCHMARK_HAVE_FPZIP=$<BOOL:${FPZIP_FOUND}>"
+        "-DNDZIP_BENCHMARK_HAVE_GFC=$<BOOL:${CUDAToolkit_FOUND}>"
+        "-DNDZIP_BENCHMARK_HAVE_ZSTD=$<BOOL:${ZSTD_FOUND}>"
     )
-    if (HCDE_USE_OPENMP)
+    if (NDZIP_USE_OPENMP)
         target_link_libraries(benchmark PRIVATE OpenMP::OpenMP_CXX Boost::thread)
     endif ()
-    if (HCDE_USE_HIPSYCL)
-        target_link_libraries(benchmark PRIVATE hcde-gpu)
+    if (NDZIP_USE_HIPSYCL)
+        target_link_libraries(benchmark PRIVATE ndzip-gpu)
     endif ()
     if (ZLIB_FOUND)
         target_link_libraries(benchmark PRIVATE ZLIB::ZLIB)

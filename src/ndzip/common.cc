@@ -1,6 +1,6 @@
 #include "common.hh"
 
-namespace hcde {
+namespace ndzip {
 
 template<typename T, unsigned Dims>
 size_t compressed_size_bound(const extent<Dims> &size) {
@@ -19,4 +19,4 @@ template size_t compressed_size_bound<double>(const extent<1> &e);
 template size_t compressed_size_bound<double>(const extent<2> &e);
 template size_t compressed_size_bound<double>(const extent<3> &e);
 
-} // namespace hcde
+} // namespace ndzip
