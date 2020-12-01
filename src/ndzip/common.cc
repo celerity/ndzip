@@ -19,4 +19,4 @@ template size_t compressed_size_bound<double>(const extent<1> &e);
 template size_t compressed_size_bound<double>(const extent<2> &e);
 template size_t compressed_size_bound<double>(const extent<3> &e);
 
-} // namespace ndzip
+}  // namespace ndzip

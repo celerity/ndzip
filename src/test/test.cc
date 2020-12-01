@@ -24,19 +24,20 @@ static std::vector<Arithmetic> make_random_vector(size_t size) {
 }
 
 
-TEMPLATE_TEST_CASE("block transform is reversible", "[profile]",
-    (profile<float, 1>), (profile<float, 2>), (profile<float, 3>),
-    (profile<double, 1>), (profile<double, 2>), (profile<double, 3>))
-{
+TEMPLATE_TEST_CASE("block transform is reversible", "[profile]", (profile<float, 1>),
+        (profile<float, 2>), (profile<float, 3>), (profile<double, 1>), (profile<double, 2>),
+        (profile<double, 3>) ) {
     using bits_type = typename TestType::bits_type;
 
     const auto input = make_random_vector<bits_type>(
             ipow(TestType::hypercube_side_length, TestType::dimensions));
 
     auto transformed = input;
-    detail::block_transform(transformed.data(), TestType::dimensions, TestType::hypercube_side_length);
+    detail::block_transform(
+            transformed.data(), TestType::dimensions, TestType::hypercube_side_length);
 
-    detail::inverse_block_transform(transformed.data(), TestType::dimensions, TestType::hypercube_side_length);
+    detail::inverse_block_transform(
+            transformed.data(), TestType::dimensions, TestType::hypercube_side_length);
 
     CHECK(input == transformed);
 }
@@ -44,10 +45,10 @@ TEMPLATE_TEST_CASE("block transform is reversible", "[profile]",
 
 TEMPLATE_TEST_CASE("CPU zero-word compaction is reversible", "[cpu]", uint32_t, uint64_t) {
     std::vector<TestType> input(bitsof<TestType>);
-    auto gen = std::minstd_rand(); // NOLINT(cert-msc51-cpp)
+    auto gen = std::minstd_rand();  // NOLINT(cert-msc51-cpp)
     auto dist = std::uniform_int_distribution<TestType>();
     size_t zeroes = 0;
-    for (auto &v: input) {
+    for (auto &v : input) {
         auto r = dist(gen);
         if (r % 5 == 2) {
             v = 0;
@@ -72,8 +73,8 @@ TEMPLATE_TEST_CASE("CPU bit transposition is reversible", "[cpu]", uint32_t, uin
     alignas(cpu::simd_width_bytes) TestType input[bitsof<TestType>];
     auto rng = std::minstd_rand(1);
     auto bit_dist = std::uniform_int_distribution<TestType>();
-    auto shift_dist = std::uniform_int_distribution<unsigned>(0, bitsof<TestType>-1);
-    for (auto &value: input) {
+    auto shift_dist = std::uniform_int_distribution<unsigned>(0, bitsof<TestType> - 1);
+    for (auto &value : input) {
         value = bit_dist(rng) >> shift_dist(rng);
     }
 
@@ -94,14 +95,13 @@ namespace std {
 ostream &operator<<(ostream &os, const border_slice &s) {
     return os << "(" << s.first << ", " << s.second << ")";
 }
-}
+}  // namespace std
 
 template<unsigned Dims>
 static auto dump_border_slices(const extent<Dims> &size, unsigned side_length) {
     slice_vec v;
-    for_each_border_slice(size, side_length, [&](size_t offset, size_t count) {
-        v.emplace_back(offset, count);
-    });
+    for_each_border_slice(
+            size, side_length, [&](size_t offset, size_t count) { v.emplace_back(offset, count); });
     return v;
 }
 
@@ -119,8 +119,8 @@ TEST_CASE("for_each_border_slice iterates correctly") {
 
 
 TEMPLATE_TEST_CASE("file produces a sane hypercube / header layout", "[file]",
-    (std::integral_constant<unsigned, 1>), (std::integral_constant<unsigned, 2>),
-    (std::integral_constant<unsigned, 3>), (std::integral_constant<unsigned, 4>)) {
+        (std::integral_constant<unsigned, 1>), (std::integral_constant<unsigned, 2>),
+        (std::integral_constant<unsigned, 3>), (std::integral_constant<unsigned, 4>) ) {
     constexpr unsigned dims = TestType::value;
     using profile = detail::profile<float, dims>;
     const size_t n = 100;
@@ -240,11 +240,12 @@ TEMPLATE_TEST_CASE("encoder produces the expected bit stream", "[encoder]",
 
 
 TEMPLATE_TEST_CASE("encoder reproduces the bit-identical array", "[encoder]",
-    (cpu_encoder<float, 1>), (cpu_encoder<float, 2>), (cpu_encoder<float, 3>),
-    (cpu_encoder<double, 1>), (cpu_encoder<double, 2>), (cpu_encoder<double, 3>)
+        (cpu_encoder<float, 1>), (cpu_encoder<float, 2>), (cpu_encoder<float, 3>),
+        (cpu_encoder<double, 1>), (cpu_encoder<double, 2>), (cpu_encoder<double, 3>)
 #if NDZIP_OPENMP_SUPPORT
-    , (mt_cpu_encoder<float, 1>), (mt_cpu_encoder<float, 2>), (mt_cpu_encoder<float, 3>),
-    (mt_cpu_encoder<double, 1>), (mt_cpu_encoder<double, 2>), (mt_cpu_encoder<double, 3>)
+                                                                    ,
+        (mt_cpu_encoder<float, 1>), (mt_cpu_encoder<float, 2>), (mt_cpu_encoder<float, 3>),
+        (mt_cpu_encoder<double, 1>), (mt_cpu_encoder<double, 2>), (mt_cpu_encoder<double, 3>)
 #endif
 ) {
     using data_type = typename TestType::data_type;
@@ -262,7 +263,8 @@ TEMPLATE_TEST_CASE("encoder reproduces the bit-identical array", "[encoder]",
     slice<const data_type, dims> input(input_data.data(), extent<dims>::broadcast(n));
 
     TestType encoder;
-    std::vector<std::byte> stream(ndzip::compressed_size_bound<typename TestType::data_type>(input.size()));
+    std::vector<std::byte> stream(
+            ndzip::compressed_size_bound<typename TestType::data_type>(input.size()));
     stream.resize(encoder.compress(input, stream.data()));
 
     std::vector<data_type> output_data(ipow(n, dims));
