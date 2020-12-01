@@ -385,40 +385,12 @@ template<typename T>
     {
         // interpret each 128-bit lane as a 4x4 matrix and transpose it
         // also correct endianess for later
+        // clang-format off
         uint8_t idx8[] = {
-                12,
-                8,
-                4,
-                0,
-                13,
-                9,
-                5,
-                1,
-                14,
-                10,
-                6,
-                2,
-                15,
-                11,
-                7,
-                3,
-                12,
-                8,
-                4,
-                0,
-                13,
-                9,
-                5,
-                1,
-                14,
-                10,
-                6,
-                2,
-                15,
-                11,
-                7,
-                3,
+                12, 8, 4, 0, 13, 9, 5, 1, 14, 10, 6, 2, 15, 11, 7, 3,
+                12, 8, 4, 0, 13, 9, 5, 1, 14, 10, 6, 2, 15, 11, 7, 3,
         };
+        // clang-format on
         __m256i idx;
         __builtin_memcpy(&idx, idx8, sizeof idx);
         for (unsigned i = 0; i < 4; ++i) {
@@ -511,40 +483,12 @@ template<typename T>
 
     __m256i shuf0[16];
     {
+        // clang-format off
         const uint8_t idx8[] = {
-                7,
-                6,
-                15,
-                14,
-                5,
-                4,
-                13,
-                12,
-                3,
-                2,
-                11,
-                10,
-                1,
-                0,
-                9,
-                8,
-                7,
-                6,
-                15,
-                14,
-                5,
-                4,
-                13,
-                12,
-                3,
-                2,
-                11,
-                10,
-                1,
-                0,
-                9,
-                8,
+                7, 6, 15, 14, 5, 4, 13, 12, 3, 2, 11, 10, 1, 0, 9, 8,
+                7, 6, 15, 14, 5, 4, 13, 12, 3, 2, 11, 10, 1, 0, 9, 8,
         };
+        // clang-format on
         __m256i idx;
         __builtin_memcpy(&idx, idx8, sizeof idx);
         for (unsigned i = 0; i < 8; ++i) {
