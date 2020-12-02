@@ -1,6 +1,10 @@
 #include <ndzip/common.hh>
 #include <ndzip/cpu_encoder.inl>
 
+#if NDZIP_GPU_SUPPORT
+#include <ndzip/gpu_encoder.inl>
+#endif
+
 #define CATCH_CONFIG_MAIN
 #include <catch2/catch.hpp>
 
@@ -274,21 +278,89 @@ TEMPLATE_TEST_CASE("encoder reproduces the bit-identical array", "[encoder]",
     CHECK(memcmp(input_data.data(), output_data.data(), input_data.size() * sizeof(float)) == 0);
 }
 
-/* requires Profile parameters
-TEST_CASE("load hypercube in GPU warp", "[gpu]") {
-    SECTION("1d array") {
-        std::vector<uint32_t> array{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12};
-        std::vector<uint32_t> buffer(4);
-        hypercube<profile<uint32_t, 1>> hc(extent<1>{2});
-        for (unsigned tid = 0; tid < NDZIP_WARP_SIZE; ++tid) {
-            load_hypercube_warp(tid, hc, slice<uint32_t, 1>(array.data(), array.size()),
-                    buffer.data());
-        }
-        CHECK(buffer == std::vector<uint32_t>{3, 4, 0, 0});
+
+#if NDZIP_GPU_SUPPORT
+
+template<typename T, unsigned Dims>
+struct mock_profile {
+    using data_type = T;
+    using bits_type = T;
+    constexpr static unsigned dimensions = Dims;
+    constexpr static unsigned hypercube_side_length = 2;
+    constexpr static unsigned compressed_block_size_bound
+            = sizeof(T) * (ipow(hypercube_side_length, dimensions) + 1);
+};
+
+
+template<typename DestAccessor, typename SourceAccessor>
+void nd_memcpy(const DestAccessor &dest, const SourceAccessor &source, size_t count,
+        sycl::nd_item<2> item) {
+    auto n_threads = item.get_local_range(1);
+    auto tid = item.get_local_id(1);
+    for (size_t i = tid; i < count; i += n_threads) {
+        dest[i] = source[i];
+    }
+}
+
+
+template<typename Profile>
+class load_and_dump_hypercube_kernel;
+
+template<typename Profile>
+static std::vector<typename Profile::bits_type>
+load_and_dump_hypercube(const slice<const typename Profile::data_type, Profile::dimensions> &data,
+        size_t hc_index, sycl::queue &q) {
+    using data_type = typename Profile::data_type;
+    using bits_type = typename Profile::bits_type;
+
+    using sam = sycl::access::mode;
+    using sat = sycl::access::target;
+    using sycl::accessor, sycl::nd_range, sycl::buffer, sycl::nd_item, sycl::range, sycl::id,
+            sycl::handler;
+
+    auto hc_size = ipow(Profile::hypercube_side_length, Profile::dimensions);
+    buffer<uint32_t> data_buf{data.data(), range<1>{num_elements(data.size())}};
+    std::vector<uint32_t> result(hc_size * 2);
+    buffer<uint32_t> result_buf{result.size()};
+    detail::file<Profile> file(data.size());
+
+    q.submit([&](handler &cgh) {
+        cgh.fill(result_buf.get_access<sam::discard_write>(cgh), uint32_t{0});
+    });
+    q.submit([&](handler &cgh) {
+        auto data_acc = data_buf.get_access<sam::read>(cgh);
+        auto local_acc = accessor<bits_type, 1, sam::read_write, sat::local>(hc_size, cgh);
+        auto result_acc = result_buf.get_access<sam ::discard_write>(cgh);
+        cgh.parallel_for<load_and_dump_hypercube_kernel<Profile>>(
+                nd_range<2>{range<2>{1, NDZIP_WARP_SIZE}, range<2>{1, NDZIP_WARP_SIZE},
+                        id<2>{hc_index, 0}},
+                [data_acc, local_acc, result_acc, data_size = data.size(), hc_size](
+                        nd_item<2> item) {
+                    detail::gpu::load_hypercube<Profile>(data_acc, local_acc, data_size, item);
+                    nd_memcpy(result_acc, local_acc, hc_size, item);
+                });
+    });
+    q.submit([&](handler &cgh) { cgh.copy(result_buf.get_access<sam::read>(cgh), result.data()); });
+    q.wait();
+    return result;
+}
+
+
+TEST_CASE("load hypercube into local memory", "[gpu]") {
+    sycl::queue q;
+
+    SECTION("1d") {
+        using profile = mock_profile<uint32_t, 1>;
+        std::vector<uint32_t> data{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12};
+        auto result = load_and_dump_hypercube<profile>(
+                slice<uint32_t, 1>{data.data(), data.size()}, 1 /* hc_index */, q);
+        CHECK(result == std::vector<uint32_t>{3, 4, 0, 0});
     }
 
-    SECTION("2d array") {
-        std::vector<uint32_t> array{
+    SECTION("2d") {
+        using profile = mock_profile<uint32_t, 2>;
+        // clang-format off
+        std::vector<uint32_t> data{
             10, 20, 30, 40, 50, 60, 70, 80, 90,
             11, 21, 31, 41, 51, 61, 71, 81, 91,
             12, 22, 32, 42, 52, 62, 72, 82, 92,
@@ -298,17 +370,16 @@ TEST_CASE("load hypercube in GPU warp", "[gpu]") {
             16, 26, 36, 46, 56, 66, 76, 86, 96,
             17, 27, 37, 47, 57, 67, 77, 87, 97,
         };
-        std::vector<uint32_t> buffer(6);
-        hypercube<profile<uint32_t, 2>> hc(extent<2>{2, 3});
-        for (unsigned tid = 0; tid < NDZIP_WARP_SIZE; ++tid) {
-            load_hypercube_warp(tid, hc, slice<uint32_t, 2>(array.data(), extent{8, 9}),
-                    buffer.data());
-        }
-        CHECK(buffer == std::vector<uint32_t>{42, 52, 43, 53, 0, 0});
+        // clang-format on
+        auto result = load_and_dump_hypercube<profile>(
+                slice<uint32_t, 2>{data.data(), extent{8, 9}}, 6 /* hc_index */, q);
+        CHECK(result == std::vector<uint32_t>{52, 62, 53, 63, 0, 0, 0, 0});
     }
 
-    SECTION("3d array") {
-        std::vector<uint32_t> array{
+    SECTION("3d") {
+        using profile = mock_profile<uint32_t, 3>;
+        // clang-format off
+        std::vector<uint32_t> data{
             111, 211, 311, 411, 511,
             121, 221, 321, 421, 521,
             131, 231, 331, 431, 531,
@@ -339,13 +410,13 @@ TEST_CASE("load hypercube in GPU warp", "[gpu]") {
             145, 245, 345, 445, 545,
             155, 255, 355, 455, 555,
         };
-        std::vector<uint32_t> buffer(10);
-        hypercube<profile<uint32_t, 3>> hc(extent<3>{1, 2, 3});
-        for (unsigned tid = 0; tid < NDZIP_WARP_SIZE; ++tid) {
-            load_hypercube_warp(tid, hc, slice<uint32_t, 3>(array.data(), extent{5, 5, 5}),
-                    buffer.data());
-        }
-        CHECK(buffer == std::vector<uint32_t>{332, 432, 532, 342, 442, 542, 352, 452, 552, 0, 0});
+        auto result = load_and_dump_hypercube<profile>(
+                slice<uint32_t, 3>{data.data(), extent{5, 5, 5}}, 3 /* hc_index */, q);
+        CHECK(result == std::vector<uint32_t>{331, 431, 341, 441, 332, 432, 342, 442,
+                      0, 0, 0, 0, 0, 0, 0, 0});
+        // clang-format on
     }
 }
-*/
+
+
+#endif

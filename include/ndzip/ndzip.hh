@@ -129,7 +129,7 @@ size_t num_elements(extent<Dims> size) {
 }
 
 template<unsigned Dims>
-size_t linear_offset(extent<Dims> space, extent<Dims> position) {
+size_t linear_offset(extent<Dims> position, extent<Dims> space) {
     size_t offset = 0;
     size_t stride = 1;
     for (unsigned nd = 0; nd < Dims; ++nd) {

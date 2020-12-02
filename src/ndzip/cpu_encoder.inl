@@ -75,7 +75,7 @@ template<typename Profile>
     using data_type = typename Profile::data_type;
     using bits_type = typename Profile::bits_type;
 
-    map_hypercube_slices<Profile>(
+    for_each_hypercube_slice<Profile>(
             hc_offset, data, cube, [](const data_type *src, bits_type *dest, size_t n_elems) {
                 memcpy(assume_simd_aligned(dest), src, n_elems * sizeof(data_type));
             });
@@ -88,7 +88,7 @@ template<typename Profile>
     using data_type = typename Profile::data_type;
     using bits_type = typename Profile::bits_type;
 
-    map_hypercube_slices<Profile>(
+    for_each_hypercube_slice<Profile>(
             hc_offset, data, cube, [](data_type *dest, const bits_type *src, size_t n_elems) {
                 memcpy(dest, assume_simd_aligned(src), n_elems * sizeof(data_type));
             });

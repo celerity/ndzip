@@ -369,13 +369,13 @@ void load_hypercube_warp(size_t tid, const extent<Profile::dimensions> &hc_offse
     const auto hc_size = ipow(side_length, Profile::dimensions);
     const auto warp_size = NDZIP_WARP_SIZE;
     if constexpr (Profile::dimensions == 1) {
-        auto start = linear_offset(src.size(), hc_offset);
+        auto start = linear_offset(hc_offset, src.size());
         auto src_ptr = src.data() + start;
         for (size_t i = tid; i < Profile::hypercube_side_length; i += warp_size) {
             memcpy(&dest[i], src_ptr + i, sizeof(bits_type));
         }
     } else if constexpr (Profile::dimensions == 2) {
-        auto start = linear_offset(src.size(), hc_offset);
+        auto start = linear_offset(hc_offset, src.size());
         auto dest_ptr = dest;
         for (size_t i = 0; i < side_length; ++i) {
             auto src_ptr = src.data() + start;
@@ -389,7 +389,7 @@ void load_hypercube_warp(size_t tid, const extent<Profile::dimensions> &hc_offse
         auto src_off = hc_offset;
         auto dest_ptr = dest;
         for (size_t i = 0; i < side_length; ++i) {
-            auto start = linear_offset(src.size(), src_off);
+            auto start = linear_offset(src_off, src.size());
             for (size_t j = 0; j < side_length; ++j) {
                 auto src_ptr = src.data() + start;
                 for (size_t j = tid; j < side_length; j += warp_size) {
@@ -407,7 +407,7 @@ void load_hypercube_warp(size_t tid, const extent<Profile::dimensions> &hc_offse
 
 
 template<typename Profile, typename SliceDataType, typename CubeDataType, typename F>
-[[gnu::always_inline]] void map_hypercube_slices(const extent<Profile::dimensions> &hc_offset,
+[[gnu::always_inline]] void for_each_hypercube_slice(const extent<Profile::dimensions> &hc_offset,
         const slice<SliceDataType, Profile::dimensions> &data, CubeDataType *cube_ptr, F &&f) {
     constexpr auto side_length = Profile::hypercube_side_length;
 
