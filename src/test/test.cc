@@ -281,6 +281,11 @@ TEMPLATE_TEST_CASE("encoder reproduces the bit-identical array", "[encoder]",
 
 #if NDZIP_GPU_SUPPORT
 
+using sam = sycl::access::mode;
+using sat = sycl::access::target;
+using sycl::accessor, sycl::nd_range, sycl::buffer, sycl::nd_item, sycl::range, sycl::id,
+        sycl::handler;
+
 template<typename T, unsigned Dims>
 struct mock_profile {
     using data_type = T;
@@ -313,11 +318,6 @@ load_and_dump_hypercube(const slice<const typename Profile::data_type, Profile::
     using data_type = typename Profile::data_type;
     using bits_type = typename Profile::bits_type;
 
-    using sam = sycl::access::mode;
-    using sat = sycl::access::target;
-    using sycl::accessor, sycl::nd_range, sycl::buffer, sycl::nd_item, sycl::range, sycl::id,
-            sycl::handler;
-
     auto hc_size = ipow(Profile::hypercube_side_length, Profile::dimensions);
     buffer<uint32_t> data_buf{data.data(), range<1>{num_elements(data.size())}};
     std::vector<uint32_t> result(hc_size * 2);
@@ -346,7 +346,7 @@ load_and_dump_hypercube(const slice<const typename Profile::data_type, Profile::
 }
 
 
-TEST_CASE("load hypercube into local memory", "[gpu]") {
+TEST_CASE("correctly load hypercube into local memory", "[gpu]") {
     sycl::queue q;
 
     SECTION("1d") {
@@ -416,6 +416,51 @@ TEST_CASE("load hypercube into local memory", "[gpu]") {
                       0, 0, 0, 0, 0, 0, 0, 0});
         // clang-format on
     }
+}
+
+
+template<typename>
+class gpu_block_transform_test_kernel;
+
+TEMPLATE_TEST_CASE("GPU block transform is identical to CPU block transform", "[profile]",
+        (profile<float, 1>), (profile<float, 2>), (profile<float, 3>), (profile<double, 1>),
+        (profile<double, 2>), (profile<double, 3>) ) {
+    using bits_type = typename TestType::bits_type;
+
+    const auto hc_size = ipow(TestType::hypercube_side_length, TestType::dimensions);
+    const auto input = make_random_vector<bits_type>(hc_size);
+
+    auto cpu_transformed = input;
+    detail::block_transform(
+            cpu_transformed.data(), TestType::dimensions, TestType::hypercube_side_length);
+
+    sycl::queue q;
+    buffer<bits_type> global_buf{range<1>{hc_size}};
+
+    q.submit([&](handler &cgh) {
+        cgh.copy(input.data(), global_buf.template get_access<sam::discard_write>(cgh));
+    });
+    q.submit([&](handler &cgh) {
+        auto global_acc = global_buf.template get_access<sam::read_write>(cgh);
+        auto local_acc = accessor<bits_type, 1, sam::read_write, sat::local>(hc_size, cgh);
+        cgh.parallel_for<gpu_block_transform_test_kernel<TestType>>(
+                nd_range<2>{range<2>{1, NDZIP_WARP_SIZE}, range<2>{1, NDZIP_WARP_SIZE}},
+                [global_acc, local_acc, hc_size = hc_size](nd_item<2> item) {
+                    nd_memcpy(local_acc, global_acc, hc_size, item);
+                    item.barrier(sycl::access::fence_space::local_space);
+                    detail::gpu::block_transform<TestType>(local_acc, item);
+                    item.barrier(sycl::access::fence_space::local_space);
+                    nd_memcpy(global_acc, local_acc, hc_size, item);
+                });
+    });
+
+    std::vector<bits_type> gpu_transformed(hc_size);
+    q.submit([&](handler &cgh) {
+        cgh.copy(global_buf.template get_access<sam::read>(cgh), gpu_transformed.data());
+    });
+    q.wait();
+
+    CHECK(gpu_transformed == cpu_transformed);
 }
 
 

@@ -89,52 +89,58 @@ void load_hypercube(const global_data_read_accessor<Profile> &data_acc,
     item.barrier(sycl::access::fence_space::local_space);
 }
 
-template<typename T>
-void block_transform_step(T *x, size_t n, size_t s) {
-    T a, b;
-    b = x[0 * s];
-    for (size_t i = 1; i < n; ++i) {
-        a = b;
-        b = x[i * s];
-        x[i * s] = a ^ b;
-    }
-}
 
 template<typename Profile>
 void block_transform(const local_bits_accessor<Profile> &local_acc, sycl::nd_item<2> item) {
-    constexpr size_t n = Profile::hypercube_side_length;
+    constexpr auto n = Profile::hypercube_side_length;
+    constexpr auto dims = Profile::dimensions;
+    constexpr auto hc_size = ipow(n, dims);
 
     auto n_threads = item.get_local_range(1);
     auto tid = item.get_local_id(1);
 
     typename Profile::bits_type *x = local_acc.get_pointer();
 
-    if constexpr (Profile::dimensions == 1) {
+    for (size_t i = tid; i < hc_size; i += n_threads) {
+        x[i] = rotate_left_1(x[i]);
+    }
+
+    item.barrier(sycl::access::fence_space::local_space);
+
+    if constexpr (dims == 1) {
         if (tid == 0) { block_transform_step(x, n, 1); }
-    } else if constexpr (Profile::dimensions == 2) {
-        for (size_t i = tid; i < n * n; i += n * n_threads) {
-            block_transform_step(x + i, n, 1);
+    } else if constexpr (dims == 2) {
+        for (size_t i = tid; i < n; i += n_threads) {
+            const auto ii = n * i;
+            block_transform_step(x + ii, n, 1);
         }
         item.barrier(sycl::access::fence_space::local_space);
         for (size_t i = tid; i < n; i += n_threads) {
             block_transform_step(x + i, n, n);
         }
-    } else if constexpr (Profile::dimensions == 3) {
-        for (size_t i = tid; i < n * n * n; i += n * n * n_threads) {
+    } else if constexpr (dims == 3) {
+        for (size_t i = tid; i < n; i += n_threads) {
+            const auto ii = n * n * i;
             for (size_t j = 0; j < n; ++j) {
-                block_transform_step(x + i + j, n, n);
+                block_transform_step(x + ii + j, n, n);
             }
         }
         item.barrier(sycl::access::fence_space::local_space);
-        for (size_t i = tid; i < n * n * n; i += n * n_threads) {
-            block_transform_step(x + i, n, 1);
+        for (size_t i = tid; i < n * n; i += n_threads) {
+            const auto ii = n * i;
+            block_transform_step(x + ii, n, 1);
         }
         item.barrier(sycl::access::fence_space::local_space);
         for (size_t i = tid; i < n * n; i += n_threads) {
             block_transform_step(x + i, n, n * n);
         }
     }
+
     item.barrier(sycl::access::fence_space::local_space);
+
+    for (size_t i = tid; i < hc_size; i += n_threads) {
+        x[i] = complement_negative(x[i]);
+    }
 }
 
 
