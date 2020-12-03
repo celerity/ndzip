@@ -8,6 +8,9 @@
 #include <SYCL/sycl.hpp>
 
 
+#define NDZIP_WARP_SIZE (size_t{32})
+
+
 namespace ndzip::detail::gpu {
 
 template<typename Profile>
@@ -18,9 +21,12 @@ template<typename Profile>
 using global_bits_write_accessor
         = sycl::accessor<typename Profile::bits_type, 1, sycl::access::mode::discard_read_write>;
 
+template<typename T>
+using local_accessor = sycl::accessor<T, 1, sycl::access::mode::read_write,
+        sycl::access::target::local>;
+
 template<typename Profile>
-using local_bits_accessor = sycl::accessor<typename Profile::bits_type, 1,
-        sycl::access::mode::read_write, sycl::access::target::local>;
+using local_bits_accessor = local_accessor<typename Profile::bits_type>;
 
 template<unsigned Dims, typename U, typename T>
 U extent_cast(const T &e) {
@@ -196,6 +202,32 @@ void inverse_block_transform(const local_bits_accessor<Profile> &local_acc, sycl
 
     for (size_t i = tid; i < hc_size; i += n_threads) {
         x[i] = rotate_right_1(x[i]);
+    }
+}
+
+
+template<typename Bits>
+void transpose_bits(const local_accessor<Bits> &local_acc, size_t offset,
+        sycl::nd_item<2> item)
+{
+    constexpr auto n_threads = NDZIP_WARP_SIZE;
+    constexpr auto cols_per_thread = bitsof<Bits> / n_threads;
+    auto tid = item.get_local_id(1);
+
+    Bits columns[cols_per_thread] = {0};
+    for (size_t k = 0; k < bitsof<Bits>; ++k) {
+        auto row = local_acc[sycl::id<1>{offset + k}];
+        for (size_t c = 0; c < cols_per_thread; ++c) {
+            size_t i = c * n_threads + tid;
+            columns[c] |= ((row >> (bitsof<Bits> - 1 - i)) & Bits{1}) << (bitsof<Bits> - 1 - k);
+        }
+    }
+
+    item.barrier(sycl::access::fence_space::local_space);
+
+    for (size_t c = 0; c < cols_per_thread; ++c) {
+        size_t i = c * n_threads + tid;
+        local_acc[offset + i] = columns[c];
     }
 }
 

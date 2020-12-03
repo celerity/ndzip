@@ -421,30 +421,24 @@ TEMPLATE_TEST_CASE("correctly load hypercube into local memory", "[gpu]", uint32
 }
 
 
-template<typename, typename>
-class gpu_transform_test_kernel;
-
-template<typename TransformName, typename Profile, typename CPUTransform, typename GPUTransform>
-static void
-test_gpu_transform_equality(const CPUTransform &cpu_transform, const GPUTransform &gpu_transform) {
-    using bits_type = typename Profile::bits_type;
-
-    const auto hc_size = ipow(Profile::hypercube_side_length, Profile::dimensions);
-    const auto input = make_random_vector<bits_type>(hc_size);
+template<typename TransformName, typename Bits, typename CPUTransform, typename GPUTransform>
+static void test_cpu_gpu_transform_equality(size_t hc_size, const CPUTransform &cpu_transform,
+        const GPUTransform &gpu_transform) {
+    const auto input = make_random_vector<Bits>(hc_size);
 
     auto cpu_transformed = input;
     cpu_transform(cpu_transformed.data());
 
     sycl::queue q;
-    buffer<bits_type> global_buf{range<1>{hc_size}};
+    buffer<Bits> global_buf{range<1>{hc_size}};
 
     q.submit([&](handler &cgh) {
         cgh.copy(input.data(), global_buf.template get_access<sam::discard_write>(cgh));
     });
     q.submit([&](handler &cgh) {
         auto global_acc = global_buf.template get_access<sam::read_write>(cgh);
-        auto local_acc = accessor<bits_type, 1, sam::read_write, sat::local>(hc_size, cgh);
-        cgh.parallel_for<gpu_transform_test_kernel<TransformName, Profile>>(
+        auto local_acc = accessor<Bits, 1, sam::read_write, sat::local>(hc_size, cgh);
+        cgh.parallel_for<TransformName>(
                 nd_range<2>{range<2>{1, NDZIP_WARP_SIZE}, range<2>{1, NDZIP_WARP_SIZE}},
                 [global_acc, local_acc, hc_size = hc_size, gpu_transform](nd_item<2> item) {
                     nd_memcpy(local_acc, global_acc, hc_size, item);
@@ -455,7 +449,7 @@ test_gpu_transform_equality(const CPUTransform &cpu_transform, const GPUTransfor
                 });
     });
 
-    std::vector<bits_type> gpu_transformed(hc_size);
+    std::vector<Bits> gpu_transformed(hc_size);
     q.submit([&](handler &cgh) {
         cgh.copy(global_buf.template get_access<sam::read>(cgh), gpu_transformed.data());
     });
@@ -464,11 +458,16 @@ test_gpu_transform_equality(const CPUTransform &cpu_transform, const GPUTransfor
     CHECK(gpu_transformed == cpu_transformed);
 }
 
-TEMPLATE_TEST_CASE("CPU and GPU forward block transforms are identical", "[profile]",
+template<typename>
+class gpu_forward_transform_test_kernel;
+
+TEMPLATE_TEST_CASE("CPU and GPU forward block transforms are identical", "[gpu]",
         (profile<float, 1>), (profile<float, 2>), (profile<float, 3>), (profile<double, 1>),
         (profile<double, 2>), (profile<double, 3>) ) {
-    test_gpu_transform_equality<class forward_block_transform, TestType>(
-            [](typename TestType::bits_type *block) {
+    using bits_type = typename TestType::bits_type;
+    test_cpu_gpu_transform_equality<gpu_forward_transform_test_kernel<TestType>, bits_type>(
+            ipow(TestType::hypercube_side_length, TestType::dimensions),
+            [](bits_type *block) {
                 detail::block_transform(
                         block, TestType::dimensions, TestType::hypercube_side_length);
             },
@@ -479,18 +478,41 @@ TEMPLATE_TEST_CASE("CPU and GPU forward block transforms are identical", "[profi
             });
 }
 
-TEMPLATE_TEST_CASE("CPU and GPU inverse block transforms are identical", "[profile]",
-        (profile<float, 1>), (profile<float, 2>), (profile<float, 3>), (profile<double, 1>),
-        (profile<double, 2>), (profile<double, 3>) ) {
-    test_gpu_transform_equality<class inverse_block_transform, TestType>(
+template<typename>
+class gpu_inverse_transform_test_kernel;
+
+TEMPLATE_TEST_CASE("CPU and GPU inverse block transforms are identical", "[gpu]",
+                   (profile<float, 1>), (profile<float, 2>), (profile<float, 3>), (profile<double, 1>),
+                   (profile<double, 2>), (profile<double, 3>) ) {
+    using bits_type = typename TestType::bits_type;
+    test_cpu_gpu_transform_equality<gpu_inverse_transform_test_kernel<TestType>, bits_type>(
+            ipow(TestType::hypercube_side_length, TestType::dimensions),
             [](typename TestType::bits_type *block) {
-                detail::inverse_block_transform(
-                        block, TestType::dimensions, TestType::hypercube_side_length);
+              detail::inverse_block_transform(
+                      block, TestType::dimensions, TestType::hypercube_side_length);
             },
             // Uses lambda instead of the function name, otherwise a host function pointer will
             // be passed into the device kernel
             [](const detail::gpu::local_bits_accessor<TestType> &local_acc, sycl::nd_item<2> item) {
-                detail::gpu::inverse_block_transform<TestType>(local_acc, item);
+              detail::gpu::inverse_block_transform<TestType>(local_acc, item);
+            });
+}
+
+template<typename>
+class gpu_transpose_bits_test_kernel;
+
+TEMPLATE_TEST_CASE("CPU and GPU bit transposition are identical", "[gpu]", uint32_t, uint64_t) {
+    test_cpu_gpu_transform_equality<gpu_transpose_bits_test_kernel<TestType>, TestType>(
+            bitsof<TestType>,
+            [](TestType *chunk) {
+                TestType tmp[bitsof<TestType>];
+                detail::cpu::transpose_bits_trivial(chunk, tmp);
+                memcpy(chunk, tmp, sizeof tmp);
+            },
+            // Uses lambda instead of the function name, otherwise a host function pointer will
+            // be passed into the device kernel
+            [](const detail::gpu::local_accessor<TestType> &local_acc, sycl::nd_item<2> item) {
+                detail::gpu::transpose_bits(local_acc, 0, item);
             });
 }
 
