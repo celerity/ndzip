@@ -17,13 +17,16 @@ template<typename Profile>
 using global_data_read_accessor
         = sycl::accessor<typename Profile::data_type, 1, sycl::access::mode::read>;
 
+template<typename T>
+using global_write_accessor = sycl::accessor<T, 1, sycl::access::mode::discard_write>;
+
 template<typename Profile>
 using global_bits_write_accessor
         = sycl::accessor<typename Profile::bits_type, 1, sycl::access::mode::discard_read_write>;
 
 template<typename T>
-using local_accessor = sycl::accessor<T, 1, sycl::access::mode::read_write,
-        sycl::access::target::local>;
+using local_accessor
+        = sycl::accessor<T, 1, sycl::access::mode::read_write, sycl::access::target::local>;
 
 template<typename Profile>
 using local_bits_accessor = local_accessor<typename Profile::bits_type>;
@@ -207,9 +210,7 @@ void inverse_block_transform(const local_bits_accessor<Profile> &local_acc, sycl
 
 
 template<typename Bits>
-void transpose_bits(const local_accessor<Bits> &local_acc, size_t offset,
-        sycl::nd_item<2> item)
-{
+void transpose_bits(const local_accessor<Bits> &local_acc, size_t offset, sycl::nd_item<2> item) {
     constexpr auto n_threads = NDZIP_WARP_SIZE;
     constexpr auto cols_per_thread = bitsof<Bits> / n_threads;
     auto tid = item.get_local_id(1);
@@ -232,6 +233,61 @@ void transpose_bits(const local_accessor<Bits> &local_acc, size_t offset,
 }
 
 
+template<typename Bits>
+void compact_zero_words(const local_accessor<Bits> &in_acc,
+        const global_write_accessor<Bits> &out_acc, const local_accessor<Bits> &scratch_acc,
+        sycl::nd_item<2> item) {
+    constexpr auto n_columns = bitsof<Bits>;
+    constexpr auto n_threads = NDZIP_WARP_SIZE;
+    auto tid = item.get_local_id(1);
+
+    for (size_t i = tid; i < n_columns; i += n_threads) {
+        scratch_acc[i] = i ? in_acc[i - 1] != 0 : 1;
+        // TODO this is dumb, we can just OR values before transposition
+        scratch_acc[2*n_columns + i] = Bits{in_acc[i] != 0} << i;
+    }
+
+    item.barrier(sycl::access::fence_space::local_space);
+
+    // Hillis-Steele (short-span) prefix sum
+    size_t pout = 0;
+    size_t pin;
+    for (size_t offset = 1; offset < n_columns; offset <<= 1u) {
+        pout = 1 - pout;
+        pin = 1 - pout;
+        for (size_t i = tid; i < n_columns; i += n_threads) {
+            if (i >= offset) {
+                scratch_acc[pout * n_columns + i] = scratch_acc[pin * n_columns + i]
+                        + scratch_acc[pin * n_columns + i - offset];
+            } else {
+                scratch_acc[pout * n_columns + i] = scratch_acc[pin * n_columns + i];
+            }
+        }
+        item.barrier(sycl::access::fence_space::local_space);
+    }
+
+    // Header reduction - TODO merge with prefix sum loop, or better yet, move into a all_zero check
+    for (size_t offset = n_columns / 2; offset > 0; offset /= 2) {
+        for (size_t i = tid; i < n_columns; i += n_threads) {
+            if (i < offset) {
+                scratch_acc[2 * n_columns + i] |= scratch_acc[2 * n_columns + i + offset];
+            }
+        }
+        item.barrier(sycl::access::fence_space::local_space);
+    }
+
+    if (tid == 0) {
+        out_acc[0] = scratch_acc[2 * n_columns];
+    }
+
+    for (size_t i = tid; i < n_columns; i += n_threads) {
+        if (in_acc[i] != 0) {
+            out_acc[scratch_acc[pout * n_columns + i]] = in_acc[i];
+        }
+    }
+}
+
+
 template<typename Profile>
 void zero_bit_encode(const local_bits_accessor<Profile> &local_acc,
         const global_bits_write_accessor<Profile> &chunked_stream_acc, sycl::nd_item<2> item) {
@@ -242,17 +298,7 @@ void zero_bit_encode(const local_bits_accessor<Profile> &local_acc,
     auto tid = item.get_local_id(1);
 
     for (size_t offset = 0; offset < hc_size; offset += bitsof<bits_type>) {
-        if (tid >= bitsof<bits_type>) continue;
-
-        bits_type column = 0;
-        for (size_t i = 0; i < bitsof<bits_type>; ++i) {
-            auto row = local_acc[offset + i];
-            column |= ((row >> tid) & bits_type{1}) << i;
-        }
-
-        // TODO do multiple outer iterations and defer barrier before writing back?
-        item.barrier(sycl::access::fence_space::local_space);
-        local_acc[offset + tid] = column;
+        transpose_bits(local_acc, offset, item);
     }
     item.barrier(sycl::access::fence_space::local_space);
 

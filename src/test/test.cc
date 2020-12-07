@@ -422,8 +422,8 @@ TEMPLATE_TEST_CASE("correctly load hypercube into local memory", "[gpu]", uint32
 
 
 template<typename TransformName, typename Bits, typename CPUTransform, typename GPUTransform>
-static void test_cpu_gpu_transform_equality(size_t hc_size, const CPUTransform &cpu_transform,
-        const GPUTransform &gpu_transform) {
+static void test_cpu_gpu_transform_equality(
+        size_t hc_size, const CPUTransform &cpu_transform, const GPUTransform &gpu_transform) {
     const auto input = make_random_vector<Bits>(hc_size);
 
     auto cpu_transformed = input;
@@ -482,19 +482,19 @@ template<typename>
 class gpu_inverse_transform_test_kernel;
 
 TEMPLATE_TEST_CASE("CPU and GPU inverse block transforms are identical", "[gpu]",
-                   (profile<float, 1>), (profile<float, 2>), (profile<float, 3>), (profile<double, 1>),
-                   (profile<double, 2>), (profile<double, 3>) ) {
+        (profile<float, 1>), (profile<float, 2>), (profile<float, 3>), (profile<double, 1>),
+        (profile<double, 2>), (profile<double, 3>) ) {
     using bits_type = typename TestType::bits_type;
     test_cpu_gpu_transform_equality<gpu_inverse_transform_test_kernel<TestType>, bits_type>(
             ipow(TestType::hypercube_side_length, TestType::dimensions),
             [](typename TestType::bits_type *block) {
-              detail::inverse_block_transform(
-                      block, TestType::dimensions, TestType::hypercube_side_length);
+                detail::inverse_block_transform(
+                        block, TestType::dimensions, TestType::hypercube_side_length);
             },
             // Uses lambda instead of the function name, otherwise a host function pointer will
             // be passed into the device kernel
             [](const detail::gpu::local_bits_accessor<TestType> &local_acc, sycl::nd_item<2> item) {
-              detail::gpu::inverse_block_transform<TestType>(local_acc, item);
+                detail::gpu::inverse_block_transform<TestType>(local_acc, item);
             });
 }
 
@@ -514,6 +514,66 @@ TEMPLATE_TEST_CASE("CPU and GPU bit transposition are identical", "[gpu]", uint3
             [](const detail::gpu::local_accessor<TestType> &local_acc, sycl::nd_item<2> item) {
                 detail::gpu::transpose_bits(local_acc, 0, item);
             });
+}
+
+template<typename>
+class gpu_compact_zero_words_test_kernel;
+
+TEMPLATE_TEST_CASE(
+        "CPU and GPU bit zero-word elimination is identical", "[gpu]", uint32_t, uint64_t) {
+    auto input = make_random_vector<TestType>(bitsof<TestType>);
+    for (auto idx : {0, 12, 13, 29, static_cast<int>(bitsof<TestType> - 2)}) {
+        input[idx] = 0;
+    }
+
+    std::vector<TestType> cpu_transformed(bitsof<TestType> * 2);
+    detail::cpu::compact_zero_words(
+            input.data(), reinterpret_cast<std::byte *>(cpu_transformed.data()));
+
+    sycl::queue q;
+
+    buffer<TestType> input_buf{range<1>{input.size()}};
+    q.submit([&](handler &cgh) {
+        cgh.copy(input.data(), input_buf.template get_access<sam::discard_write>(cgh));
+    });
+
+    std::vector<TestType> gpu_transformed(bitsof<TestType> * 2);
+    buffer<TestType> output_buf{range<1>{gpu_transformed.size()}};
+    q.submit([&](handler &cgh) {
+        cgh.fill(output_buf.template get_access<sam::discard_write>(cgh), TestType{0});
+    });
+
+    const auto scratch_size = 3 * bitsof<TestType>;
+    std::vector<TestType> scratch_dump(scratch_size);
+    buffer<TestType> scratch_dump_buf{range<1>{scratch_size}};
+    q.submit([&](handler &cgh) {
+        auto input_acc = input_buf.template get_access<sam::read>(cgh);
+        auto output_acc = output_buf.template get_access<sam::discard_write>(cgh);
+        auto local_in_acc
+                = accessor<TestType, 1, sam::read_write, sat::local>(bitsof<TestType>, cgh);
+        auto scratch_acc = accessor<TestType, 1, sam::read_write, sat::local>(scratch_size, cgh);
+        auto scratch_dump_acc = scratch_dump_buf.template get_access<sam::discard_write>(cgh);
+        cgh.parallel_for<gpu_compact_zero_words_test_kernel<TestType>>(
+                nd_range<2>{range<2>{1, NDZIP_WARP_SIZE}, range<2>{1, NDZIP_WARP_SIZE}},
+                [input_acc, output_acc, local_in_acc, scratch_size, scratch_acc, scratch_dump_acc](
+                        nd_item<2> item) {
+                    nd_memcpy(local_in_acc, input_acc, input_acc.get_range()[0], item);
+                    item.barrier(sycl::access::fence_space::local_space);
+                    detail::gpu::compact_zero_words(local_in_acc, output_acc, scratch_acc, item);
+                    item.barrier(sycl::access::fence_space::local_space);
+                    nd_memcpy(scratch_dump_acc, scratch_acc, scratch_size, item);
+                });
+    });
+
+    q.submit([&](handler &cgh) {
+        cgh.copy(scratch_dump_buf.template get_access<sam::read>(cgh), scratch_dump.data());
+    });
+    q.submit([&](handler &cgh) {
+        cgh.copy(output_buf.template get_access<sam::read>(cgh), gpu_transformed.data());
+    });
+    q.wait();
+
+    CHECK(gpu_transformed == cpu_transformed);
 }
 
 #endif
