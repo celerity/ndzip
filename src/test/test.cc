@@ -335,7 +335,8 @@ load_and_dump_hypercube(const slice<const typename Profile::data_type, Profile::
                         id<2>{hc_index, 0}},
                 [data_acc, local_acc, result_acc, data_size = data.size(), hc_size](
                         nd_item<2> item) {
-                    detail::gpu::load_hypercube<Profile>(data_acc, local_acc, data_size, item);
+                    detail::gpu::load_hypercube<Profile>(
+                            data_acc.get_pointer(), local_acc.get_pointer(), data_size, item);
                     item.barrier(sycl::access::fence_space::local_space);
                     nd_memcpy(result_acc, local_acc, hc_size, item);
                 });
@@ -443,7 +444,7 @@ static void test_cpu_gpu_transform_equality(
                 [global_acc, local_acc, hc_size = hc_size, gpu_transform](nd_item<2> item) {
                     nd_memcpy(local_acc, global_acc, hc_size, item);
                     item.barrier(sycl::access::fence_space::local_space);
-                    gpu_transform(local_acc, item);
+                    gpu_transform(local_acc.get_pointer(), item);
                     item.barrier(sycl::access::fence_space::local_space);
                     nd_memcpy(global_acc, local_acc, hc_size, item);
                 });
@@ -473,8 +474,8 @@ TEMPLATE_TEST_CASE("CPU and GPU forward block transforms are identical", "[gpu]"
             },
             // Uses lambda instead of the function name, otherwise a host function pointer will
             // be passed into the device kernel
-            [](const detail::gpu::local_bits_accessor<TestType> &local_acc, sycl::nd_item<2> item) {
-                detail::gpu::block_transform<TestType>(local_acc, item);
+            [](bits_type *block, sycl::nd_item<2> item) {
+                detail::gpu::block_transform<TestType>(block, item);
             });
 }
 
@@ -487,14 +488,14 @@ TEMPLATE_TEST_CASE("CPU and GPU inverse block transforms are identical", "[gpu]"
     using bits_type = typename TestType::bits_type;
     test_cpu_gpu_transform_equality<gpu_inverse_transform_test_kernel<TestType>, bits_type>(
             ipow(TestType::hypercube_side_length, TestType::dimensions),
-            [](typename TestType::bits_type *block) {
+            [](bits_type *block) {
                 detail::inverse_block_transform(
                         block, TestType::dimensions, TestType::hypercube_side_length);
             },
             // Uses lambda instead of the function name, otherwise a host function pointer will
             // be passed into the device kernel
-            [](const detail::gpu::local_bits_accessor<TestType> &local_acc, sycl::nd_item<2> item) {
-                detail::gpu::inverse_block_transform<TestType>(local_acc, item);
+            [](bits_type *block, sycl::nd_item<2> item) {
+                detail::gpu::inverse_block_transform<TestType>(block, item);
             });
 }
 
@@ -511,8 +512,8 @@ TEMPLATE_TEST_CASE("CPU and GPU bit transposition are identical", "[gpu]", uint3
             },
             // Uses lambda instead of the function name, otherwise a host function pointer will
             // be passed into the device kernel
-            [](const detail::gpu::local_accessor<TestType> &local_acc, sycl::nd_item<2> item) {
-                detail::gpu::transpose_bits(local_acc, 0, item);
+            [](TestType *chunk, sycl::nd_item<2> item) {
+                detail::gpu::transpose_bits(chunk, item);
             });
 }
 
@@ -559,7 +560,8 @@ TEMPLATE_TEST_CASE(
                         nd_item<2> item) {
                     nd_memcpy(local_in_acc, input_acc, input_acc.get_range()[0], item);
                     item.barrier(sycl::access::fence_space::local_space);
-                    detail::gpu::compact_zero_words(local_in_acc, output_acc, scratch_acc, item);
+                    detail::gpu::compact_zero_words<TestType>(output_acc.get_pointer(),
+                            local_in_acc.get_pointer(), scratch_acc.get_pointer(), item);
                     item.barrier(sycl::access::fence_space::local_space);
                     nd_memcpy(scratch_dump_acc, scratch_acc, scratch_size, item);
                 });

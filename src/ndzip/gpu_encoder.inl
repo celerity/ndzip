@@ -76,9 +76,9 @@ size_t global_offset(size_t local_offset, extent<Profile::dimensions> global_siz
 }
 
 template<typename Profile>
-void load_hypercube(const global_data_read_accessor<Profile> &data_acc,
-        const local_bits_accessor<Profile> &local_acc, extent<Profile::dimensions> data_size,
-        sycl::nd_item<2> item) {
+void load_hypercube(/* global */ const typename Profile::data_type *__restrict data,
+        /* local */ typename Profile::bits_type *__restrict cube,
+        extent<Profile::dimensions> data_size, sycl::nd_item<2> item) {
     auto side_length = Profile::hypercube_side_length;
     auto hc_index = item.get_global_id(0);
     auto hc_size = ipow(side_length, Profile::dimensions);
@@ -90,15 +90,14 @@ void load_hypercube(const global_data_read_accessor<Profile> &data_acc,
             = linear_offset(hc_offset, data_size) + global_offset<Profile>(tid, data_size);
     size_t global_stride = global_offset<Profile>(n_threads, data_size);
     for (size_t local_idx = tid; local_idx < hc_size; local_idx += n_threads) {
-        local_acc[sycl::id<1>{local_idx}]
-                = bit_cast<typename Profile::bits_type>(data_acc[sycl::id<1>{global_idx}]);
+        cube[local_idx] = bit_cast<typename Profile::bits_type>(data[global_idx]);
         global_idx += global_stride;
     }
 }
 
 
 template<typename Profile>
-void block_transform(const local_bits_accessor<Profile> &local_acc, sycl::nd_item<2> item) {
+void block_transform(/* local */ typename Profile::bits_type *x, sycl::nd_item<2> item) {
     using saf = sycl::access::fence_space;
 
     constexpr auto n = Profile::hypercube_side_length;
@@ -107,8 +106,6 @@ void block_transform(const local_bits_accessor<Profile> &local_acc, sycl::nd_ite
 
     auto n_threads = item.get_local_range(1);
     auto tid = item.get_local_id(1);
-
-    typename Profile::bits_type *x = local_acc.get_pointer();
 
     for (size_t i = tid; i < hc_size; i += n_threads) {
         x[i] = rotate_left_1(x[i]);
@@ -154,7 +151,7 @@ void block_transform(const local_bits_accessor<Profile> &local_acc, sycl::nd_ite
 
 
 template<typename Profile>
-void inverse_block_transform(const local_bits_accessor<Profile> &local_acc, sycl::nd_item<2> item) {
+void inverse_block_transform(/* local */ typename Profile::bits_type *x, sycl::nd_item<2> item) {
     using saf = sycl::access::fence_space;
 
     constexpr auto n = Profile::hypercube_side_length;
@@ -163,8 +160,6 @@ void inverse_block_transform(const local_bits_accessor<Profile> &local_acc, sycl
 
     auto n_threads = item.get_local_range(1);
     auto tid = item.get_local_id(1);
-
-    typename Profile::bits_type *x = local_acc.get_pointer();
 
     for (size_t i = tid; i < hc_size; i += n_threads) {
         x[i] = complement_negative(x[i]);
@@ -210,44 +205,47 @@ void inverse_block_transform(const local_bits_accessor<Profile> &local_acc, sycl
 
 
 template<typename Bits>
-void transpose_bits(const local_accessor<Bits> &local_acc, size_t offset, sycl::nd_item<2> item) {
+void transpose_bits(/* local */ Bits *cube, sycl::nd_item<2> item) {
+    using saf = sycl::access::fence_space;
+
     constexpr auto n_threads = NDZIP_WARP_SIZE;
     constexpr auto cols_per_thread = bitsof<Bits> / n_threads;
     auto tid = item.get_local_id(1);
 
     Bits columns[cols_per_thread] = {0};
     for (size_t k = 0; k < bitsof<Bits>; ++k) {
-        auto row = local_acc[sycl::id<1>{offset + k}];
+        auto row = cube[k];
         for (size_t c = 0; c < cols_per_thread; ++c) {
             size_t i = c * n_threads + tid;
             columns[c] |= ((row >> (bitsof<Bits> - 1 - i)) & Bits{1}) << (bitsof<Bits> - 1 - k);
         }
     }
 
-    item.barrier(sycl::access::fence_space::local_space);
+    item.barrier(saf::local_space);
 
     for (size_t c = 0; c < cols_per_thread; ++c) {
         size_t i = c * n_threads + tid;
-        local_acc[offset + i] = columns[c];
+        cube[i] = columns[c];
     }
 }
 
 
 template<typename Bits>
-void compact_zero_words(const local_accessor<Bits> &in_acc,
-        const global_write_accessor<Bits> &out_acc, const local_accessor<Bits> &scratch_acc,
-        sycl::nd_item<2> item) {
+size_t compact_zero_words(/* global */ Bits *__restrict out, /* local */ const Bits *__restrict in,
+        /* local */ Bits *__restrict scratch, sycl::nd_item<2> item) {
+    using saf = sycl::access::fence_space;
+
     constexpr auto n_columns = bitsof<Bits>;
     constexpr auto n_threads = NDZIP_WARP_SIZE;
     auto tid = item.get_local_id(1);
 
     for (size_t i = tid; i < n_columns; i += n_threads) {
-        scratch_acc[i] = i ? in_acc[i - 1] != 0 : 1;
+        scratch[i] = i ? in[i - 1] != 0 : 1;
         // TODO this is dumb, we can just OR values before transposition
-        scratch_acc[2*n_columns + i] = Bits{in_acc[i] != 0} << i;
+        scratch[2 * n_columns + i] = Bits{in[i] != 0} << i;
     }
 
-    item.barrier(sycl::access::fence_space::local_space);
+    item.barrier(saf::local_space);
 
     // Hillis-Steele (short-span) prefix sum
     size_t pout = 0;
@@ -257,69 +255,55 @@ void compact_zero_words(const local_accessor<Bits> &in_acc,
         pin = 1 - pout;
         for (size_t i = tid; i < n_columns; i += n_threads) {
             if (i >= offset) {
-                scratch_acc[pout * n_columns + i] = scratch_acc[pin * n_columns + i]
-                        + scratch_acc[pin * n_columns + i - offset];
+                scratch[pout * n_columns + i]
+                        = scratch[pin * n_columns + i] + scratch[pin * n_columns + i - offset];
             } else {
-                scratch_acc[pout * n_columns + i] = scratch_acc[pin * n_columns + i];
+                scratch[pout * n_columns + i] = scratch[pin * n_columns + i];
             }
         }
-        item.barrier(sycl::access::fence_space::local_space);
+        item.barrier(saf::local_space);
     }
 
     // Header reduction - TODO merge with prefix sum loop, or better yet, move into a all_zero check
     for (size_t offset = n_columns / 2; offset > 0; offset /= 2) {
         for (size_t i = tid; i < n_columns; i += n_threads) {
-            if (i < offset) {
-                scratch_acc[2 * n_columns + i] |= scratch_acc[2 * n_columns + i + offset];
-            }
+            if (i < offset) { scratch[2 * n_columns + i] |= scratch[2 * n_columns + i + offset]; }
         }
-        item.barrier(sycl::access::fence_space::local_space);
+        item.barrier(saf::local_space);
     }
 
-    if (tid == 0) {
-        out_acc[0] = scratch_acc[2 * n_columns];
-    }
+    if (tid == 0) { out[0] = scratch[2 * n_columns]; }
 
     for (size_t i = tid; i < n_columns; i += n_threads) {
-        if (in_acc[i] != 0) {
-            out_acc[scratch_acc[pout * n_columns + i]] = in_acc[i];
-        }
+        if (in[i] != 0) { out[scratch[pout * n_columns + i]] = in[i]; }
     }
+
+    return 0;  // TODO
 }
 
 
 template<typename Profile>
-void zero_bit_encode(const local_bits_accessor<Profile> &local_acc,
-        const global_bits_write_accessor<Profile> &chunked_stream_acc, sycl::nd_item<2> item) {
+size_t zero_bit_encode(/* global */ typename Profile::bits_type *__restrict stream,
+        /* local */ typename Profile::bits_type *__restrict cube,
+        /* local */ typename Profile::bits_type *__restrict scratch, sycl::nd_item<2> item) {
     using bits_type = typename Profile::bits_type;
+    using saf = sycl::access::fence_space;
 
     auto side_length = Profile::hypercube_side_length;
     auto hc_size = detail::ipow(side_length, Profile::dimensions);
-    auto tid = item.get_local_id(1);
 
     for (size_t offset = 0; offset < hc_size; offset += bitsof<bits_type>) {
-        transpose_bits(local_acc, offset, item);
-    }
-    item.barrier(sycl::access::fence_space::local_space);
-
-    if (tid == 0) {
-        auto hc_index = item.get_global_range(0);
-        auto out_offset
-                = hc_index * Profile::compressed_block_size_bound / sizeof(bits_type);  // ??
-        bits_type head = 0;
-        for (size_t offset = 0; offset < hc_size; offset += bitsof<bits_type>) {
-            for (unsigned i = 0; i < bitsof<bits_type>; ++i) {
-                if (local_acc[i] != 0) {
-                    head |= bits_type{1} << i;
-                    chunked_stream_acc[out_offset] = local_acc[i];
-                    ++out_offset;
-                }
-            }
-        }
-        chunked_stream_acc[out_offset] = head;  // wrong: must be first item
+        transpose_bits(cube + offset, item);
     }
 
-    // TODO write length info
+    item.barrier(saf::local_space);
+
+    auto out = stream;
+    for (size_t offset = 0; offset < hc_size; offset += bitsof<bits_type>) {
+        out += compact_zero_words(out, cube + offset, scratch, item);
+    }
+
+    return out - stream;
 }
 
 template<typename Profile, typename BlockCompactionAccessor, typename CompressedBlocksAccessor>
