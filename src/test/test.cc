@@ -251,6 +251,11 @@ TEMPLATE_TEST_CASE("encoder reproduces the bit-identical array", "[encoder]",
         (mt_cpu_encoder<float, 1>), (mt_cpu_encoder<float, 2>), (mt_cpu_encoder<float, 3>),
         (mt_cpu_encoder<double, 1>), (mt_cpu_encoder<double, 2>), (mt_cpu_encoder<double, 3>)
 #endif
+#if NDZIP_OPENMP_SUPPORT
+                                                                          ,
+        (gpu_encoder<float, 1>), (gpu_encoder<float, 2>), (gpu_encoder<float, 3>),
+        (gpu_encoder<double, 1>), (gpu_encoder<double, 2>), (gpu_encoder<double, 3>)
+#endif
 ) {
     using data_type = typename TestType::data_type;
     using profile = detail::profile<data_type, TestType::dimensions>;
@@ -271,9 +276,10 @@ TEMPLATE_TEST_CASE("encoder reproduces the bit-identical array", "[encoder]",
             ndzip::compressed_size_bound<typename TestType::data_type>(input.size()));
     stream.resize(encoder.compress(input, stream.data()));
 
+    cpu_encoder<data_type, dims> decoder;
     std::vector<data_type> output_data(ipow(n, dims));
     slice<data_type, dims> output(output_data.data(), extent<dims>::broadcast(n));
-    encoder.decompress(stream.data(), stream.size(), output);
+    decoder.decompress(stream.data(), stream.size(), output);
 
     CHECK(memcmp(input_data.data(), output_data.data(), input_data.size() * sizeof(float)) == 0);
 }
