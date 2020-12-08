@@ -64,6 +64,18 @@ template<typename U, typename T>
     return cast;
 }
 
+
+template<typename DestAccessor, typename SourceAccessor>
+void nd_memcpy(const DestAccessor &dest, const SourceAccessor &source, size_t count,
+        sycl::nd_item<2> item) {
+    auto n_threads = item.get_local_range(1);
+    auto tid = item.get_local_id(1);
+    for (size_t i = tid; i < count; i += n_threads) {
+        dest[i] = source[i];
+    }
+}
+
+
 template<typename Profile>
 size_t global_offset(size_t local_offset, extent<Profile::dimensions> global_size) {
     size_t global_offset = 0;
@@ -439,6 +451,24 @@ class hierarchical_inclusive_prefix_sum {
 };
 
 
+template<typename Profile>
+void compact_stream(/* global */ typename Profile::bits_type *stream,
+        /* global */ typename Profile::bits_type *stream_chunks,
+        /* global */ const file_offset_type *stream_chunk_offsets,
+        /* global */ const file_offset_type *stream_chunk_lengths, sycl::nd_item<2> item) {
+    using bits_type = typename Profile::bits_type;
+
+    const auto hc_index = item.get_global_id(0);
+    const auto chunk_size
+            = (Profile::compressed_block_size_bound + sizeof(bits_type) - 1) / sizeof(bits_type);
+    const auto this_chunk_size = stream_chunk_lengths[hc_index];
+    const auto this_chunk_offset = hc_index ? stream_chunk_offsets[hc_index - 1] : 0;
+    const auto source = stream_chunks + hc_index * chunk_size;
+    const auto dest = stream + this_chunk_offset;
+    detail::gpu::nd_memcpy(dest, source, this_chunk_size, item);
+}
+
+
 // SYCL kernel names
 template<typename, unsigned>
 class block_compression_kernel;
@@ -513,9 +543,39 @@ size_t ndzip::gpu_encoder<T, Dims>::compress(
                 });
     });
 
-    std::vector<bits_type> stream_chunks(stream_chunks_buffer.get_range()[0]);
+    sycl::buffer<detail::file_offset_type> stream_chunk_offsets_buffer{
+            sycl::range<1>{file.num_hypercubes()}};
     _pimpl->q.submit([&](sycl::handler &cgh) {
-        cgh.copy(stream_chunks_buffer.template get_access<sam::read>(cgh), stream_chunks.data());
+        cgh.copy(stream_chunk_lengths_buffer.get_access<sam::read>(cgh),
+                stream_chunk_offsets_buffer.get_access<sam::discard_write>(cgh));
+    });
+
+    detail::gpu::hierarchical_inclusive_prefix_sum<detail::file_offset_type> prefix_sum(
+            file.num_hypercubes(), 256 /* local size */);
+    prefix_sum(_pimpl->q, stream_chunk_offsets_buffer);
+
+    sycl::buffer<bits_type> stream_buffer(stream_chunks_buffer.get_count());
+    _pimpl->q.submit([&](sycl::handler &cgh) {
+        auto stream_chunks_acc = stream_chunks_buffer.template get_access<sam::read>(cgh);
+        auto stream_chunk_lengths_acc = stream_chunk_lengths_buffer.get_access<sam::read>(cgh);
+        auto stream_chunk_offsets_acc = stream_chunk_offsets_buffer.get_access<sam::read>(cgh);
+        auto stream_acc = stream_buffer.template get_access<sam::discard_write>(cgh);
+        cgh.parallel_for<detail::gpu::block_compaction_kernel<T, Dims>>(
+                // TODO local size is adjustable
+                sycl::nd_range<2>{sycl::range<2>{file.num_hypercubes(), NDZIP_WARP_SIZE},
+                        sycl::range<2>{1, NDZIP_WARP_SIZE}},
+                [=](sycl::nd_item<2> item) {
+                    detail::gpu::compact_stream<profile>(stream_acc.get_pointer(),
+                            stream_chunks_acc.get_pointer(), stream_chunk_offsets_acc.get_pointer(),
+                            stream_chunk_lengths_acc.get_pointer(), item);
+                });
+    });
+
+    _pimpl->q.submit([&](sycl::handler &cgh) {
+        cgh.copy(stream_buffer.template get_access<sam::read>(cgh),
+                // TODO is this reinterpret_cast sane?
+                reinterpret_cast<bits_type *>(
+                        static_cast<std::byte *>(stream) + file.file_header_length()));
     });
 
     std::vector<detail::file_offset_type> stream_chunk_lengths(
@@ -524,14 +584,13 @@ size_t ndzip::gpu_encoder<T, Dims>::compress(
         cgh.copy(stream_chunk_lengths_buffer.get_access<sam::read>(cgh),
                 stream_chunk_lengths.data());
     });
+
     _pimpl->q.wait();
 
     size_t stream_pos = file.file_header_length();
     for (size_t hc_index = 0; hc_index < file.num_hypercubes(); ++hc_index) {
         auto header_pos = stream_pos;
         size_t chunk_bytes = stream_chunk_lengths[hc_index] * sizeof(bits_type);
-        memcpy(static_cast<char *>(stream) + stream_pos,
-                stream_chunks.data() + hc_index * chunk_size, chunk_bytes);
         stream_pos += chunk_bytes;
         if (hc_index > 0) {
             auto file_offset_address = static_cast<std::byte *>(stream)

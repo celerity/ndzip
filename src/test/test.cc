@@ -304,17 +304,6 @@ struct mock_profile {
 };
 
 
-template<typename DestAccessor, typename SourceAccessor>
-void nd_memcpy(const DestAccessor &dest, const SourceAccessor &source, size_t count,
-        sycl::nd_item<2> item) {
-    auto n_threads = item.get_local_range(1);
-    auto tid = item.get_local_id(1);
-    for (size_t i = tid; i < count; i += n_threads) {
-        dest[i] = source[i];
-    }
-}
-
-
 template<typename Profile>
 class load_and_dump_hypercube_kernel;
 
@@ -346,7 +335,7 @@ load_and_dump_hypercube(const slice<const typename Profile::data_type, Profile::
                     detail::gpu::load_hypercube<Profile>(
                             data_acc.get_pointer(), local_acc.get_pointer(), data_size, item);
                     item.barrier(saf::local_space);
-                    nd_memcpy(result_acc, local_acc, hc_size, item);
+                    detail::gpu::nd_memcpy(result_acc, local_acc, hc_size, item);
                 });
     });
     q.submit([&](handler &cgh) {
@@ -480,11 +469,11 @@ static void test_cpu_gpu_transform_equality(
         cgh.parallel_for<TransformName>(
                 nd_range<2>{range<2>{1, NDZIP_WARP_SIZE}, range<2>{1, NDZIP_WARP_SIZE}},
                 [global_acc, local_acc, hc_size = hc_size, gpu_transform](nd_item<2> item) {
-                    nd_memcpy(local_acc, global_acc, hc_size, item);
+                    detail::gpu::nd_memcpy(local_acc, global_acc, hc_size, item);
                     item.barrier(saf::local_space);
                     gpu_transform(local_acc.get_pointer(), item);
                     item.barrier(saf::local_space);
-                    nd_memcpy(global_acc, local_acc, hc_size, item);
+                    detail::gpu::nd_memcpy(global_acc, local_acc, hc_size, item);
                 });
     });
 
@@ -595,12 +584,12 @@ TEMPLATE_TEST_CASE("CPU and GPU zero-word compaction is identical", "[gpu]", uin
                 nd_range<2>{range<2>{1, NDZIP_WARP_SIZE}, range<2>{1, NDZIP_WARP_SIZE}},
                 [input_acc, output_acc, local_in_acc, scratch_size, scratch_acc, scratch_dump_acc](
                         nd_item<2> item) {
-                    nd_memcpy(local_in_acc, input_acc, input_acc.get_range()[0], item);
+                    detail::gpu::nd_memcpy(local_in_acc, input_acc, input_acc.get_range()[0], item);
                     item.barrier(saf::local_space);
                     detail::gpu::compact_zero_words<TestType>(output_acc.get_pointer(),
                             local_in_acc.get_pointer(), scratch_acc.get_pointer(), item);
                     item.barrier(saf::local_space);
-                    nd_memcpy(scratch_dump_acc, scratch_acc, scratch_size, item);
+                    detail::gpu::nd_memcpy(scratch_dump_acc, scratch_acc, scratch_size, item);
                 });
     });
 
@@ -659,7 +648,7 @@ TEMPLATE_TEST_CASE("CPU and GPU hypercube encodings are equivalent", "[gpu]", ui
                 nd_range<2>{range<2>{1, NDZIP_WARP_SIZE}, range<2>{1, NDZIP_WARP_SIZE}},
                 [input_acc, stream_acc, cube_acc, hc_size, scratch_acc, length_acc](
                         nd_item<2> item) {
-                    nd_memcpy(cube_acc, input_acc, hc_size, item);
+                    detail::gpu::nd_memcpy(cube_acc, input_acc, hc_size, item);
                     item.barrier(saf::local_space);
                     auto l = detail::gpu::zero_bit_encode<TestType>(cube_acc.get_pointer(),
                             stream_acc.get_pointer(), scratch_acc.get_pointer(), hc_size, item);
