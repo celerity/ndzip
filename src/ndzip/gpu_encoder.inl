@@ -14,23 +14,9 @@
 
 namespace ndzip::detail::gpu {
 
-template<typename Profile>
-using global_data_read_accessor
-        = sycl::accessor<typename Profile::data_type, 1, sycl::access::mode::read>;
-
-template<typename T>
-using global_write_accessor = sycl::accessor<T, 1, sycl::access::mode::discard_write>;
-
-template<typename Profile>
-using global_bits_write_accessor
-        = sycl::accessor<typename Profile::bits_type, 1, sycl::access::mode::discard_read_write>;
-
 template<typename T>
 using local_accessor
         = sycl::accessor<T, 1, sycl::access::mode::read_write, sycl::access::target::local>;
-
-template<typename Profile>
-using local_bits_accessor = local_accessor<typename Profile::bits_type>;
 
 template<unsigned Dims, typename U, typename T>
 U extent_cast(const T &e) {
@@ -387,7 +373,7 @@ void inclusive_prefix_sum_expand(/* global */ Scalar *__restrict small,
 }
 
 
-template<typename DataT>
+template<typename Scalar>
 class hierarchical_inclusive_prefix_sum {
   public:
     hierarchical_inclusive_prefix_sum(size_t n_elems, size_t local_size)
@@ -398,9 +384,8 @@ class hierarchical_inclusive_prefix_sum {
         }
     }
 
-    void operator()(sycl::queue &queue, sycl::buffer<DataT> &in_out_buffer) const {
+    void operator()(sycl::queue &queue, sycl::buffer<Scalar> &in_out_buffer) const {
         using sam = sycl::access::mode;
-        using sat = sycl::access::target;
 
         for (size_t i = 0; i < _intermediate_buffers.size(); ++i) {
             auto &big_buffer = i ? _intermediate_buffers[i - 1] : in_out_buffer;
@@ -413,11 +398,10 @@ class hierarchical_inclusive_prefix_sum {
             queue.submit([&](sycl::handler &cgh) {
                 auto big_acc = big_buffer.template get_access<sam::read_write>(cgh);
                 auto small_acc = small_buffer.template get_access<sam::discard_write>(cgh);
-                auto scratch_acc
-                        = sycl::accessor<DataT, 1, sam::read_write, sat::local>{scratch_range, cgh};
+                auto scratch_acc = local_accessor<Scalar>{scratch_range, cgh};
                 cgh.parallel_for<reduction_kernel>(sycl::nd_range<1>(global_range, local_range),
                         [big_acc, small_acc, scratch_acc, count](sycl::nd_item<1> item) {
-                            inclusive_prefix_sum_reduce<DataT>(big_acc.get_pointer(),
+                            inclusive_prefix_sum_reduce<Scalar>(big_acc.get_pointer(),
                                     small_acc.get_pointer(), scratch_acc.get_pointer(), count,
                                     item);
                         });
@@ -437,7 +421,7 @@ class hierarchical_inclusive_prefix_sum {
                 auto big_acc = big_buffer.template get_access<sam::discard_write>(cgh);
                 cgh.parallel_for<expansion_kernel>(sycl::nd_range<1>(global_range, local_range),
                         [small_acc, big_acc, count](sycl::nd_item<1> item) {
-                            inclusive_prefix_sum_expand<DataT>(
+                            inclusive_prefix_sum_expand<Scalar>(
                                     small_acc.get_pointer(), big_acc.get_pointer(), count, item);
                         });
             });
@@ -450,7 +434,7 @@ class hierarchical_inclusive_prefix_sum {
 
     size_t _n_elems;
     size_t _local_size;
-    mutable std::vector<sycl::buffer<DataT>> _intermediate_buffers;
+    mutable std::vector<sycl::buffer<Scalar>> _intermediate_buffers;
 };
 
 
@@ -462,11 +446,11 @@ void compact_stream(/* global */ typename Profile::bits_type *stream,
     using bits_type = typename Profile::bits_type;
 
     const auto hc_index = item.get_global_id(0);
-    const auto chunk_size
+    const auto max_chunk_size
             = (Profile::compressed_block_size_bound + sizeof(bits_type) - 1) / sizeof(bits_type);
     const auto this_chunk_size = stream_chunk_lengths[hc_index];
     const auto this_chunk_offset = hc_index ? stream_chunk_offsets[hc_index - 1] : 0;
-    const auto source = stream_chunks + hc_index * chunk_size;
+    const auto source = stream_chunks + hc_index * max_chunk_size;
     const auto dest = stream + this_chunk_offset;
     detail::gpu::nd_memcpy(dest, source, this_chunk_size, item);
 }
@@ -477,13 +461,7 @@ template<typename, unsigned>
 class block_compression_kernel;
 
 template<typename, unsigned>
-class length_sum_kernel;
-
-template<typename, unsigned>
 class block_compaction_kernel;
-
-template<typename, unsigned>
-class border_compaction_kernel;
 
 }  // namespace ndzip::detail::gpu
 
@@ -510,7 +488,7 @@ size_t ndzip::gpu_encoder<T, Dims>::compress(
 
     constexpr auto side_length = profile::hypercube_side_length;
     constexpr auto hc_size = detail::ipow(side_length, profile::dimensions);
-    const auto chunk_size
+    const auto max_chunk_size
             = (profile::compressed_block_size_bound + sizeof(bits_type) - 1) / sizeof(bits_type);
 
     detail::file<profile> file(data.size());
@@ -518,24 +496,19 @@ size_t ndzip::gpu_encoder<T, Dims>::compress(
     sycl::buffer<data_type, dimensions> data_buffer{
             data.data(), detail::gpu::extent_cast<sycl::range<dimensions>>(data.size())};
     sycl::buffer<bits_type, 1> stream_chunks_buffer{
-            sycl::range<1>{file.num_hypercubes() * chunk_size}};
+            sycl::range<1>{file.num_hypercubes() * max_chunk_size}};
     sycl::buffer<detail::file_offset_type, 1> stream_chunk_lengths_buffer{
             sycl::range<1>{file.num_hypercubes()}};
 
     _pimpl->q.submit([&](sycl::handler &cgh) {
-        // global memory
-        auto data_acc = data_buffer.template get_access<sycl::access::mode::read>(cgh);
+        auto data_acc = data_buffer.template get_access<sam::read>(cgh);
         auto stream_chunks_acc
-                = stream_chunks_buffer.template get_access<sycl::access::mode::discard_read_write>(
-                        cgh);
+                = stream_chunks_buffer.template get_access<sam::discard_read_write>(cgh);
         auto stream_chunk_lengths_acc
-                = stream_chunk_lengths_buffer.get_access<sycl::access::mode::discard_write>(cgh);
-
-        // local memory
-        auto local_memory_acc = sycl::accessor<bits_type, 1, sycl::access::mode::read_write,
-                sycl::access::target::local>{hc_size + 3 * detail::bitsof<bits_type>, cgh};
+                = stream_chunk_lengths_buffer.get_access<sam::discard_write>(cgh);
+        auto local_memory_acc = detail::gpu::local_accessor<bits_type>{
+                hc_size + 3 * detail::bitsof<bits_type>, cgh};
         auto data_size = data.size();
-
         cgh.parallel_for<detail::gpu::block_compression_kernel<T, Dims>>(
                 sycl::nd_range<2>{sycl::range<2>{file.num_hypercubes(), NDZIP_WARP_SIZE},
                         sycl::range<2>{1, NDZIP_WARP_SIZE}},
@@ -559,9 +532,9 @@ size_t ndzip::gpu_encoder<T, Dims>::compress(
 
     detail::file_offset_type num_compressed_words;
     _pimpl->q.submit([&](sycl::handler &cgh) {
-      cgh.copy(stream_chunk_offsets_buffer.get_access<sam::read>(
-              cgh, sycl::range<1>{1}, sycl::id<1>{file.num_hypercubes() - 1}),
-               &num_compressed_words);
+        cgh.copy(stream_chunk_offsets_buffer.get_access<sam::read>(
+                         cgh, sycl::range<1>{1}, sycl::id<1>{file.num_hypercubes() - 1}),
+                &num_compressed_words);
     });
 
     sycl::buffer<bits_type> stream_buffer(stream_chunks_buffer.get_count());

@@ -646,7 +646,7 @@ TEMPLATE_TEST_CASE("CPU and GPU hypercube encodings are equivalent", "[gpu]", ui
         auto length_acc = length_buf.get_access<sam::discard_write>(cgh);
         cgh.parallel_for<gpu_hypercube_encoding_test_kernel<TestType>>(
                 nd_range<2>{range<2>{1, NDZIP_WARP_SIZE}, range<2>{1, NDZIP_WARP_SIZE}},
-                [input_acc, stream_acc, cube_acc, hc_size, scratch_acc, length_acc](
+                [input_acc, stream_acc, cube_acc, hc_size=hc_size, scratch_acc, length_acc](
                         nd_item<2> item) {
                     detail::gpu::nd_memcpy(cube_acc, input_acc, hc_size, item);
                     item.barrier(saf::local_space);
