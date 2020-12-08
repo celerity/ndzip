@@ -390,10 +390,11 @@ void inclusive_prefix_sum_expand(/* global */ Scalar *__restrict small,
 template<typename DataT>
 class hierarchical_inclusive_prefix_sum {
   public:
-    hierarchical_inclusive_prefix_sum(size_t elems, size_t local_size) : _local_size(local_size) {
-        while (elems > 1) {
-            elems = (elems + local_size - 1) / local_size;
-            _intermediate_buffers.emplace_back(elems);
+    hierarchical_inclusive_prefix_sum(size_t n_elems, size_t local_size)
+        : _n_elems(n_elems), _local_size(local_size) {
+        while (n_elems > 1) {
+            n_elems = (n_elems + local_size - 1) / local_size;
+            _intermediate_buffers.emplace_back(n_elems);
         }
     }
 
@@ -403,6 +404,7 @@ class hierarchical_inclusive_prefix_sum {
 
         for (size_t i = 0; i < _intermediate_buffers.size(); ++i) {
             auto &big_buffer = i ? _intermediate_buffers[i - 1] : in_out_buffer;
+            auto count = i ? big_buffer.get_count() : _n_elems;
             auto &small_buffer = _intermediate_buffers[i];
             const auto global_range = sycl::range<1>{
                     (big_buffer.get_count() + _local_size - 1) / _local_size * _local_size};
@@ -414,8 +416,7 @@ class hierarchical_inclusive_prefix_sum {
                 auto scratch_acc
                         = sycl::accessor<DataT, 1, sam::read_write, sat::local>{scratch_range, cgh};
                 cgh.parallel_for<reduction_kernel>(sycl::nd_range<1>(global_range, local_range),
-                        [big_acc, small_acc, scratch_acc, count = big_buffer.get_count()](
-                                sycl::nd_item<1> item) {
+                        [big_acc, small_acc, scratch_acc, count](sycl::nd_item<1> item) {
                             inclusive_prefix_sum_reduce<DataT>(big_acc.get_pointer(),
                                     small_acc.get_pointer(), scratch_acc.get_pointer(), count,
                                     item);
@@ -425,16 +426,17 @@ class hierarchical_inclusive_prefix_sum {
 
         for (size_t i = 1; i < _intermediate_buffers.size(); ++i) {
             auto ii = _intermediate_buffers.size() - 1 - i;
-            auto &small_buf = _intermediate_buffers[ii];
-            auto &big_buf = ii > 0 ? _intermediate_buffers[ii - 1] : in_out_buffer;
+            auto &small_buffer = _intermediate_buffers[ii];
+            auto &big_buffer = ii > 0 ? _intermediate_buffers[ii - 1] : in_out_buffer;
+            auto count = i ? big_buffer.get_count() : _n_elems;
             const auto global_range = sycl::range<1>{
-                    (big_buf.get_count() + _local_size - 1) / _local_size * _local_size};
+                    (big_buffer.get_count() + _local_size - 1) / _local_size * _local_size};
             const auto local_range = sycl::range<1>{_local_size};
             queue.submit([&](sycl::handler &cgh) {
-                auto small_acc = small_buf.template get_access<sam::read_write>(cgh);
-                auto big_acc = big_buf.template get_access<sam::discard_write>(cgh);
+                auto small_acc = small_buffer.template get_access<sam::read_write>(cgh);
+                auto big_acc = big_buffer.template get_access<sam::discard_write>(cgh);
                 cgh.parallel_for<expansion_kernel>(sycl::nd_range<1>(global_range, local_range),
-                        [small_acc, big_acc, count = big_buf.get_count()](sycl::nd_item<1> item) {
+                        [small_acc, big_acc, count](sycl::nd_item<1> item) {
                             inclusive_prefix_sum_expand<DataT>(
                                     small_acc.get_pointer(), big_acc.get_pointer(), count, item);
                         });
@@ -446,6 +448,7 @@ class hierarchical_inclusive_prefix_sum {
     class reduction_kernel;
     class expansion_kernel;
 
+    size_t _n_elems;
     size_t _local_size;
     mutable std::vector<sycl::buffer<DataT>> _intermediate_buffers;
 };
@@ -554,7 +557,20 @@ size_t ndzip::gpu_encoder<T, Dims>::compress(
             file.num_hypercubes(), 256 /* local size */);
     prefix_sum(_pimpl->q, stream_chunk_offsets_buffer);
 
+    detail::file_offset_type num_compressed_words;
+    _pimpl->q.submit([&](sycl::handler &cgh) {
+      cgh.copy(stream_chunk_offsets_buffer.get_access<sam::read>(
+              cgh, sycl::range<1>{1}, sycl::id<1>{file.num_hypercubes() - 1}),
+               &num_compressed_words);
+    });
+
     sycl::buffer<bits_type> stream_buffer(stream_chunks_buffer.get_count());
+    _pimpl->q.submit([&](sycl::handler &cgh) {
+        // TODO is the cast sane?
+        cgh.copy(stream_buffer.template get_access<sam::read>(cgh),
+                static_cast<bits_type *>(stream));
+    });
+
     _pimpl->q.submit([&](sycl::handler &cgh) {
         auto stream_chunks_acc = stream_chunks_buffer.template get_access<sam::read>(cgh);
         auto stream_chunk_lengths_acc = stream_chunk_lengths_buffer.get_access<sam::read>(cgh);
@@ -578,33 +594,9 @@ size_t ndzip::gpu_encoder<T, Dims>::compress(
                         static_cast<std::byte *>(stream) + file.file_header_length()));
     });
 
-    std::vector<detail::file_offset_type> stream_chunk_lengths(
-            stream_chunk_lengths_buffer.get_range()[0]);
-    _pimpl->q.submit([&](sycl::handler &cgh) {
-        cgh.copy(stream_chunk_lengths_buffer.get_access<sam::read>(cgh),
-                stream_chunk_lengths.data());
-    });
-
     _pimpl->q.wait();
 
-    size_t stream_pos = file.file_header_length();
-    for (size_t hc_index = 0; hc_index < file.num_hypercubes(); ++hc_index) {
-        auto header_pos = stream_pos;
-        size_t chunk_bytes = stream_chunk_lengths[hc_index] * sizeof(bits_type);
-        stream_pos += chunk_bytes;
-        if (hc_index > 0) {
-            auto file_offset_address = static_cast<std::byte *>(stream)
-                    + (hc_index - 1) * sizeof(detail::file_offset_type);
-            auto file_offset = static_cast<detail::file_offset_type>(header_pos);
-            detail::store_aligned(file_offset_address, detail::endian_transform(file_offset));
-        }
-    }
-
-    if (file.num_hypercubes() > 0) {
-        auto file_offset_address = static_cast<char *>(stream)
-                + (file.num_hypercubes() - 1) * sizeof(detail::file_offset_type);
-        detail::store_aligned(file_offset_address, detail::endian_transform(stream_pos));
-    }
+    size_t stream_pos = file.file_header_length() + num_compressed_words * sizeof(bits_type);
     stream_pos += detail::pack_border(
             static_cast<char *>(stream) + stream_pos, data, profile::hypercube_side_length);
     return stream_pos;
