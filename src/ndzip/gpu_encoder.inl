@@ -282,26 +282,21 @@ size_t compact_zero_words(/* global */ Bits *__restrict out, /* local */ const B
         }
     }
 
-    return scratch[pout * n_columns + n_columns - 1];
+    return 1 + scratch[pout * n_columns + n_columns - 1];
 }
 
 
-template<typename Profile>
-size_t zero_bit_encode(/* global */ typename Profile::bits_type *__restrict stream,
-        /* local */ typename Profile::bits_type *__restrict cube,
-        /* local */ typename Profile::bits_type *__restrict scratch, sycl::nd_item<2> item) {
-    using bits_type = typename Profile::bits_type;
+template<typename Bits>
+size_t zero_bit_encode(/* local */ Bits *__restrict cube, /* global */ Bits *__restrict stream,
+        /* local */ Bits *__restrict scratch, size_t hc_size, sycl::nd_item<2> item) {
     using saf = sycl::access::fence_space;
 
-    auto side_length = Profile::hypercube_side_length;
-    auto hc_size = detail::ipow(side_length, Profile::dimensions);
-
-    for (size_t offset = 0; offset < hc_size; offset += bitsof<bits_type>) {
+    for (size_t offset = 0; offset < hc_size; offset += bitsof<Bits>) {
         transpose_bits(cube + offset, item);
     }
 
     auto out = stream;
-    for (size_t offset = 0; offset < hc_size; offset += bitsof<bits_type>) {
+    for (size_t offset = 0; offset < hc_size; offset += bitsof<Bits>) {
         item.barrier(saf::local_space);
         out += compact_zero_words(out, cube + offset, scratch, item);
     }
@@ -331,8 +326,12 @@ void compress_hypercubes(/* global */ const typename Profile::data_type *__restr
     item.barrier(saf::local_space);
     block_transform<Profile>(cube, item);
     item.barrier(saf::local_space);
-    stream_chunk_lengths[hc_index]
-            = zero_bit_encode<Profile>(stream_chunks + hc_index * chunk_size, cube, scratch, item);
+    auto l = zero_bit_encode<bits_type>(cube, stream_chunks + hc_index * chunk_size, scratch,
+            hc_size, item);
+    if (item.get_global_id(1) == 0)
+    printf("gpu type=%lu dims=%u hc_index=%lu length=%lu\n", sizeof(bits_type),
+            Profile::dimensions, hc_index, l*sizeof(bits_type));
+    stream_chunk_lengths[hc_index] = l;
 }
 
 

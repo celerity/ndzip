@@ -527,7 +527,7 @@ template<typename>
 class gpu_compact_zero_words_test_kernel;
 
 TEMPLATE_TEST_CASE(
-        "CPU and GPU bit zero-word elimination is identical", "[gpu]", uint32_t, uint64_t) {
+        "CPU and GPU zero-word compaction is identical", "[gpu]", uint32_t, uint64_t) {
     auto input = make_random_vector<TestType>(bitsof<TestType>);
     for (auto idx : {0, 12, 13, 29, static_cast<int>(bitsof<TestType> - 2)}) {
         input[idx] = 0;
@@ -541,47 +541,115 @@ TEMPLATE_TEST_CASE(
 
     buffer<TestType> input_buf{range<1>{input.size()}};
     q.submit([&](handler &cgh) {
-        cgh.copy(input.data(), input_buf.template get_access<sam::discard_write>(cgh));
+      cgh.copy(input.data(), input_buf.template get_access<sam::discard_write>(cgh));
     });
 
     std::vector<TestType> gpu_transformed(bitsof<TestType> * 2);
     buffer<TestType> output_buf{range<1>{gpu_transformed.size()}};
     q.submit([&](handler &cgh) {
-        cgh.fill(output_buf.template get_access<sam::discard_write>(cgh), TestType{0});
+      cgh.fill(output_buf.template get_access<sam::discard_write>(cgh), TestType{0});
     });
 
     const auto scratch_size = 3 * bitsof<TestType>;
     std::vector<TestType> scratch_dump(scratch_size);
     buffer<TestType> scratch_dump_buf{range<1>{scratch_size}};
     q.submit([&](handler &cgh) {
-        auto input_acc = input_buf.template get_access<sam::read>(cgh);
-        auto output_acc = output_buf.template get_access<sam::discard_write>(cgh);
-        auto local_in_acc
-                = accessor<TestType, 1, sam::read_write, sat::local>(bitsof<TestType>, cgh);
-        auto scratch_acc = accessor<TestType, 1, sam::read_write, sat::local>(scratch_size, cgh);
-        auto scratch_dump_acc = scratch_dump_buf.template get_access<sam::discard_write>(cgh);
-        cgh.parallel_for<gpu_compact_zero_words_test_kernel<TestType>>(
-                nd_range<2>{range<2>{1, NDZIP_WARP_SIZE}, range<2>{1, NDZIP_WARP_SIZE}},
-                [input_acc, output_acc, local_in_acc, scratch_size, scratch_acc, scratch_dump_acc](
-                        nd_item<2> item) {
-                    nd_memcpy(local_in_acc, input_acc, input_acc.get_range()[0], item);
-                    item.barrier(sycl::access::fence_space::local_space);
-                    detail::gpu::compact_zero_words<TestType>(output_acc.get_pointer(),
-                            local_in_acc.get_pointer(), scratch_acc.get_pointer(), item);
-                    item.barrier(sycl::access::fence_space::local_space);
-                    nd_memcpy(scratch_dump_acc, scratch_acc, scratch_size, item);
-                });
+      auto input_acc = input_buf.template get_access<sam::read>(cgh);
+      auto output_acc = output_buf.template get_access<sam::discard_write>(cgh);
+      auto local_in_acc
+              = accessor<TestType, 1, sam::read_write, sat::local>(bitsof<TestType>, cgh);
+      auto scratch_acc = accessor<TestType, 1, sam::read_write, sat::local>(scratch_size, cgh);
+      auto scratch_dump_acc = scratch_dump_buf.template get_access<sam::discard_write>(cgh);
+      cgh.parallel_for<gpu_compact_zero_words_test_kernel<TestType>>(
+              nd_range<2>{range<2>{1, NDZIP_WARP_SIZE}, range<2>{1, NDZIP_WARP_SIZE}},
+              [input_acc, output_acc, local_in_acc, scratch_size, scratch_acc, scratch_dump_acc](
+                      nd_item<2> item) {
+                nd_memcpy(local_in_acc, input_acc, input_acc.get_range()[0], item);
+                item.barrier(sycl::access::fence_space::local_space);
+                detail::gpu::compact_zero_words<TestType>(output_acc.get_pointer(),
+                                                          local_in_acc.get_pointer(), scratch_acc.get_pointer(), item);
+                item.barrier(sycl::access::fence_space::local_space);
+                nd_memcpy(scratch_dump_acc, scratch_acc, scratch_size, item);
+              });
     });
 
     q.submit([&](handler &cgh) {
-        cgh.copy(scratch_dump_buf.template get_access<sam::read>(cgh), scratch_dump.data());
+      cgh.copy(scratch_dump_buf.template get_access<sam::read>(cgh), scratch_dump.data());
     });
     q.submit([&](handler &cgh) {
-        cgh.copy(output_buf.template get_access<sam::read>(cgh), gpu_transformed.data());
+      cgh.copy(output_buf.template get_access<sam::read>(cgh), gpu_transformed.data());
     });
     q.wait();
 
     CHECK(gpu_transformed == cpu_transformed);
+}
+
+template<typename Bits>
+class gpu_hypercube_encoding_test_kernel;
+
+TEMPLATE_TEST_CASE(
+        "CPU and GPU hypercube encodings are equivalent", "[gpu]", uint32_t, uint64_t) {
+    const auto hc_size = 256;
+
+    auto input = make_random_vector<TestType>(hc_size);
+    for (size_t i = 0; i < hc_size; ++i) {
+        for (auto idx : {0, 12, 13, 29, static_cast<int>(bitsof<TestType> - 2)}) {
+            input[i] &= ~(TestType{1} << ((static_cast<unsigned>(idx) * (i / bitsof<TestType>)) % bitsof<TestType>));
+        }
+    }
+
+    detail::cpu::simd_aligned_buffer<TestType> cpu_cube(input.size());
+    memcpy(cpu_cube.data(), input.data(), input.size() * sizeof(TestType));
+    std::vector<TestType> cpu_stream(hc_size * 2);
+    auto cpu_length = detail::cpu::zero_bit_encode(cpu_cube.data(),
+            reinterpret_cast<std::byte*>(cpu_stream.data()), hc_size);
+
+    sycl::queue q;
+
+    buffer<TestType> input_buf{range<1>{hc_size}};
+    q.submit([&](handler &cgh) {
+        cgh.copy(input.data(), input_buf.template get_access<sam::discard_write>(cgh));
+    });
+
+    buffer<TestType> stream_buf(range<1>{hc_size * 2});
+    q.submit([&](handler &cgh) {
+        cgh.fill(stream_buf.template get_access<sam::discard_write>(cgh), TestType{0});
+    });
+
+    const auto scratch_size = 3 * bitsof<TestType>;
+    buffer<size_t> length_buf{range<1>{1}};
+    q.submit([&](handler &cgh) {
+        auto input_acc = input_buf.template get_access<sam::read>(cgh);
+        auto stream_acc = stream_buf.template get_access<sam::discard_write>(cgh);
+        auto cube_acc
+                = accessor<TestType, 1, sam::read_write, sat::local>(hc_size, cgh);
+        auto scratch_acc = accessor<TestType, 1, sam::read_write, sat::local>(scratch_size, cgh);
+        auto length_acc = length_buf.get_access<sam::discard_write>(cgh);
+        cgh.parallel_for<gpu_hypercube_encoding_test_kernel<TestType>>(
+                nd_range<2>{range<2>{1, NDZIP_WARP_SIZE}, range<2>{1, NDZIP_WARP_SIZE}},
+                [input_acc, stream_acc, cube_acc, hc_size, scratch_acc, length_acc](
+                        nd_item<2> item) {
+                    nd_memcpy(cube_acc, input_acc, hc_size, item);
+                    item.barrier(sycl::access::fence_space::local_space);
+                    auto l = detail::gpu::zero_bit_encode<TestType>(cube_acc.get_pointer(),
+                            stream_acc.get_pointer(), scratch_acc.get_pointer(), hc_size, item);
+                    item.barrier(sycl::access::fence_space::local_space);
+                    if (item.get_global_id() == sycl::id<2>{0, 0}) { length_acc[0] = l; }
+                });
+    });
+
+    std::vector<TestType> gpu_stream(stream_buf.get_range()[0]);
+    q.submit([&](handler &cgh) {
+      cgh.copy(stream_buf.template get_access<sam::read>(cgh), gpu_stream.data());
+    });
+    size_t gpu_length;
+    q.submit([&](handler &cgh) {
+        cgh.copy(length_buf.template get_access<sam::read>(cgh), &gpu_length);
+    });
+    q.wait();
+
+    CHECK(sizeof(TestType) * gpu_length == cpu_length);
+    CHECK(gpu_stream == cpu_stream);
 }
 
 #endif
