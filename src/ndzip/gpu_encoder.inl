@@ -87,12 +87,11 @@ void load_hypercube(/* global */ const typename Profile::data_type *__restrict d
     auto n_threads = item.get_local_range(1);
     auto tid = item.get_local_id(1);
 
-    size_t global_idx
-            = linear_offset(hc_offset, data_size) + global_offset<Profile>(tid, data_size);
-    size_t global_stride = global_offset<Profile>(n_threads, data_size);
+    size_t initial_offset = linear_offset(hc_offset, data_size);
     for (size_t local_idx = tid; local_idx < hc_size; local_idx += n_threads) {
+        // TODO re-calculating the GO every iteration is probably painfully slow
+        size_t global_idx = initial_offset + global_offset<Profile>(local_idx, data_size);
         cube[local_idx] = bit_cast<typename Profile::bits_type>(data[global_idx]);
-        global_idx += global_stride;
     }
 }
 
@@ -322,16 +321,12 @@ void compress_hypercubes(/* global */ const typename Profile::data_type *__restr
     const auto chunk_size
             = (Profile::compressed_block_size_bound + sizeof(bits_type) - 1) / sizeof(bits_type);
 
-    load_hypercube<Profile>(data + hc_index * hc_size, cube, data_size, item);
+    load_hypercube<Profile>(data, cube, data_size, item);
     item.barrier(saf::local_space);
     block_transform<Profile>(cube, item);
     item.barrier(saf::local_space);
-    auto l = zero_bit_encode<bits_type>(cube, stream_chunks + hc_index * chunk_size, scratch,
-            hc_size, item);
-    if (item.get_global_id(1) == 0)
-    printf("gpu type=%lu dims=%u hc_index=%lu length=%lu\n", sizeof(bits_type),
-            Profile::dimensions, hc_index, l*sizeof(bits_type));
-    stream_chunk_lengths[hc_index] = l;
+    stream_chunk_lengths[hc_index] = zero_bit_encode<bits_type>(
+            cube, stream_chunks + hc_index * chunk_size, scratch, hc_size, item);
 }
 
 

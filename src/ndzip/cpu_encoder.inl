@@ -628,11 +628,8 @@ size_t ndzip::cpu_encoder<T, Dims>::compress(
         auto header_pos = stream_pos;
         detail::cpu::load_hypercube<profile>(hc_offset, data, cube.data());
         detail::cpu::block_transform<profile>(cube.data());
-        auto l = detail::cpu::zero_bit_encode<bits_type>(
+        stream_pos += detail::cpu::zero_bit_encode<bits_type>(
                 cube.data(), static_cast<std::byte *>(stream) + stream_pos, hc_size);
-      printf("cpu type=%lu dims=%u hc_index=%lu length=%lu\n", sizeof(bits_type),
-             profile::dimensions, hc_index, l);
-        stream_pos += l;
 
         if (hc_index > 0) {
             auto file_offset_address = static_cast<std::byte *>(stream)
