@@ -330,6 +330,115 @@ void compress_hypercubes(/* global */ const typename Profile::data_type *__restr
 }
 
 
+template<typename Scalar>
+void inclusive_prefix_sum_reduce(
+        /* global */ Scalar *__restrict big, /* global */ Scalar *__restrict small,
+        /* local */ Scalar *__restrict scratch, size_t count, sycl::nd_item<1> item) {
+    using saf = sycl::access::fence_space;
+
+    const size_t global_id = item.get_global_id(0);
+    const size_t local_id = item.get_local_id(0);
+    const size_t local_size = item.get_local_range(0);
+
+    scratch[local_id] = global_id < count ? big[global_id] : 0;
+    item.barrier(saf::local_space);
+
+    // Hillis-steele short-span prefix sum
+    size_t pout = 0;
+    size_t pin = 1;
+    for (size_t offset = 1; offset < local_size; offset <<= 1u) {
+        pout = 1 - pout;
+        pin = 1 - pout;
+        if (local_id >= offset) {
+            scratch[pout * local_size + local_id] = scratch[pin * local_size + local_id]
+                    + scratch[pin * local_size + local_id - offset];
+        } else {
+            scratch[pout * local_size + local_id] = scratch[pin * local_size + local_id];
+        }
+        item.barrier(saf::local_space);
+    }
+
+    const Scalar local_result = scratch[pout * local_size + local_id];
+    if (global_id < count) { big[global_id] = local_result; }
+    if (local_id == local_size - 1) { small[item.get_group(0)] = local_result; }
+}
+
+
+template<typename Scalar>
+void inclusive_prefix_sum_expand(/* global */ Scalar *__restrict small,
+        /* global */ Scalar *__restrict big, size_t count, sycl::nd_item<1> item) {
+    // TODO range check (necessary? or can it be eliminated by increasing buffer size?)
+    // `+ get_local_size`: We skip the first WG since `small` orginates from an inclusive, not an
+    // exclusive scan
+    const size_t global_id = item.get_global_id(0) + item.get_local_range(0);
+    if (global_id < count) { big[global_id] += small[item.get_group(0)]; }
+}
+
+
+template<typename DataT>
+class hierarchical_inclusive_prefix_sum {
+  public:
+    hierarchical_inclusive_prefix_sum(size_t elems, size_t local_size) : _local_size(local_size) {
+        while (elems > 1) {
+            elems = (elems + local_size - 1) / local_size;
+            _intermediate_buffers.emplace_back(elems);
+        }
+    }
+
+    void operator()(sycl::queue &queue, sycl::buffer<DataT> &in_out_buffer) const {
+        using sam = sycl::access::mode;
+        using sat = sycl::access::target;
+
+        for (size_t i = 0; i < _intermediate_buffers.size(); ++i) {
+            auto &big_buffer = i ? _intermediate_buffers[i - 1] : in_out_buffer;
+            auto &small_buffer = _intermediate_buffers[i];
+            const auto global_range = sycl::range<1>{
+                    (big_buffer.get_count() + _local_size - 1) / _local_size * _local_size};
+            const auto local_range = sycl::range<1>{_local_size};
+            const auto scratch_range = sycl::range<1>{_local_size * 2};
+            queue.submit([&](sycl::handler &cgh) {
+                auto big_acc = big_buffer.template get_access<sam::read_write>(cgh);
+                auto small_acc = small_buffer.template get_access<sam::discard_write>(cgh);
+                auto scratch_acc
+                        = sycl::accessor<DataT, 1, sam::read_write, sat::local>{scratch_range, cgh};
+                cgh.parallel_for<reduction_kernel>(sycl::nd_range<1>(global_range, local_range),
+                        [big_acc, small_acc, scratch_acc, count = big_buffer.get_count()](
+                                sycl::nd_item<1> item) {
+                            inclusive_prefix_sum_reduce<DataT>(big_acc.get_pointer(),
+                                    small_acc.get_pointer(), scratch_acc.get_pointer(), count,
+                                    item);
+                        });
+            });
+        }
+
+        for (size_t i = 1; i < _intermediate_buffers.size(); ++i) {
+            auto ii = _intermediate_buffers.size() - 1 - i;
+            auto &small_buf = _intermediate_buffers[ii];
+            auto &big_buf = ii > 0 ? _intermediate_buffers[ii - 1] : in_out_buffer;
+            const auto global_range = sycl::range<1>{
+                    (big_buf.get_count() + _local_size - 1) / _local_size * _local_size};
+            const auto local_range = sycl::range<1>{_local_size};
+            queue.submit([&](sycl::handler &cgh) {
+                auto small_acc = small_buf.template get_access<sam::read_write>(cgh);
+                auto big_acc = big_buf.template get_access<sam::discard_write>(cgh);
+                cgh.parallel_for<expansion_kernel>(sycl::nd_range<1>(global_range, local_range),
+                        [small_acc, big_acc, count = big_buf.get_count()](sycl::nd_item<1> item) {
+                            inclusive_prefix_sum_expand<DataT>(
+                                    small_acc.get_pointer(), big_acc.get_pointer(), count, item);
+                        });
+            });
+        }
+    }
+
+  private:
+    class reduction_kernel;
+    class expansion_kernel;
+
+    size_t _local_size;
+    mutable std::vector<sycl::buffer<DataT>> _intermediate_buffers;
+};
+
+
 // SYCL kernel names
 template<typename, unsigned>
 class block_compression_kernel;

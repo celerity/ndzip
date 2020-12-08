@@ -289,6 +289,7 @@ TEMPLATE_TEST_CASE("encoder reproduces the bit-identical array", "[encoder]",
 
 using sam = sycl::access::mode;
 using sat = sycl::access::target;
+using saf = sycl::access::fence_space;
 using sycl::accessor, sycl::nd_range, sycl::buffer, sycl::nd_item, sycl::range, sycl::id,
         sycl::handler;
 
@@ -344,7 +345,7 @@ load_and_dump_hypercube(const slice<const typename Profile::data_type, Profile::
                         nd_item<2> item) {
                     detail::gpu::load_hypercube<Profile>(
                             data_acc.get_pointer(), local_acc.get_pointer(), data_size, item);
-                    item.barrier(sycl::access::fence_space::local_space);
+                    item.barrier(saf::local_space);
                     nd_memcpy(result_acc, local_acc, hc_size, item);
                 });
     });
@@ -480,9 +481,9 @@ static void test_cpu_gpu_transform_equality(
                 nd_range<2>{range<2>{1, NDZIP_WARP_SIZE}, range<2>{1, NDZIP_WARP_SIZE}},
                 [global_acc, local_acc, hc_size = hc_size, gpu_transform](nd_item<2> item) {
                     nd_memcpy(local_acc, global_acc, hc_size, item);
-                    item.barrier(sycl::access::fence_space::local_space);
+                    item.barrier(saf::local_space);
                     gpu_transform(local_acc.get_pointer(), item);
-                    item.barrier(sycl::access::fence_space::local_space);
+                    item.barrier(saf::local_space);
                     nd_memcpy(global_acc, local_acc, hc_size, item);
                 });
     });
@@ -595,10 +596,10 @@ TEMPLATE_TEST_CASE("CPU and GPU zero-word compaction is identical", "[gpu]", uin
                 [input_acc, output_acc, local_in_acc, scratch_size, scratch_acc, scratch_dump_acc](
                         nd_item<2> item) {
                     nd_memcpy(local_in_acc, input_acc, input_acc.get_range()[0], item);
-                    item.barrier(sycl::access::fence_space::local_space);
+                    item.barrier(saf::local_space);
                     detail::gpu::compact_zero_words<TestType>(output_acc.get_pointer(),
                             local_in_acc.get_pointer(), scratch_acc.get_pointer(), item);
-                    item.barrier(sycl::access::fence_space::local_space);
+                    item.barrier(saf::local_space);
                     nd_memcpy(scratch_dump_acc, scratch_acc, scratch_size, item);
                 });
     });
@@ -659,10 +660,10 @@ TEMPLATE_TEST_CASE("CPU and GPU hypercube encodings are equivalent", "[gpu]", ui
                 [input_acc, stream_acc, cube_acc, hc_size, scratch_acc, length_acc](
                         nd_item<2> item) {
                     nd_memcpy(cube_acc, input_acc, hc_size, item);
-                    item.barrier(sycl::access::fence_space::local_space);
+                    item.barrier(saf::local_space);
                     auto l = detail::gpu::zero_bit_encode<TestType>(cube_acc.get_pointer(),
                             stream_acc.get_pointer(), scratch_acc.get_pointer(), hc_size, item);
-                    item.barrier(sycl::access::fence_space::local_space);
+                    item.barrier(saf::local_space);
                     if (item.get_global_id() == sycl::id<2>{0, 0}) { length_acc[0] = l; }
                 });
     });
@@ -679,6 +680,32 @@ TEMPLATE_TEST_CASE("CPU and GPU hypercube encodings are equivalent", "[gpu]", ui
 
     CHECK(sizeof(TestType) * gpu_length == cpu_length);
     CHECK(gpu_stream == cpu_stream);
+}
+
+
+TEST_CASE("hierarchical_inclusive_prefix_sum produces the expected results", "[gpu]") {
+    std::vector<size_t> input(1'000'000);
+    std::iota(input.begin(), input.end(), size_t{});
+
+    std::vector<size_t> cpu_prefix_sum(input.size());
+    std::inclusive_scan(input.begin(), input.end(), cpu_prefix_sum.begin());
+
+    sycl::buffer<size_t> prefix_sum_buffer(sycl::range<1>(input.size()));
+    detail::gpu::hierarchical_inclusive_prefix_sum<size_t> gpu_prefix_sum_operator(input.size(), 256);
+    sycl::queue q;
+    q.submit([&](sycl::handler &cgh) {
+        cgh.copy(input.data(), prefix_sum_buffer.get_access<sam::discard_write>(cgh));
+    });
+
+    gpu_prefix_sum_operator(q, prefix_sum_buffer);
+
+    std::vector<size_t> gpu_prefix_sum(input.size());
+    q.submit([&](sycl::handler &cgh) {
+        cgh.copy(prefix_sum_buffer.get_access<sam::read>(cgh), gpu_prefix_sum.data());
+    });
+    q.wait();
+
+    CHECK(gpu_prefix_sum == cpu_prefix_sum);
 }
 
 #endif
