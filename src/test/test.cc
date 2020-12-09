@@ -545,15 +545,18 @@ TEMPLATE_TEST_CASE("CPU and GPU bit transposition are identical", "[gpu]", uint3
 template<typename>
 class gpu_compact_zero_words_test_kernel;
 
+template<typename>
+class gpu_expand_zero_words_test_kernel;
+
 TEMPLATE_TEST_CASE("CPU and GPU zero-word compaction is identical", "[gpu]", uint32_t, uint64_t) {
     auto input = make_random_vector<TestType>(bitsof<TestType>);
     for (auto idx : {0, 12, 13, 29, static_cast<int>(bitsof<TestType> - 2)}) {
         input[idx] = 0;
     }
 
-    std::vector<TestType> cpu_transformed(bitsof<TestType> * 2);
+    std::vector<TestType> cpu_compacted(bitsof<TestType> * 2);
     detail::cpu::compact_zero_words(
-            input.data(), reinterpret_cast<std::byte *>(cpu_transformed.data()));
+            input.data(), reinterpret_cast<std::byte *>(cpu_compacted.data()));
 
     sycl::queue q;
 
@@ -562,44 +565,83 @@ TEMPLATE_TEST_CASE("CPU and GPU zero-word compaction is identical", "[gpu]", uin
         cgh.copy(input.data(), input_buf.template get_access<sam::discard_write>(cgh));
     });
 
-    std::vector<TestType> gpu_transformed(bitsof<TestType> * 2);
-    buffer<TestType> output_buf{range<1>{gpu_transformed.size()}};
+    std::vector<TestType> gpu_compacted(bitsof<TestType> * 2);
+    buffer<TestType> compacted_buf{range<1>{gpu_compacted.size()}};
     q.submit([&](handler &cgh) {
-        cgh.fill(output_buf.template get_access<sam::discard_write>(cgh), TestType{0});
+        cgh.fill(compacted_buf.template get_access<sam::discard_write>(cgh), TestType{0});
     });
 
     const auto scratch_size = 3 * bitsof<TestType>;
     std::vector<TestType> scratch_dump(scratch_size);
-    buffer<TestType> scratch_dump_buf{range<1>{scratch_size}};
     q.submit([&](handler &cgh) {
         auto input_acc = input_buf.template get_access<sam::read>(cgh);
-        auto output_acc = output_buf.template get_access<sam::discard_write>(cgh);
+        auto output_acc = compacted_buf.template get_access<sam::write>(cgh);
         auto local_in_acc
                 = accessor<TestType, 1, sam::read_write, sat::local>(bitsof<TestType>, cgh);
         auto scratch_acc = accessor<TestType, 1, sam::read_write, sat::local>(scratch_size, cgh);
-        auto scratch_dump_acc = scratch_dump_buf.template get_access<sam::discard_write>(cgh);
         cgh.parallel_for<gpu_compact_zero_words_test_kernel<TestType>>(
                 detail::gpu::hypercube_range{1},
-                [input_acc, output_acc, local_in_acc, scratch_size, scratch_acc, scratch_dump_acc](
+                [input_acc, output_acc, local_in_acc, scratch_acc](
                         detail::gpu::hypercube_item item) {
                     detail::gpu::nd_memcpy(local_in_acc, input_acc, input_acc.get_range()[0], item);
                     item.local_memory_barrier();
                     detail::gpu::compact_zero_words<TestType>(output_acc.get_pointer(),
                             local_in_acc.get_pointer(), scratch_acc.get_pointer(), item);
-                    item.local_memory_barrier();
-                    detail::gpu::nd_memcpy(scratch_dump_acc, scratch_acc, scratch_size, item);
                 });
     });
 
     q.submit([&](handler &cgh) {
-        cgh.copy(scratch_dump_buf.template get_access<sam::read>(cgh), scratch_dump.data());
-    });
-    q.submit([&](handler &cgh) {
-        cgh.copy(output_buf.template get_access<sam::read>(cgh), gpu_transformed.data());
+        cgh.copy(compacted_buf.template get_access<sam::read>(cgh), gpu_compacted.data());
     });
     q.wait();
 
-    CHECK(gpu_transformed == cpu_transformed);
+    CHECK(gpu_compacted == cpu_compacted);
+}
+
+
+TEMPLATE_TEST_CASE("GPU zero-word expansion works", "[gpu]", uint32_t, uint64_t) {
+    auto input = make_random_vector<TestType>(bitsof<TestType>);
+    for (auto idx : {0, 12, 13, 29, static_cast<int>(bitsof<TestType> - 2)}) {
+        input[idx] = 0;
+    }
+
+    std::vector<TestType> cpu_compacted(bitsof<TestType>);
+    detail::cpu::compact_zero_words(
+            input.data(), reinterpret_cast<std::byte *>(cpu_compacted.data()));
+
+    sycl::queue q;
+
+    buffer<TestType> compacted_buf{range<1>{cpu_compacted.size()}};
+    q.submit([&](handler &cgh) {
+      cgh.copy(cpu_compacted.data(), compacted_buf.template get_access<sam::discard_write>());
+    });
+
+    std::vector<TestType> gpu_expanded(bitsof<TestType>);
+    buffer<TestType> expanded_buf{range<1>{gpu_expanded.size()}};
+    const auto scratch_size = 2 * bitsof<TestType>;
+    q.submit([&](handler &cgh) {
+      auto input_acc = compacted_buf.template get_access<sam::read>(cgh);
+      auto output_acc = expanded_buf.template get_access<sam::write>(cgh);
+      auto local_out_acc
+              = accessor<TestType, 1, sam::read_write, sat::local>(bitsof<TestType>, cgh);
+      auto scratch_acc = accessor<TestType, 1, sam::read_write, sat::local>(scratch_size, cgh);
+      cgh.parallel_for<gpu_expand_zero_words_test_kernel<TestType>>(
+              detail::gpu::hypercube_range{1},
+              [input_acc, output_acc, local_out_acc, scratch_acc](
+                      detail::gpu::hypercube_item item) {
+                detail::gpu::expand_zero_words<TestType>(local_out_acc.get_pointer(),
+                                                          input_acc.get_pointer(), scratch_acc.get_pointer(), item);
+                item.local_memory_barrier();
+                detail::gpu::nd_memcpy(output_acc, local_out_acc, output_acc.get_range()[0], item);
+              });
+    });
+
+    q.submit([&](handler &cgh) {
+      cgh.copy(expanded_buf.template get_access<sam::read>(cgh), gpu_expanded.data());
+    });
+    q.wait();
+
+    CHECK(gpu_expanded == input);
 }
 
 template<typename Bits>

@@ -226,10 +226,10 @@ size_t global_offset(size_t local_offset, extent<Profile::dimensions> global_siz
     return global_offset;
 }
 
-template<typename Profile>
-void load_hypercube(/* global */ const typename Profile::data_type *__restrict data,
-        /* local */ typename Profile::bits_type *__restrict cube,
-        extent<Profile::dimensions> data_size, hypercube_item item) {
+
+template<typename Profile, typename F>
+void distribute_for_hypercube_indices(extent<Profile::dimensions> data_size, hypercube_item item,
+        F &&f) {
     auto side_length = Profile::hypercube_side_length;
     auto hc_size = ipow(side_length, Profile::dimensions);
     auto hc_offset
@@ -237,11 +237,31 @@ void load_hypercube(/* global */ const typename Profile::data_type *__restrict d
 
     size_t initial_offset = linear_offset(hc_offset, data_size);
     for (size_t local_idx = item.thread_id(); local_idx < hc_size;
-            local_idx += item.num_threads()) {
+         local_idx += item.num_threads()) {
         // TODO re-calculating the GO every iteration is probably painfully slow
         size_t global_idx = initial_offset + global_offset<Profile>(local_idx, data_size);
-        cube[local_idx] = bit_cast<typename Profile::bits_type>(data[global_idx]);
+        f(global_idx, local_idx);
     }
+}
+
+
+template<typename Profile>
+void load_hypercube(/* global */ const typename Profile::data_type *__restrict data,
+        /* local */ typename Profile::bits_type *__restrict cube,
+                                 extent<Profile::dimensions> data_size, hypercube_item item) {
+    distribute_for_hypercube_indices<Profile>(data_size, item, [&](size_t global_idx, size_t local_idx) {
+      cube[local_idx] = bit_cast<typename Profile::bits_type>(data[global_idx]);
+    });
+}
+
+
+template<typename Profile>
+void store_hypercube(/* local */ const typename Profile::bits_type *__restrict cube,
+        /* global */ typename Profile::data_type *__restrict data,
+        extent<Profile::dimensions> data_size, hypercube_item item) {
+    distribute_for_hypercube_indices<Profile>(data_size, item, [&](size_t global_idx, size_t local_idx) {
+      data[global_idx] = bit_cast<typename Profile::bits_type>(cube[local_idx]);
+    });
 }
 
 
@@ -418,6 +438,47 @@ size_t zero_bit_encode(/* local */ Bits *__restrict cube, /* global */ Bits *__r
 }
 
 
+template<typename Bits>
+size_t expand_zero_words(/* local */ Bits *__restrict out, /* global */ const Bits *__restrict in,
+        /* local */ Bits *__restrict scratch, hypercube_item item) {
+    constexpr auto n_columns = bitsof<Bits>;
+
+    auto head = in[0];
+    for (size_t i = item.thread_id(); i < n_columns; i += item.num_threads()) {
+        scratch[i] = (head >> i) & Bits{1};
+    }
+
+    item.local_memory_barrier();
+
+    local_inclusive_prefix_sum(scratch, n_columns, item);
+
+    for (size_t i = item.thread_id(); i < n_columns; i += item.num_threads()) {
+        if (((head >> i) & Bits{1}) != 0) {
+            out[i] = in[scratch[i]];  // +1 from header offset and -1 from inclusive scan cancel
+        } else {
+            out[i] = 0;
+        }
+    }
+
+    return 1 + scratch[n_columns - 1];
+}
+
+
+template<typename Bits>
+void zero_bit_decode(/* global */ const Bits *__restrict stream, /* local */ Bits *__restrict cube,
+        /* local */ Bits *__restrict scratch, size_t hc_size, hypercube_item item) {
+    auto in = stream;
+    for (size_t offset = 0; offset < hc_size; offset += bitsof<Bits>) {
+        in += expand_zero_words(cube + offset, in, scratch, item);
+        item.local_memory_barrier();
+    }
+
+    for (size_t offset = 0; offset < hc_size; offset += bitsof<Bits>) {
+        transpose_bits(cube + offset, item);
+    }
+}
+
+
 template<typename Profile>
 void compress_hypercubes(/* global */ const typename Profile::data_type *__restrict data,
         /* global */ typename Profile::bits_type *__restrict stream_chunks,
@@ -430,7 +491,7 @@ void compress_hypercubes(/* global */ const typename Profile::data_type *__restr
     const auto hc_size = detail::ipow(side_length, Profile::dimensions);
     const auto cube = local_memory;
     const auto scratch = local_memory + hc_size;
-    const auto chunk_size
+    const auto max_chunk_size
             = (Profile::compressed_block_size_bound + sizeof(bits_type) - 1) / sizeof(bits_type);
 
     load_hypercube<Profile>(data, cube, data_size, item);
@@ -438,7 +499,7 @@ void compress_hypercubes(/* global */ const typename Profile::data_type *__restr
     block_transform<Profile>(cube, item);
     item.local_memory_barrier();
     stream_chunk_lengths[item.hc_index()] = zero_bit_encode<bits_type>(
-            cube, stream_chunks + item.hc_index() * chunk_size, scratch, hc_size, item);
+            cube, stream_chunks + item.hc_index() * max_chunk_size, scratch, hc_size, item);
 }
 
 
@@ -456,6 +517,30 @@ void compact_stream(/* global */ typename Profile::bits_type *stream,
     const auto source = stream_chunks + item.hc_index() * max_chunk_size;
     const auto dest = stream + this_chunk_offset;
     detail::gpu::nd_memcpy(dest, source, this_chunk_size, item);
+}
+
+
+template<typename Profile>
+void decompress_hypercubes(/* global */ const typename Profile::bits_type *__restrict stream,
+        /* global */ const typename Profile::data_type *__restrict data,
+        /* local */ typename Profile::bits_type *__restrict local_memory,
+                                        extent<Profile::dimensions> data_size, hypercube_item item) {
+    using bits_type = typename Profile::bits_type;
+
+    const auto side_length = Profile::hypercube_side_length;
+    const auto hc_size = detail::ipow(side_length, Profile::dimensions);
+    const auto cube = local_memory;
+    const auto scratch = local_memory + hc_size;
+
+    // TODO is this reinterpret_cast sane?
+    const auto offset_table = reinterpret_cast<const file_offset_type*>(stream);
+    const auto chunk_offset = item.hc_index() ? offset_table[item.hc_index() - 1] : 0;
+
+    zero_bit_decode<bits_type>(stream + chunk_offset / 4, cube, hc_size, item);
+    item.local_memory_barrier();
+    inverse_block_transform<Profile>(cube, item);
+    item.local_memory_barrier();
+    store_hypercube<Profile>(cube, data, data_size, item);
 }
 
 
