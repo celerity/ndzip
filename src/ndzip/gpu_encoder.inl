@@ -9,9 +9,6 @@
 #include <SYCL/sycl.hpp>
 
 
-#define NDZIP_WARP_SIZE (size_t{32})
-
-
 namespace ndzip::detail::gpu {
 
 template<typename T>
@@ -51,320 +48,99 @@ template<typename U, typename T>
 }
 
 
-template<typename DestAccessor, typename SourceAccessor>
+template<int Dims>
+class work_item : public sycl::nd_item<Dims> {
+  public:
+    work_item(const sycl::nd_item<Dims> &nd_item)
+        : sycl::nd_item<Dims>(nd_item) {}  // NOLINT(google-explicit-constructor)
+
+    size_t num_threads() const { return this->get_local_range(Dims - 1); }
+    size_t thread_id() const { return this->get_local_id(Dims - 1); }
+    void local_memory_barrier() const { this->barrier(sycl::access::fence_space::local_space); }
+};
+
+template<int Dims>
+work_item(const sycl::nd_item<Dims> &) -> work_item<Dims>;
+
+
+constexpr size_t num_threads_per_hypercube = 32;
+
+class hypercube_item : public work_item<2> {
+  public:
+    hypercube_item(const sycl::nd_item<2> &nd_item)  // NOLINT(google-explicit-constructor)
+        : work_item<2>(nd_item) {}
+
+    constexpr size_t
+    num_threads() const {  // NOLINT(readability-convert-member-functions-to-static)
+        return num_threads_per_hypercube;
+    }
+
+    size_t hc_index() { return this->get_global_id(0); }
+    size_t num_hypercubes() { return this->get_global_range(0); }
+};
+
+class hypercube_range : public sycl::nd_range<2> {
+  public:
+    explicit hypercube_range(size_t num_hypercubes, size_t first_hc_index = 0)
+        : sycl::nd_range<2>{sycl::range<2>{num_hypercubes, num_threads_per_hypercube},
+                sycl::range<2>{1, num_threads_per_hypercube}, sycl::id<2>{first_hc_index, 0}} {}
+};
+
+
+template<typename DestAccessor, typename SourceAccessor, int ItemDims>
 void nd_memcpy(const DestAccessor &dest, const SourceAccessor &source, size_t count,
-        sycl::nd_item<2> item) {
-    auto n_threads = item.get_local_range(1);
-    auto tid = item.get_local_id(1);
-    for (size_t i = tid; i < count; i += n_threads) {
+        work_item<ItemDims> item) {
+    for (size_t i = item.thread_id(); i < count; i += item.num_threads()) {
         dest[i] = source[i];
     }
 }
 
 
-template<typename Profile>
-size_t global_offset(size_t local_offset, extent<Profile::dimensions> global_size) {
-    size_t global_offset = 0;
-    size_t global_stride = 1;
-    for (unsigned d = 0; d < Profile::dimensions; ++d) {
-        global_offset += global_stride * (local_offset % Profile::hypercube_side_length);
-        local_offset /= Profile::hypercube_side_length;
-        global_stride *= global_size[Profile::dimensions - 1 - d];
-    }
-    return global_offset;
-}
-
-template<typename Profile>
-void load_hypercube(/* global */ const typename Profile::data_type *__restrict data,
-        /* local */ typename Profile::bits_type *__restrict cube,
-        extent<Profile::dimensions> data_size, sycl::nd_item<2> item) {
-    auto side_length = Profile::hypercube_side_length;
-    auto hc_index = item.get_global_id(0);
-    auto hc_size = ipow(side_length, Profile::dimensions);
-    auto hc_offset = detail::extent_from_linear_id(hc_index, data_size / side_length) * side_length;
-    auto n_threads = item.get_local_range(1);
-    auto tid = item.get_local_id(1);
-
-    size_t initial_offset = linear_offset(hc_offset, data_size);
-    for (size_t local_idx = tid; local_idx < hc_size; local_idx += n_threads) {
-        // TODO re-calculating the GO every iteration is probably painfully slow
-        size_t global_idx = initial_offset + global_offset<Profile>(local_idx, data_size);
-        cube[local_idx] = bit_cast<typename Profile::bits_type>(data[global_idx]);
-    }
-}
-
-
-template<typename Profile>
-void block_transform(/* local */ typename Profile::bits_type *x, sycl::nd_item<2> item) {
-    using saf = sycl::access::fence_space;
-
-    constexpr auto n = Profile::hypercube_side_length;
-    constexpr auto dims = Profile::dimensions;
-    constexpr auto hc_size = ipow(n, dims);
-
-    auto n_threads = item.get_local_range(1);
-    auto tid = item.get_local_id(1);
-
-    for (size_t i = tid; i < hc_size; i += n_threads) {
-        x[i] = rotate_left_1(x[i]);
-    }
-
-    item.barrier(saf::local_space);
-
-    if constexpr (dims == 1) {
-        if (tid == 0) { block_transform_step(x, n, 1); }
-    } else if constexpr (dims == 2) {
-        for (size_t i = tid; i < n; i += n_threads) {
-            const auto ii = n * i;
-            block_transform_step(x + ii, n, 1);
-        }
-        item.barrier(saf::local_space);
-        for (size_t i = tid; i < n; i += n_threads) {
-            block_transform_step(x + i, n, n);
-        }
-    } else if constexpr (dims == 3) {
-        for (size_t i = tid; i < n; i += n_threads) {
-            const auto ii = n * n * i;
-            for (size_t j = 0; j < n; ++j) {
-                block_transform_step(x + ii + j, n, n);
-            }
-        }
-        item.barrier(saf::local_space);
-        for (size_t i = tid; i < n * n; i += n_threads) {
-            const auto ii = n * i;
-            block_transform_step(x + ii, n, 1);
-        }
-        item.barrier(saf::local_space);
-        for (size_t i = tid; i < n * n; i += n_threads) {
-            block_transform_step(x + i, n, n * n);
-        }
-    }
-
-    item.barrier(saf::local_space);
-
-    for (size_t i = tid; i < hc_size; i += n_threads) {
-        x[i] = complement_negative(x[i]);
-    }
-}
-
-
-template<typename Profile>
-void inverse_block_transform(/* local */ typename Profile::bits_type *x, sycl::nd_item<2> item) {
-    using saf = sycl::access::fence_space;
-
-    constexpr auto n = Profile::hypercube_side_length;
-    constexpr auto dims = Profile::dimensions;
-    constexpr auto hc_size = ipow(n, dims);
-
-    auto n_threads = item.get_local_range(1);
-    auto tid = item.get_local_id(1);
-
-    for (size_t i = tid; i < hc_size; i += n_threads) {
-        x[i] = complement_negative(x[i]);
-    }
-
-    item.barrier(saf::local_space);
-
-    if (dims == 1) {
-        if (tid == 0) { inverse_block_transform_step(x, n, 1); }
-    } else if (dims == 2) {
-        for (size_t i = tid; i < n; i += n_threads) {
-            inverse_block_transform_step(x + i, n, n);
-        }
-        item.barrier(saf::local_space);
-        for (size_t i = tid; i < n; i += n_threads) {
-            auto ii = i * n;
-            inverse_block_transform_step(x + ii, n, 1);
-        }
-    } else if (dims == 3) {
-        for (size_t i = tid; i < n * n; i += n_threads) {
-            inverse_block_transform_step(x + i, n, n * n);
-        }
-        item.barrier(saf::local_space);
-        for (size_t i = tid; i < n * n; i += n_threads) {
-            auto ii = i * n;
-            inverse_block_transform_step(x + ii, n, 1);
-        }
-        item.barrier(saf::local_space);
-        for (size_t i = tid; i < n; i += n_threads) {
-            auto ii = i * n * n;
-            for (size_t j = 0; j < n; ++j) {
-                inverse_block_transform_step(x + ii + j, n, n);
-            }
-        }
-    }
-
-    item.barrier(saf::local_space);
-
-    for (size_t i = tid; i < hc_size; i += n_threads) {
-        x[i] = rotate_right_1(x[i]);
-    }
-}
-
-
-template<typename Bits>
-void transpose_bits(/* local */ Bits *cube, sycl::nd_item<2> item) {
-    using saf = sycl::access::fence_space;
-
-    constexpr auto n_threads = NDZIP_WARP_SIZE;
-    constexpr auto cols_per_thread = bitsof<Bits> / n_threads;
-    auto tid = item.get_local_id(1);
-
-    Bits columns[cols_per_thread] = {0};
-    for (size_t k = 0; k < bitsof<Bits>; ++k) {
-        auto row = cube[k];
-        for (size_t c = 0; c < cols_per_thread; ++c) {
-            size_t i = c * n_threads + tid;
-            columns[c] |= ((row >> (bitsof<Bits> - 1 - i)) & Bits{1}) << (bitsof<Bits> - 1 - k);
-        }
-    }
-
-    item.barrier(saf::local_space);
-
-    for (size_t c = 0; c < cols_per_thread; ++c) {
-        size_t i = c * n_threads + tid;
-        cube[i] = columns[c];
-    }
-}
-
-
-template<typename Bits>
-size_t compact_zero_words(/* global */ Bits *__restrict out, /* local */ const Bits *__restrict in,
-        /* local */ Bits *__restrict scratch, sycl::nd_item<2> item) {
-    using saf = sycl::access::fence_space;
-
-    constexpr auto n_columns = bitsof<Bits>;
-    constexpr auto n_threads = NDZIP_WARP_SIZE;
-    auto tid = item.get_local_id(1);
-
-    for (size_t i = tid; i < n_columns; i += n_threads) {
-        scratch[i] = in[i] != 0;
-        // TODO this is dumb, we can just OR values before transposition
-        scratch[2 * n_columns + i] = Bits{in[i] != 0} << i;
-    }
-
-    item.barrier(saf::local_space);
-
+template<typename Scalar, int ItemDims>
+void local_inclusive_prefix_sum(
+        /* local */ Scalar *scratch, size_t n_elements, work_item<ItemDims> item) {
     // Hillis-Steele (short-span) prefix sum
     size_t pout = 0;
     size_t pin;
-    for (size_t offset = 1; offset < n_columns; offset <<= 1u) {
+    for (size_t offset = 1; offset < n_elements || pout > 0; offset <<= 1u) {
         pout = 1 - pout;
         pin = 1 - pout;
-        for (size_t i = tid; i < n_columns; i += n_threads) {
+        for (size_t i = item.thread_id(); i < n_elements; i += item.num_threads()) {
             if (i >= offset) {
-                scratch[pout * n_columns + i]
-                        = scratch[pin * n_columns + i] + scratch[pin * n_columns + i - offset];
+                scratch[pout * n_elements + i]
+                        = scratch[pin * n_elements + i] + scratch[pin * n_elements + i - offset];
             } else {
-                scratch[pout * n_columns + i] = scratch[pin * n_columns + i];
+                scratch[pout * n_elements + i] = scratch[pin * n_elements + i];
             }
         }
-        item.barrier(saf::local_space);
+        item.local_memory_barrier();
     }
-
-    // Header reduction - TODO merge with prefix sum loop, or better yet, move into a all_zero check
-    for (size_t offset = n_columns / 2; offset > 0; offset /= 2) {
-        for (size_t i = tid; i < n_columns; i += n_threads) {
-            if (i < offset) { scratch[2 * n_columns + i] |= scratch[2 * n_columns + i + offset]; }
-        }
-        item.barrier(saf::local_space);
-    }
-
-    if (tid == 0) { out[0] = scratch[2 * n_columns]; }
-
-    for (size_t i = tid; i < n_columns; i += n_threads) {
-        if (in[i] != 0) {
-            size_t offset = i ? scratch[pout * n_columns + i - 1] : 0;
-            out[1 + offset] = in[i];
-        }
-    }
-
-    return 1 + scratch[pout * n_columns + n_columns - 1];
-}
-
-
-template<typename Bits>
-size_t zero_bit_encode(/* local */ Bits *__restrict cube, /* global */ Bits *__restrict stream,
-        /* local */ Bits *__restrict scratch, size_t hc_size, sycl::nd_item<2> item) {
-    using saf = sycl::access::fence_space;
-
-    for (size_t offset = 0; offset < hc_size; offset += bitsof<Bits>) {
-        transpose_bits(cube + offset, item);
-    }
-
-    auto out = stream;
-    for (size_t offset = 0; offset < hc_size; offset += bitsof<Bits>) {
-        item.barrier(saf::local_space);
-        out += compact_zero_words(out, cube + offset, scratch, item);
-    }
-
-    return out - stream;
-}
-
-
-template<typename Profile>
-void compress_hypercubes(/* global */ const typename Profile::data_type *__restrict data,
-        /* global */ typename Profile::bits_type *__restrict stream_chunks,
-        /* global */ detail::file_offset_type *__restrict stream_chunk_lengths,
-        /* local */ typename Profile::bits_type *__restrict local_memory,
-        extent<Profile::dimensions> data_size, sycl::nd_item<2> item) {
-    using bits_type = typename Profile::bits_type;
-    using saf = sycl::access::fence_space;
-
-    const auto hc_index = item.get_global_id(0);
-    const auto side_length = Profile::hypercube_side_length;
-    const auto hc_size = detail::ipow(side_length, Profile::dimensions);
-    const auto cube = local_memory;
-    const auto scratch = local_memory + hc_size;
-    const auto chunk_size
-            = (Profile::compressed_block_size_bound + sizeof(bits_type) - 1) / sizeof(bits_type);
-
-    load_hypercube<Profile>(data, cube, data_size, item);
-    item.barrier(saf::local_space);
-    block_transform<Profile>(cube, item);
-    item.barrier(saf::local_space);
-    stream_chunk_lengths[hc_index] = zero_bit_encode<bits_type>(
-            cube, stream_chunks + hc_index * chunk_size, scratch, hc_size, item);
 }
 
 
 template<typename Scalar>
-void inclusive_prefix_sum_reduce(
+void global_inclusive_prefix_sum_reduce(
         /* global */ Scalar *__restrict big, /* global */ Scalar *__restrict small,
-        /* local */ Scalar *__restrict scratch, size_t count, sycl::nd_item<1> item) {
-    using saf = sycl::access::fence_space;
-
+        /* local */ Scalar *__restrict scratch, size_t count, work_item<1> item) {
     const size_t global_id = item.get_global_id(0);
     const size_t local_id = item.get_local_id(0);
     const size_t local_size = item.get_local_range(0);
+    const size_t group_id = item.get_group(0);
 
     scratch[local_id] = global_id < count ? big[global_id] : 0;
-    item.barrier(saf::local_space);
+    item.local_memory_barrier();
 
-    // Hillis-steele short-span prefix sum
-    size_t pout = 0;
-    size_t pin = 1;
-    for (size_t offset = 1; offset < local_size; offset <<= 1u) {
-        pout = 1 - pout;
-        pin = 1 - pout;
-        if (local_id >= offset) {
-            scratch[pout * local_size + local_id] = scratch[pin * local_size + local_id]
-                    + scratch[pin * local_size + local_id - offset];
-        } else {
-            scratch[pout * local_size + local_id] = scratch[pin * local_size + local_id];
-        }
-        item.barrier(saf::local_space);
-    }
+    local_inclusive_prefix_sum(scratch, local_size, work_item{item});
 
-    const Scalar local_result = scratch[pout * local_size + local_id];
+    const Scalar local_result = scratch[local_id];
     if (global_id < count) { big[global_id] = local_result; }
-    if (local_id == local_size - 1) { small[item.get_group(0)] = local_result; }
+    if (local_id == local_size - 1) { small[group_id] = local_result; }
 }
 
 
 template<typename Scalar>
-void inclusive_prefix_sum_expand(/* global */ Scalar *__restrict small,
-        /* global */ Scalar *__restrict big, size_t count, sycl::nd_item<1> item) {
+void global_inclusive_prefix_sum_expand(/* global */ Scalar *__restrict small,
+        /* global */ Scalar *__restrict big, size_t count, work_item<1> item) {
     // TODO range check (necessary? or can it be eliminated by increasing buffer size?)
     // `+ get_local_size`: We skip the first WG since `small` orginates from an inclusive, not an
     // exclusive scan
@@ -401,7 +177,7 @@ class hierarchical_inclusive_prefix_sum {
                 auto scratch_acc = local_accessor<Scalar>{scratch_range, cgh};
                 cgh.parallel_for<reduction_kernel>(sycl::nd_range<1>(global_range, local_range),
                         [big_acc, small_acc, scratch_acc, count](sycl::nd_item<1> item) {
-                            inclusive_prefix_sum_reduce<Scalar>(big_acc.get_pointer(),
+                            global_inclusive_prefix_sum_reduce<Scalar>(big_acc.get_pointer(),
                                     small_acc.get_pointer(), scratch_acc.get_pointer(), count,
                                     item);
                         });
@@ -421,7 +197,7 @@ class hierarchical_inclusive_prefix_sum {
                 auto big_acc = big_buffer.template get_access<sam::discard_write>(cgh);
                 cgh.parallel_for<expansion_kernel>(sycl::nd_range<1>(global_range, local_range),
                         [small_acc, big_acc, count](sycl::nd_item<1> item) {
-                            inclusive_prefix_sum_expand<Scalar>(
+                            global_inclusive_prefix_sum_expand<Scalar>(
                                     small_acc.get_pointer(), big_acc.get_pointer(), count, item);
                         });
             });
@@ -439,18 +215,245 @@ class hierarchical_inclusive_prefix_sum {
 
 
 template<typename Profile>
+size_t global_offset(size_t local_offset, extent<Profile::dimensions> global_size) {
+    size_t global_offset = 0;
+    size_t global_stride = 1;
+    for (unsigned d = 0; d < Profile::dimensions; ++d) {
+        global_offset += global_stride * (local_offset % Profile::hypercube_side_length);
+        local_offset /= Profile::hypercube_side_length;
+        global_stride *= global_size[Profile::dimensions - 1 - d];
+    }
+    return global_offset;
+}
+
+template<typename Profile>
+void load_hypercube(/* global */ const typename Profile::data_type *__restrict data,
+        /* local */ typename Profile::bits_type *__restrict cube,
+        extent<Profile::dimensions> data_size, hypercube_item item) {
+    auto side_length = Profile::hypercube_side_length;
+    auto hc_size = ipow(side_length, Profile::dimensions);
+    auto hc_offset
+            = detail::extent_from_linear_id(item.hc_index(), data_size / side_length) * side_length;
+
+    size_t initial_offset = linear_offset(hc_offset, data_size);
+    for (size_t local_idx = item.thread_id(); local_idx < hc_size;
+            local_idx += item.num_threads()) {
+        // TODO re-calculating the GO every iteration is probably painfully slow
+        size_t global_idx = initial_offset + global_offset<Profile>(local_idx, data_size);
+        cube[local_idx] = bit_cast<typename Profile::bits_type>(data[global_idx]);
+    }
+}
+
+
+template<typename Profile>
+void block_transform(/* local */ typename Profile::bits_type *x, hypercube_item item) {
+    constexpr auto n = Profile::hypercube_side_length;
+    constexpr auto dims = Profile::dimensions;
+    constexpr auto hc_size = ipow(n, dims);
+
+    for (size_t i = item.thread_id(); i < hc_size; i += item.num_threads()) {
+        x[i] = rotate_left_1(x[i]);
+    }
+
+    item.local_memory_barrier();
+
+    if constexpr (dims == 1) {
+        if (item.thread_id() == 0) { block_transform_step(x, n, 1); }
+    } else if constexpr (dims == 2) {
+        for (size_t i = item.thread_id(); i < n; i += item.num_threads()) {
+            const auto ii = n * i;
+            block_transform_step(x + ii, n, 1);
+        }
+        item.local_memory_barrier();
+        for (size_t i = item.thread_id(); i < n; i += item.num_threads()) {
+            block_transform_step(x + i, n, n);
+        }
+    } else if constexpr (dims == 3) {
+        for (size_t i = item.thread_id(); i < n; i += item.num_threads()) {
+            const auto ii = n * n * i;
+            for (size_t j = 0; j < n; ++j) {
+                block_transform_step(x + ii + j, n, n);
+            }
+        }
+        item.local_memory_barrier();
+        for (size_t i = item.thread_id(); i < n * n; i += item.num_threads()) {
+            const auto ii = n * i;
+            block_transform_step(x + ii, n, 1);
+        }
+        item.local_memory_barrier();
+        for (size_t i = item.thread_id(); i < n * n; i += item.num_threads()) {
+            block_transform_step(x + i, n, n * n);
+        }
+    }
+
+    item.local_memory_barrier();
+
+    for (size_t i = item.thread_id(); i < hc_size; i += item.num_threads()) {
+        x[i] = complement_negative(x[i]);
+    }
+}
+
+
+template<typename Profile>
+void inverse_block_transform(/* local */ typename Profile::bits_type *x, hypercube_item item) {
+    constexpr auto n = Profile::hypercube_side_length;
+    constexpr auto dims = Profile::dimensions;
+    constexpr auto hc_size = ipow(n, dims);
+
+    for (size_t i = item.thread_id(); i < hc_size; i += item.num_threads()) {
+        x[i] = complement_negative(x[i]);
+    }
+
+    item.local_memory_barrier();
+
+    if (dims == 1) {
+        if (item.thread_id() == 0) { inverse_block_transform_step(x, n, 1); }
+    } else if (dims == 2) {
+        for (size_t i = item.thread_id(); i < n; i += item.num_threads()) {
+            inverse_block_transform_step(x + i, n, n);
+        }
+        item.local_memory_barrier();
+        for (size_t i = item.thread_id(); i < n; i += item.num_threads()) {
+            auto ii = i * n;
+            inverse_block_transform_step(x + ii, n, 1);
+        }
+    } else if (dims == 3) {
+        for (size_t i = item.thread_id(); i < n * n; i += item.num_threads()) {
+            inverse_block_transform_step(x + i, n, n * n);
+        }
+        item.local_memory_barrier();
+        for (size_t i = item.thread_id(); i < n * n; i += item.num_threads()) {
+            auto ii = i * n;
+            inverse_block_transform_step(x + ii, n, 1);
+        }
+        item.local_memory_barrier();
+        for (size_t i = item.thread_id(); i < n; i += item.num_threads()) {
+            auto ii = i * n * n;
+            for (size_t j = 0; j < n; ++j) {
+                inverse_block_transform_step(x + ii + j, n, n);
+            }
+        }
+    }
+
+    item.local_memory_barrier();
+
+    for (size_t i = item.thread_id(); i < hc_size; i += item.num_threads()) {
+        x[i] = rotate_right_1(x[i]);
+    }
+}
+
+
+template<typename Bits>
+void transpose_bits(/* local */ Bits *cube, hypercube_item item) {
+    constexpr auto cols_per_thread = bitsof<Bits> / item.num_threads();
+
+    Bits columns[cols_per_thread] = {0};
+    for (size_t k = 0; k < bitsof<Bits>; ++k) {
+        auto row = cube[k];
+        for (size_t c = 0; c < cols_per_thread; ++c) {
+            size_t i = c * item.num_threads() + item.thread_id();
+            columns[c] |= ((row >> (bitsof<Bits> - 1 - i)) & Bits{1}) << (bitsof<Bits> - 1 - k);
+        }
+    }
+
+    item.local_memory_barrier();
+
+    for (size_t c = 0; c < cols_per_thread; ++c) {
+        size_t i = c * item.num_threads() + item.thread_id();
+        cube[i] = columns[c];
+    }
+}
+
+
+template<typename Bits>
+size_t compact_zero_words(/* global */ Bits *__restrict out, /* local */ const Bits *__restrict in,
+        /* local */ Bits *__restrict scratch, hypercube_item item) {
+    constexpr auto n_columns = bitsof<Bits>;
+
+    for (size_t i = item.thread_id(); i < n_columns; i += item.num_threads()) {
+        scratch[i] = in[i] != 0;
+        // TODO this is dumb, we can just OR values before transposition
+        scratch[2 * n_columns + i] = Bits{in[i] != 0} << i;
+    }
+
+    item.local_memory_barrier();
+
+    local_inclusive_prefix_sum(scratch, n_columns, item);
+
+    // Header reduction - TODO merge with prefix sum loop, or better yet, move into a all_zero check
+    for (size_t offset = n_columns / 2; offset > 0; offset /= 2) {
+        for (size_t i = item.thread_id(); i < n_columns; i += item.num_threads()) {
+            if (i < offset) { scratch[2 * n_columns + i] |= scratch[2 * n_columns + i + offset]; }
+        }
+        item.local_memory_barrier();
+    }
+
+    if (item.thread_id() == 0) { out[0] = scratch[2 * n_columns]; }
+
+    for (size_t i = item.thread_id(); i < n_columns; i += item.num_threads()) {
+        if (in[i] != 0) {
+            size_t offset = i ? scratch[i - 1] : 0;
+            out[1 + offset] = in[i];
+        }
+    }
+
+    return 1 + scratch[n_columns - 1];
+}
+
+
+template<typename Bits>
+size_t zero_bit_encode(/* local */ Bits *__restrict cube, /* global */ Bits *__restrict stream,
+        /* local */ Bits *__restrict scratch, size_t hc_size, hypercube_item item) {
+    for (size_t offset = 0; offset < hc_size; offset += bitsof<Bits>) {
+        transpose_bits(cube + offset, item);
+    }
+
+    auto out = stream;
+    for (size_t offset = 0; offset < hc_size; offset += bitsof<Bits>) {
+        item.local_memory_barrier();
+        out += compact_zero_words(out, cube + offset, scratch, item);
+    }
+
+    return out - stream;
+}
+
+
+template<typename Profile>
+void compress_hypercubes(/* global */ const typename Profile::data_type *__restrict data,
+        /* global */ typename Profile::bits_type *__restrict stream_chunks,
+        /* global */ detail::file_offset_type *__restrict stream_chunk_lengths,
+        /* local */ typename Profile::bits_type *__restrict local_memory,
+        extent<Profile::dimensions> data_size, hypercube_item item) {
+    using bits_type = typename Profile::bits_type;
+
+    const auto side_length = Profile::hypercube_side_length;
+    const auto hc_size = detail::ipow(side_length, Profile::dimensions);
+    const auto cube = local_memory;
+    const auto scratch = local_memory + hc_size;
+    const auto chunk_size
+            = (Profile::compressed_block_size_bound + sizeof(bits_type) - 1) / sizeof(bits_type);
+
+    load_hypercube<Profile>(data, cube, data_size, item);
+    item.local_memory_barrier();
+    block_transform<Profile>(cube, item);
+    item.local_memory_barrier();
+    stream_chunk_lengths[item.hc_index()] = zero_bit_encode<bits_type>(
+            cube, stream_chunks + item.hc_index() * chunk_size, scratch, hc_size, item);
+}
+
+
+template<typename Profile>
 void compact_stream(/* global */ typename Profile::bits_type *stream,
         /* global */ typename Profile::bits_type *stream_chunks,
         /* global */ const file_offset_type *stream_chunk_offsets,
-        /* global */ const file_offset_type *stream_chunk_lengths, sycl::nd_item<2> item) {
+        /* global */ const file_offset_type *stream_chunk_lengths, hypercube_item item) {
     using bits_type = typename Profile::bits_type;
 
-    const auto hc_index = item.get_global_id(0);
     const auto max_chunk_size
             = (Profile::compressed_block_size_bound + sizeof(bits_type) - 1) / sizeof(bits_type);
-    const auto this_chunk_size = stream_chunk_lengths[hc_index];
-    const auto this_chunk_offset = hc_index ? stream_chunk_offsets[hc_index - 1] : 0;
-    const auto source = stream_chunks + hc_index * max_chunk_size;
+    const auto this_chunk_size = stream_chunk_lengths[item.hc_index()];
+    const auto this_chunk_offset = item.hc_index() ? stream_chunk_offsets[item.hc_index() - 1] : 0;
+    const auto source = stream_chunks + item.hc_index() * max_chunk_size;
     const auto dest = stream + this_chunk_offset;
     detail::gpu::nd_memcpy(dest, source, this_chunk_size, item);
 }
@@ -510,9 +513,8 @@ size_t ndzip::gpu_encoder<T, Dims>::compress(
                 hc_size + 3 * detail::bitsof<bits_type>, cgh};
         auto data_size = data.size();
         cgh.parallel_for<detail::gpu::block_compression_kernel<T, Dims>>(
-                sycl::nd_range<2>{sycl::range<2>{file.num_hypercubes(), NDZIP_WARP_SIZE},
-                        sycl::range<2>{1, NDZIP_WARP_SIZE}},
-                [=](sycl::nd_item<2> item) {
+                detail::gpu::hypercube_range{file.num_hypercubes()},
+                [=](detail::gpu::hypercube_item item) {
                     detail::gpu::compress_hypercubes<profile>(data_acc.get_pointer(),
                             stream_chunks_acc.get_pointer(), stream_chunk_lengths_acc.get_pointer(),
                             local_memory_acc.get_pointer(), data_size, item);
@@ -550,10 +552,9 @@ size_t ndzip::gpu_encoder<T, Dims>::compress(
         auto stream_chunk_offsets_acc = stream_chunk_offsets_buffer.get_access<sam::read>(cgh);
         auto stream_acc = stream_buffer.template get_access<sam::discard_write>(cgh);
         cgh.parallel_for<detail::gpu::block_compaction_kernel<T, Dims>>(
-                // TODO local size is adjustable
-                sycl::nd_range<2>{sycl::range<2>{file.num_hypercubes(), NDZIP_WARP_SIZE},
-                        sycl::range<2>{1, NDZIP_WARP_SIZE}},
-                [=](sycl::nd_item<2> item) {
+                // TODO hypercube_range / hypercube_item might not be optimal here, experiment
+                // with other local sizes
+                detail::gpu::hypercube_range{file.num_hypercubes()}, [=](sycl::nd_item<2> item) {
                     detail::gpu::compact_stream<profile>(stream_acc.get_pointer(),
                             stream_chunks_acc.get_pointer(), stream_chunk_offsets_acc.get_pointer(),
                             stream_chunk_lengths_acc.get_pointer(), item);

@@ -289,7 +289,6 @@ TEMPLATE_TEST_CASE("encoder reproduces the bit-identical array", "[encoder]",
 
 using sam = sycl::access::mode;
 using sat = sycl::access::target;
-using saf = sycl::access::fence_space;
 using sycl::accessor, sycl::nd_range, sycl::buffer, sycl::nd_item, sycl::range, sycl::id,
         sycl::handler;
 
@@ -328,13 +327,12 @@ load_and_dump_hypercube(const slice<const typename Profile::data_type, Profile::
         auto local_acc = accessor<bits_type, 1, sam::read_write, sat::local>(hc_size, cgh);
         auto result_acc = result_buf.template get_access<sam ::discard_write>(cgh);
         cgh.parallel_for<load_and_dump_hypercube_kernel<Profile>>(
-                nd_range<2>{range<2>{1, NDZIP_WARP_SIZE}, range<2>{1, NDZIP_WARP_SIZE},
-                        id<2>{hc_index, 0}},
+                detail::gpu::hypercube_range{1, hc_index},
                 [data_acc, local_acc, result_acc, data_size = data.size(), hc_size](
-                        nd_item<2> item) {
+                        detail::gpu::hypercube_item item) {
                     detail::gpu::load_hypercube<Profile>(
                             data_acc.get_pointer(), local_acc.get_pointer(), data_size, item);
-                    item.barrier(saf::local_space);
+                    item.local_memory_barrier();
                     detail::gpu::nd_memcpy(result_acc, local_acc, hc_size, item);
                 });
     });
@@ -467,12 +465,12 @@ static void test_cpu_gpu_transform_equality(
         auto global_acc = global_buf.template get_access<sam::read_write>(cgh);
         auto local_acc = accessor<Bits, 1, sam::read_write, sat::local>(hc_size, cgh);
         cgh.parallel_for<TransformName>(
-                nd_range<2>{range<2>{1, NDZIP_WARP_SIZE}, range<2>{1, NDZIP_WARP_SIZE}},
-                [global_acc, local_acc, hc_size = hc_size, gpu_transform](nd_item<2> item) {
+                detail::gpu::hypercube_range{1},
+                [global_acc, local_acc, hc_size = hc_size, gpu_transform](detail::gpu::hypercube_item item) {
                     detail::gpu::nd_memcpy(local_acc, global_acc, hc_size, item);
-                    item.barrier(saf::local_space);
+                    item.local_memory_barrier();
                     gpu_transform(local_acc.get_pointer(), item);
-                    item.barrier(saf::local_space);
+                    item.local_memory_barrier();
                     detail::gpu::nd_memcpy(global_acc, local_acc, hc_size, item);
                 });
     });
@@ -501,7 +499,7 @@ TEMPLATE_TEST_CASE("CPU and GPU forward block transforms are identical", "[gpu]"
             },
             // Uses lambda instead of the function name, otherwise a host function pointer will
             // be passed into the device kernel
-            [](bits_type *block, sycl::nd_item<2> item) {
+            [](bits_type *block, detail::gpu::hypercube_item item) {
                 detail::gpu::block_transform<TestType>(block, item);
             });
 }
@@ -521,7 +519,7 @@ TEMPLATE_TEST_CASE("CPU and GPU inverse block transforms are identical", "[gpu]"
             },
             // Uses lambda instead of the function name, otherwise a host function pointer will
             // be passed into the device kernel
-            [](bits_type *block, sycl::nd_item<2> item) {
+            [](bits_type *block, detail::gpu::hypercube_item item) {
                 detail::gpu::inverse_block_transform<TestType>(block, item);
             });
 }
@@ -539,7 +537,7 @@ TEMPLATE_TEST_CASE("CPU and GPU bit transposition are identical", "[gpu]", uint3
             },
             // Uses lambda instead of the function name, otherwise a host function pointer will
             // be passed into the device kernel
-            [](TestType *chunk, sycl::nd_item<2> item) {
+            [](TestType *chunk, detail::gpu::hypercube_item item) {
                 detail::gpu::transpose_bits(chunk, item);
             });
 }
@@ -581,14 +579,14 @@ TEMPLATE_TEST_CASE("CPU and GPU zero-word compaction is identical", "[gpu]", uin
         auto scratch_acc = accessor<TestType, 1, sam::read_write, sat::local>(scratch_size, cgh);
         auto scratch_dump_acc = scratch_dump_buf.template get_access<sam::discard_write>(cgh);
         cgh.parallel_for<gpu_compact_zero_words_test_kernel<TestType>>(
-                nd_range<2>{range<2>{1, NDZIP_WARP_SIZE}, range<2>{1, NDZIP_WARP_SIZE}},
+                detail::gpu::hypercube_range{1},
                 [input_acc, output_acc, local_in_acc, scratch_size, scratch_acc, scratch_dump_acc](
-                        nd_item<2> item) {
+                        detail::gpu::hypercube_item item) {
                     detail::gpu::nd_memcpy(local_in_acc, input_acc, input_acc.get_range()[0], item);
-                    item.barrier(saf::local_space);
+                    item.local_memory_barrier();
                     detail::gpu::compact_zero_words<TestType>(output_acc.get_pointer(),
                             local_in_acc.get_pointer(), scratch_acc.get_pointer(), item);
-                    item.barrier(saf::local_space);
+                    item.local_memory_barrier();
                     detail::gpu::nd_memcpy(scratch_dump_acc, scratch_acc, scratch_size, item);
                 });
     });
@@ -645,14 +643,14 @@ TEMPLATE_TEST_CASE("CPU and GPU hypercube encodings are equivalent", "[gpu]", ui
         auto scratch_acc = accessor<TestType, 1, sam::read_write, sat::local>(scratch_size, cgh);
         auto length_acc = length_buf.get_access<sam::discard_write>(cgh);
         cgh.parallel_for<gpu_hypercube_encoding_test_kernel<TestType>>(
-                nd_range<2>{range<2>{1, NDZIP_WARP_SIZE}, range<2>{1, NDZIP_WARP_SIZE}},
+                detail::gpu::hypercube_range{1},
                 [input_acc, stream_acc, cube_acc, hc_size=hc_size, scratch_acc, length_acc](
-                        nd_item<2> item) {
+                        detail::gpu::hypercube_item item) {
                     detail::gpu::nd_memcpy(cube_acc, input_acc, hc_size, item);
-                    item.barrier(saf::local_space);
+                    item.local_memory_barrier();
                     auto l = detail::gpu::zero_bit_encode<TestType>(cube_acc.get_pointer(),
                             stream_acc.get_pointer(), scratch_acc.get_pointer(), hc_size, item);
-                    item.barrier(saf::local_space);
+                    item.local_memory_barrier();
                     if (item.get_global_id() == sycl::id<2>{0, 0}) { length_acc[0] = l; }
                 });
     });
