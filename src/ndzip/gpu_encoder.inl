@@ -262,7 +262,7 @@ void store_hypercube(/* local */ const typename Profile::bits_type *__restrict c
         extent<Profile::dimensions> data_size, hypercube_item item) {
     distribute_for_hypercube_indices<Profile>(
             data_size, item, [&](size_t global_idx, size_t local_idx) {
-                data[global_idx] = bit_cast<typename Profile::bits_type>(cube[local_idx]);
+                data[global_idx] = bit_cast<typename Profile::data_type>(cube[local_idx]);
             });
 }
 
@@ -534,14 +534,13 @@ void decompress_hypercubes(/* global */ const typename Profile::bits_type *__res
     const auto cube = local_memory;
     const auto scratch = local_memory + hc_size;
 
-    // TODO is this reinterpret_cast sane?
+    // TODO casting / byte-offsetting is ugly. Use separate buffers like in compress()
     const auto offset_table = reinterpret_cast<const file_offset_type *>(stream);
-    const auto chunk_offset = item.hc_index() ? offset_table[item.hc_index() - 1] : 0;
-    if (item.thread_id() == 0) {
-        printf("hc_index=%lu, chunk_offset=%lu\n", item.hc_index(), chunk_offset);
-    }
+    const auto chunk_offset_bytes = item.hc_index() ? offset_table[item.hc_index() - 1]
+                                              : item.num_hypercubes() * sizeof(file_offset_type);
+    const auto chunk_offset_words = chunk_offset_bytes / sizeof(bits_type);
 
-    zero_bit_decode<bits_type>(stream + chunk_offset, cube, scratch, hc_size, item);
+    zero_bit_decode<bits_type>(stream + chunk_offset_words, cube, scratch, hc_size, item);
     item.local_memory_barrier();
     inverse_block_transform<Profile>(cube, item);
     item.local_memory_barrier();
@@ -726,10 +725,11 @@ size_t ndzip::gpu_encoder<T, Dims>::decompress(
     auto stream_pos
             = detail::load_aligned<detail::file_offset_type>(static_cast<const std::byte *>(stream)
                     + ((file.num_hypercubes() - 1) * sizeof(detail::file_offset_type)));
-    stream_pos += detail::unpack_border(data, static_cast<const std::byte *>(stream) + stream_pos,
-            profile::hypercube_side_length);
 
     data_copy_event.wait();
+
+    stream_pos += detail::unpack_border(data, static_cast<const std::byte *>(stream) + stream_pos,
+            profile::hypercube_side_length);
 
     return stream_pos;
 }

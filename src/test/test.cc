@@ -243,22 +243,11 @@ TEMPLATE_TEST_CASE("encoder produces the expected bit stream", "[encoder]",
 */
 
 
-TEMPLATE_TEST_CASE("decode(encode(input)) reproduces the input", "[encoder]",
-        (cpu_encoder<float, 1>), (cpu_encoder<float, 2>), (cpu_encoder<float, 3>),
-        (cpu_encoder<double, 1>), (cpu_encoder<double, 2>), (cpu_encoder<double, 3>)
-#if NDZIP_OPENMP_SUPPORT
-                                                                    ,
-        (mt_cpu_encoder<float, 1>), (mt_cpu_encoder<float, 2>), (mt_cpu_encoder<float, 3>),
-        (mt_cpu_encoder<double, 1>), (mt_cpu_encoder<double, 2>), (mt_cpu_encoder<double, 3>)
-#endif
-#if NDZIP_GPU_SUPPORT
-        ,
-        (gpu_encoder<float, 1>), (gpu_encoder<float, 2>), (gpu_encoder<float, 3>),
-        (gpu_encoder<double, 1>), (gpu_encoder<double, 2>), (gpu_encoder<double, 3>)
-#endif
-) {
-    using data_type = typename TestType::data_type;
-    using profile = detail::profile<data_type, TestType::dimensions>;
+TEMPLATE_TEST_CASE("decode(encode(input)) reproduces the input", "[encoder]", (profile<float, 1>),
+        (profile<float, 2>), (profile<float, 3>), (profile<double, 1>), (profile<double, 2>),
+        (profile<double, 3>) ) {
+    using profile = TestType;
+    using data_type = typename profile::data_type;
 
     constexpr auto dims = profile::dimensions;
     constexpr auto side_length = profile::hypercube_side_length;
@@ -269,20 +258,44 @@ TEMPLATE_TEST_CASE("decode(encode(input)) reproduces the input", "[encoder]",
     // Regression test: trigger bug in decoder optimization by ensuring first chunk = 0
     std::fill(input_data.begin(), input_data.begin() + bitsof<data_type>, data_type{});
 
-    slice<const data_type, dims> input(input_data.data(), extent<dims>::broadcast(n));
+    auto test_encoder_decoder_pair = [&](auto &&encoder, auto &&decoder) {
+        slice<const data_type, dims> input(input_data.data(), extent<dims>::broadcast(n));
+        std::vector<std::byte> stream(
+                ndzip::compressed_size_bound<typename TestType::data_type>(input.size()));
+        stream.resize(encoder.compress(input, stream.data()));
 
-    TestType encoder;
-    std::vector<std::byte> stream(
-            ndzip::compressed_size_bound<typename TestType::data_type>(input.size()));
-    stream.resize(encoder.compress(input, stream.data()));
+        std::vector<data_type> output_data(input_data.size());
+        slice<data_type, dims> output(output_data.data(), extent<dims>::broadcast(n));
+        auto stream_bytes_read = decoder.decompress(stream.data(), stream.size(), output);
 
-    cpu_encoder<data_type, dims> decoder;
-    std::vector<data_type> output_data(ipow(n, dims));
-    slice<data_type, dims> output(output_data.data(), extent<dims>::broadcast(n));
-    decoder.decompress(stream.data(), stream.size(), output);
-    output_data.resize(num_elements(input.size()));
+        CHECK(stream_bytes_read == stream.size());
+        CHECK(memcmp(input_data.data(), output_data.data(), input_data.size() * sizeof(data_type))
+                == 0);
+    };
 
-    CHECK((input_data == output_data));
+    SECTION("cpu_encoder::encode() => cpu_encoder::decode()") {
+        test_encoder_decoder_pair(cpu_encoder<data_type, dims>{}, cpu_encoder<data_type, dims>{});
+    }
+
+#if NDZIP_OPENMP_SUPPORT
+    SECTION("cpu_encoder::encode() => mt_cpu_encoder::decode()") {
+        test_encoder_decoder_pair(cpu_encoder<data_type, dims>{}, mt_cpu_encoder<data_type, dims>{});
+    }
+
+    SECTION("mt_cpu_encoder::encode() => cpu_encoder::decode()") {
+        test_encoder_decoder_pair(mt_cpu_encoder<data_type, dims>{}, cpu_encoder<data_type, dims>{});
+    }
+#endif
+
+#if NDZIP_GPU_SUPPORT
+    SECTION("cpu_encoder::encode() => gpu_encoder::decode()") {
+        test_encoder_decoder_pair(cpu_encoder<data_type, dims>{}, gpu_encoder<data_type, dims>{});
+    }
+
+    SECTION("gpu_encoder::encode() => cpu_encoder::decode()") {
+        test_encoder_decoder_pair(gpu_encoder<data_type, dims>{}, cpu_encoder<data_type, dims>{});
+    }
+#endif
 }
 
 
