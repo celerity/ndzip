@@ -243,7 +243,7 @@ TEMPLATE_TEST_CASE("encoder produces the expected bit stream", "[encoder]",
 */
 
 
-TEMPLATE_TEST_CASE("encoder reproduces the bit-identical array", "[encoder]",
+TEMPLATE_TEST_CASE("decode(encode(input)) reproduces the input", "[encoder]",
         (cpu_encoder<float, 1>), (cpu_encoder<float, 2>), (cpu_encoder<float, 3>),
         (cpu_encoder<double, 1>), (cpu_encoder<double, 2>), (cpu_encoder<double, 3>)
 #if NDZIP_OPENMP_SUPPORT
@@ -252,7 +252,7 @@ TEMPLATE_TEST_CASE("encoder reproduces the bit-identical array", "[encoder]",
         (mt_cpu_encoder<double, 1>), (mt_cpu_encoder<double, 2>), (mt_cpu_encoder<double, 3>)
 #endif
 #if NDZIP_GPU_SUPPORT
-                                                                          ,
+        ,
         (gpu_encoder<float, 1>), (gpu_encoder<float, 2>), (gpu_encoder<float, 3>),
         (gpu_encoder<double, 1>), (gpu_encoder<double, 2>), (gpu_encoder<double, 3>)
 #endif
@@ -280,9 +280,55 @@ TEMPLATE_TEST_CASE("encoder reproduces the bit-identical array", "[encoder]",
     std::vector<data_type> output_data(ipow(n, dims));
     slice<data_type, dims> output(output_data.data(), extent<dims>::broadcast(n));
     decoder.decompress(stream.data(), stream.size(), output);
+    output_data.resize(num_elements(input.size()));
 
-    CHECK(memcmp(input_data.data(), output_data.data(), input_data.size() * sizeof(float)) == 0);
+    CHECK((input_data == output_data));
 }
+
+
+#if NDZIP_OPENMP_SUPPORT || NDZIP_GPU_SUPPORT
+TEMPLATE_TEST_CASE("file headers from different encoders are identical", "[encoder]",
+#if NDZIP_OPENMP_SUPPORT
+        (mt_cpu_encoder<float, 1>), (mt_cpu_encoder<float, 2>), (mt_cpu_encoder<float, 3>),
+        (mt_cpu_encoder<double, 1>), (mt_cpu_encoder<double, 2>), (mt_cpu_encoder<double, 3>)
+#if NDZIP_GPU_SUPPORT
+                                                                          ,
+#endif
+#endif
+#if NDZIP_GPU_SUPPORT
+        (gpu_encoder<float, 1>), (gpu_encoder<float, 2>), (gpu_encoder<float, 3>),
+        (gpu_encoder<double, 1>), (gpu_encoder<double, 2>), (gpu_encoder<double, 3>)
+#endif
+) {
+    using data_type = typename TestType::data_type;
+    using profile = detail::profile<data_type, TestType::dimensions>;
+
+    constexpr auto dims = profile::dimensions;
+    constexpr auto side_length = profile::hypercube_side_length;
+    const size_t n = side_length * 4 - 1;
+
+    auto input_data = make_random_vector<data_type>(ipow(n, dims));
+    slice<const data_type, dims> input(input_data.data(), extent<dims>::broadcast(n));
+
+    const auto file = detail::file<profile>(input.size());
+    const auto aligned_stream_size_bound
+            = compressed_size_bound<typename TestType::data_type>(input.size())
+                    / sizeof(file_offset_type)
+            + 1;
+
+    cpu_encoder<data_type, dims> reference_encoder;
+    std::vector<file_offset_type> reference_stream(aligned_stream_size_bound);
+    reference_encoder.compress(input, reference_stream.data());
+    reference_stream.resize(file.num_hypercubes());
+
+    TestType test_encoder;
+    std::vector<file_offset_type> test_stream(aligned_stream_size_bound);
+    test_encoder.compress(input, test_stream.data());
+    test_stream.resize(file.num_hypercubes());
+
+    CHECK(reference_stream == test_stream);
+}
+#endif
 
 
 #if NDZIP_GPU_SUPPORT
@@ -464,9 +510,9 @@ static void test_cpu_gpu_transform_equality(
     q.submit([&](handler &cgh) {
         auto global_acc = global_buf.template get_access<sam::read_write>(cgh);
         auto local_acc = accessor<Bits, 1, sam::read_write, sat::local>(hc_size, cgh);
-        cgh.parallel_for<TransformName>(
-                detail::gpu::hypercube_range{1},
-                [global_acc, local_acc, hc_size = hc_size, gpu_transform](detail::gpu::hypercube_item item) {
+        cgh.parallel_for<TransformName>(detail::gpu::hypercube_range{1},
+                [global_acc, local_acc, hc_size = hc_size, gpu_transform](
+                        detail::gpu::hypercube_item item) {
                     detail::gpu::nd_memcpy(local_acc, global_acc, hc_size, item);
                     item.local_memory_barrier();
                     gpu_transform(local_acc.get_pointer(), item);
@@ -613,31 +659,32 @@ TEMPLATE_TEST_CASE("GPU zero-word expansion works", "[gpu]", uint32_t, uint64_t)
 
     buffer<TestType> compacted_buf{range<1>{cpu_compacted.size()}};
     q.submit([&](handler &cgh) {
-      cgh.copy(cpu_compacted.data(), compacted_buf.template get_access<sam::discard_write>());
+        cgh.copy(cpu_compacted.data(), compacted_buf.template get_access<sam::discard_write>());
     });
 
     std::vector<TestType> gpu_expanded(bitsof<TestType>);
     buffer<TestType> expanded_buf{range<1>{gpu_expanded.size()}};
     const auto scratch_size = 2 * bitsof<TestType>;
     q.submit([&](handler &cgh) {
-      auto input_acc = compacted_buf.template get_access<sam::read>(cgh);
-      auto output_acc = expanded_buf.template get_access<sam::write>(cgh);
-      auto local_out_acc
-              = accessor<TestType, 1, sam::read_write, sat::local>(bitsof<TestType>, cgh);
-      auto scratch_acc = accessor<TestType, 1, sam::read_write, sat::local>(scratch_size, cgh);
-      cgh.parallel_for<gpu_expand_zero_words_test_kernel<TestType>>(
-              detail::gpu::hypercube_range{1},
-              [input_acc, output_acc, local_out_acc, scratch_acc](
-                      detail::gpu::hypercube_item item) {
-                detail::gpu::expand_zero_words<TestType>(local_out_acc.get_pointer(),
-                                                          input_acc.get_pointer(), scratch_acc.get_pointer(), item);
-                item.local_memory_barrier();
-                detail::gpu::nd_memcpy(output_acc, local_out_acc, output_acc.get_range()[0], item);
-              });
+        auto input_acc = compacted_buf.template get_access<sam::read>(cgh);
+        auto output_acc = expanded_buf.template get_access<sam::write>(cgh);
+        auto local_out_acc
+                = accessor<TestType, 1, sam::read_write, sat::local>(bitsof<TestType>, cgh);
+        auto scratch_acc = accessor<TestType, 1, sam::read_write, sat::local>(scratch_size, cgh);
+        cgh.parallel_for<gpu_expand_zero_words_test_kernel<TestType>>(
+                detail::gpu::hypercube_range{1},
+                [input_acc, output_acc, local_out_acc, scratch_acc](
+                        detail::gpu::hypercube_item item) {
+                    detail::gpu::expand_zero_words<TestType>(local_out_acc.get_pointer(),
+                            input_acc.get_pointer(), scratch_acc.get_pointer(), item);
+                    item.local_memory_barrier();
+                    detail::gpu::nd_memcpy(
+                            output_acc, local_out_acc, output_acc.get_range()[0], item);
+                });
     });
 
     q.submit([&](handler &cgh) {
-      cgh.copy(expanded_buf.template get_access<sam::read>(cgh), gpu_expanded.data());
+        cgh.copy(expanded_buf.template get_access<sam::read>(cgh), gpu_expanded.data());
     });
     q.wait();
 
@@ -686,7 +733,7 @@ TEMPLATE_TEST_CASE("CPU and GPU hypercube encodings are equivalent", "[gpu]", ui
         auto length_acc = length_buf.get_access<sam::discard_write>(cgh);
         cgh.parallel_for<gpu_hypercube_encoding_test_kernel<TestType>>(
                 detail::gpu::hypercube_range{1},
-                [input_acc, stream_acc, cube_acc, hc_size=hc_size, scratch_acc, length_acc](
+                [input_acc, stream_acc, cube_acc, hc_size = hc_size, scratch_acc, length_acc](
                         detail::gpu::hypercube_item item) {
                     detail::gpu::nd_memcpy(cube_acc, input_acc, hc_size, item);
                     item.local_memory_barrier();
@@ -720,7 +767,8 @@ TEST_CASE("hierarchical_inclusive_prefix_sum produces the expected results", "[g
     std::inclusive_scan(input.begin(), input.end(), cpu_prefix_sum.begin());
 
     sycl::buffer<size_t> prefix_sum_buffer(sycl::range<1>(input.size()));
-    detail::gpu::hierarchical_inclusive_prefix_sum<size_t> gpu_prefix_sum_operator(input.size(), 256);
+    detail::gpu::hierarchical_inclusive_prefix_sum<size_t> gpu_prefix_sum_operator(
+            input.size(), 256);
     sycl::queue q;
     q.submit([&](sycl::handler &cgh) {
         cgh.copy(input.data(), prefix_sum_buffer.get_access<sam::discard_write>(cgh));

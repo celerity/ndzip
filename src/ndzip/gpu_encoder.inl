@@ -228,8 +228,8 @@ size_t global_offset(size_t local_offset, extent<Profile::dimensions> global_siz
 
 
 template<typename Profile, typename F>
-void distribute_for_hypercube_indices(extent<Profile::dimensions> data_size, hypercube_item item,
-        F &&f) {
+void distribute_for_hypercube_indices(
+        extent<Profile::dimensions> data_size, hypercube_item item, F &&f) {
     auto side_length = Profile::hypercube_side_length;
     auto hc_size = ipow(side_length, Profile::dimensions);
     auto hc_offset
@@ -237,7 +237,7 @@ void distribute_for_hypercube_indices(extent<Profile::dimensions> data_size, hyp
 
     size_t initial_offset = linear_offset(hc_offset, data_size);
     for (size_t local_idx = item.thread_id(); local_idx < hc_size;
-         local_idx += item.num_threads()) {
+            local_idx += item.num_threads()) {
         // TODO re-calculating the GO every iteration is probably painfully slow
         size_t global_idx = initial_offset + global_offset<Profile>(local_idx, data_size);
         f(global_idx, local_idx);
@@ -248,10 +248,11 @@ void distribute_for_hypercube_indices(extent<Profile::dimensions> data_size, hyp
 template<typename Profile>
 void load_hypercube(/* global */ const typename Profile::data_type *__restrict data,
         /* local */ typename Profile::bits_type *__restrict cube,
-                                 extent<Profile::dimensions> data_size, hypercube_item item) {
-    distribute_for_hypercube_indices<Profile>(data_size, item, [&](size_t global_idx, size_t local_idx) {
-      cube[local_idx] = bit_cast<typename Profile::bits_type>(data[global_idx]);
-    });
+        extent<Profile::dimensions> data_size, hypercube_item item) {
+    distribute_for_hypercube_indices<Profile>(
+            data_size, item, [&](size_t global_idx, size_t local_idx) {
+                cube[local_idx] = bit_cast<typename Profile::bits_type>(data[global_idx]);
+            });
 }
 
 
@@ -259,9 +260,10 @@ template<typename Profile>
 void store_hypercube(/* local */ const typename Profile::bits_type *__restrict cube,
         /* global */ typename Profile::data_type *__restrict data,
         extent<Profile::dimensions> data_size, hypercube_item item) {
-    distribute_for_hypercube_indices<Profile>(data_size, item, [&](size_t global_idx, size_t local_idx) {
-      data[global_idx] = bit_cast<typename Profile::bits_type>(cube[local_idx]);
-    });
+    distribute_for_hypercube_indices<Profile>(
+            data_size, item, [&](size_t global_idx, size_t local_idx) {
+                data[global_idx] = bit_cast<typename Profile::bits_type>(cube[local_idx]);
+            });
 }
 
 
@@ -522,9 +524,9 @@ void compact_stream(/* global */ typename Profile::bits_type *stream,
 
 template<typename Profile>
 void decompress_hypercubes(/* global */ const typename Profile::bits_type *__restrict stream,
-        /* global */ const typename Profile::data_type *__restrict data,
+        /* global */ typename Profile::data_type *__restrict data,
         /* local */ typename Profile::bits_type *__restrict local_memory,
-                                        extent<Profile::dimensions> data_size, hypercube_item item) {
+        extent<Profile::dimensions> data_size, hypercube_item item) {
     using bits_type = typename Profile::bits_type;
 
     const auto side_length = Profile::hypercube_side_length;
@@ -533,10 +535,13 @@ void decompress_hypercubes(/* global */ const typename Profile::bits_type *__res
     const auto scratch = local_memory + hc_size;
 
     // TODO is this reinterpret_cast sane?
-    const auto offset_table = reinterpret_cast<const file_offset_type*>(stream);
+    const auto offset_table = reinterpret_cast<const file_offset_type *>(stream);
     const auto chunk_offset = item.hc_index() ? offset_table[item.hc_index() - 1] : 0;
+    if (item.thread_id() == 0) {
+        printf("hc_index=%lu, chunk_offset=%lu\n", item.hc_index(), chunk_offset);
+    }
 
-    zero_bit_decode<bits_type>(stream + chunk_offset / 4, cube, hc_size, item);
+    zero_bit_decode<bits_type>(stream + chunk_offset, cube, scratch, hc_size, item);
     item.local_memory_barrier();
     inverse_block_transform<Profile>(cube, item);
     item.local_memory_barrier();
@@ -549,7 +554,13 @@ template<typename, unsigned>
 class block_compression_kernel;
 
 template<typename, unsigned>
-class block_compaction_kernel;
+class header_encoding_kernel;
+
+template<typename, unsigned>
+class stream_compaction_kernel;
+
+template<typename, unsigned>
+class stream_decompression_kernel;
 
 }  // namespace ndzip::detail::gpu
 
@@ -617,47 +628,57 @@ size_t ndzip::gpu_encoder<T, Dims>::compress(
             file.num_hypercubes(), 256 /* local size */);
     prefix_sum(_pimpl->q, stream_chunk_offsets_buffer);
 
-    detail::file_offset_type num_compressed_words;
+    sycl::buffer<detail::file_offset_type> stream_header_buffer(file.num_hypercubes());
     _pimpl->q.submit([&](sycl::handler &cgh) {
-        cgh.copy(stream_chunk_offsets_buffer.get_access<sam::read>(
-                         cgh, sycl::range<1>{1}, sycl::id<1>{file.num_hypercubes() - 1}),
-                &num_compressed_words);
+        auto offsets_acc = stream_chunk_offsets_buffer.get_access<sam::read>(cgh);
+        auto header_acc = stream_header_buffer.template get_access<sam::discard_write>(cgh);
+        auto header_length = file.file_header_length();
+        cgh.parallel_for<detail::gpu::header_encoding_kernel<T, Dims>>(
+                sycl::range<1>{file.num_hypercubes()}, [=](sycl::item<1> item) {
+                    header_acc[item.get_id()]
+                            = offsets_acc[item.get_id()] * sizeof(bits_type) + header_length;
+                });
     });
 
-    sycl::buffer<bits_type> stream_buffer(stream_chunks_buffer.get_count());
-    _pimpl->q.submit([&](sycl::handler &cgh) {
-        // TODO is the cast sane?
-        cgh.copy(stream_buffer.template get_access<sam::read>(cgh),
-                static_cast<bits_type *>(stream));
+    auto header_copy_event = _pimpl->q.submit([&](sycl::handler &cgh) {
+        cgh.copy(stream_header_buffer.template get_access<sam::read>(cgh),
+                // TODO is this static_cast sane?
+                static_cast<detail::file_offset_type *>(stream));
     });
 
+    sycl::buffer<bits_type> stream_body_buffer(stream_chunks_buffer.get_count());
     _pimpl->q.submit([&](sycl::handler &cgh) {
         auto stream_chunks_acc = stream_chunks_buffer.template get_access<sam::read>(cgh);
         auto stream_chunk_lengths_acc = stream_chunk_lengths_buffer.get_access<sam::read>(cgh);
         auto stream_chunk_offsets_acc = stream_chunk_offsets_buffer.get_access<sam::read>(cgh);
-        auto stream_acc = stream_buffer.template get_access<sam::discard_write>(cgh);
-        cgh.parallel_for<detail::gpu::block_compaction_kernel<T, Dims>>(
+        auto body_acc = stream_body_buffer.template get_access<sam::write>(cgh);
+        cgh.parallel_for<detail::gpu::stream_compaction_kernel<T, Dims>>(
                 // TODO hypercube_range / hypercube_item might not be optimal here, experiment
                 // with other local sizes
                 detail::gpu::hypercube_range{file.num_hypercubes()}, [=](sycl::nd_item<2> item) {
-                    detail::gpu::compact_stream<profile>(stream_acc.get_pointer(),
+                    detail::gpu::compact_stream<profile>(body_acc.get_pointer(),
                             stream_chunks_acc.get_pointer(), stream_chunk_offsets_acc.get_pointer(),
                             stream_chunk_lengths_acc.get_pointer(), item);
                 });
     });
 
-    _pimpl->q.submit([&](sycl::handler &cgh) {
-        cgh.copy(stream_buffer.template get_access<sam::read>(cgh),
+    auto body_copy_event = _pimpl->q.submit([&](sycl::handler &cgh) {
+        cgh.copy(stream_body_buffer.template get_access<sam::read>(cgh),
                 // TODO is this reinterpret_cast sane?
                 reinterpret_cast<bits_type *>(
                         static_cast<std::byte *>(stream) + file.file_header_length()));
     });
 
-    _pimpl->q.wait();
+    header_copy_event.wait();
 
-    size_t stream_pos = file.file_header_length() + num_compressed_words * sizeof(bits_type);
+    auto stream_pos
+            = detail::load_aligned<detail::file_offset_type>(static_cast<const std::byte *>(stream)
+                    + ((file.num_hypercubes() - 1) * sizeof(detail::file_offset_type)));
     stream_pos += detail::pack_border(
             static_cast<char *>(stream) + stream_pos, data, profile::hypercube_side_length);
+
+    body_copy_event.wait();
+
     return stream_pos;
 }
 
@@ -665,7 +686,52 @@ size_t ndzip::gpu_encoder<T, Dims>::compress(
 template<typename T, unsigned Dims>
 size_t ndzip::gpu_encoder<T, Dims>::decompress(
         const void *stream, size_t bytes, const slice<data_type, dimensions> &data) const {
-    return 0;
+    using profile = detail::profile<T, Dims>;
+    using bits_type = typename profile::bits_type;
+    using sam = sycl::access::mode;
+
+    constexpr auto side_length = profile::hypercube_side_length;
+    constexpr auto hc_size = detail::ipow(side_length, profile::dimensions);
+
+    detail::file<profile> file(data.size());
+
+    sycl::buffer<bits_type, 1> stream_buffer{sycl::range<1>{bytes}};
+    sycl::buffer<data_type, dimensions> data_buffer{
+            detail::gpu::extent_cast<sycl::range<dimensions>>(data.size())};
+
+    _pimpl->q.submit([&](sycl::handler &cgh) {
+        cgh.copy(static_cast<const bits_type *>(stream),
+                stream_buffer.template get_access<sam::discard_write>(cgh));
+    });
+
+    _pimpl->q.submit([&](sycl::handler &cgh) {
+        auto stream_acc = stream_buffer.template get_access<sam::read>(cgh);
+        auto data_acc = data_buffer.template get_access<sam::discard_write>(cgh);
+        auto local_memory_acc = detail::gpu::local_accessor<bits_type>{
+                hc_size + 2 * detail::bitsof<bits_type>, cgh};
+        auto data_size = data.size();
+        cgh.parallel_for<detail::gpu::stream_decompression_kernel<T, Dims>>(
+                detail::gpu::hypercube_range{file.num_hypercubes()},
+                [=](detail::gpu::hypercube_item item) {
+                    detail::gpu::decompress_hypercubes<profile>(stream_acc.get_pointer(),
+                            data_acc.get_pointer(), local_memory_acc.get_pointer(), data_size,
+                            item);
+                });
+    });
+
+    auto data_copy_event = _pimpl->q.submit([&](sycl::handler &cgh) {
+        cgh.copy(data_buffer.template get_access<sam::read>(cgh), data.data());
+    });
+
+    auto stream_pos
+            = detail::load_aligned<detail::file_offset_type>(static_cast<const std::byte *>(stream)
+                    + ((file.num_hypercubes() - 1) * sizeof(detail::file_offset_type)));
+    stream_pos += detail::unpack_border(data, static_cast<const std::byte *>(stream) + stream_pos,
+            profile::hypercube_side_length);
+
+    data_copy_event.wait();
+
+    return stream_pos;
 }
 
 

@@ -67,7 +67,10 @@ template<typename Fn, typename Index, typename T>
 
 template<typename Integer>
 Integer endian_transform(Integer value) {
-    if constexpr (NDZIP_ENDIAN == NDZIP_LITTLE_ENDIAN) {
+    // TODO endian correction is inactive until we figure out
+    //  - how compressed chunks must be transformed
+    //  - how to unit-test big-endian on a little-endian machine
+    if constexpr (false && NDZIP_ENDIAN == NDZIP_LITTLE_ENDIAN) {
         if constexpr (std::is_same_v<Integer, uint64_t>) {
             return __builtin_bswap64(value);
         } else if constexpr (std::is_same_v<Integer, uint32_t>) {
