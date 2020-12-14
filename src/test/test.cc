@@ -5,6 +5,8 @@
 #include <ndzip/gpu_encoder.inl>
 #endif
 
+#include <iostream>
+
 #define CATCH_CONFIG_MAIN
 #include <catch2/catch.hpp>
 
@@ -32,7 +34,8 @@ static std::vector<Arithmetic> make_random_vector(size_t size) {
 template<typename T>
 bool for_vector_equality(const std::vector<T> &lhs, const std::vector<T> &rhs) {
     if (lhs.size() != rhs.size()) {
-        fprintf(stderr, "vectors differ in size: %zu vs. %zu elements\n", lhs.size(), rhs.size());
+        std::cerr << "vectors differ in size: " << lhs.size() << " vs. " << rhs.size()
+                << " elements\n";
         return false;
     }
 
@@ -45,22 +48,22 @@ bool for_vector_equality(const std::vector<T> &lhs, const std::vector<T> &rhs) {
     }
 
     if (first_mismatch <= last_mismatch) {
-        fprintf(stderr, "vectors mismatch between index %zu and %zu:\n    {", first_mismatch,
-                last_mismatch);
+        std::cerr << "vectors mismatch between index " << first_mismatch << " and "
+                << last_mismatch << ":\n    {";
         for (auto *vec : {&lhs, &rhs}) {
-            for (size_t i = 0; i < last_mismatch - first_mismatch;) {
-                fprintf(stderr, "%lu", (unsigned long) (*vec)[i]);
-                if (last_mismatch - first_mismatch - 1) { fprintf(stderr, ", "); }
-                if (i > 20 && i < last_mismatch - first_mismatch - 20) {
-                    i = last_mismatch - first_mismatch - 20;
-                    fprintf(stderr, "..., ");
+            for (size_t i = first_mismatch; i < last_mismatch;) {
+                std::cerr << (*vec)[i];
+                if (i < last_mismatch - 1) { std::cerr << ", "; }
+                if (i >= first_mismatch + 20 && i < last_mismatch - 20) {
+                    i = last_mismatch - 20;
+                    std::cerr << "..., ";
                 } else {
                     ++i;
                 }
             }
-            if (vec == &lhs) { fprintf(stderr, "}\n != {"); }
+            if (vec == &lhs) { std::cerr << "}\n != {"; }
         }
-        fprintf(stderr, "}\n");
+        std::cerr << "}\n";
         return false;
     }
 
