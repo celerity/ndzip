@@ -823,7 +823,7 @@ const algorithm_map &available_algorithms() {
         {"ndzip-mt", {benchmark_ndzip<ndzip::mt_cpu_encoder>, 1, 1, 1, true /* multithreaded */}},
 #endif
 #if NDZIP_GPU_SUPPORT
-        // {"ndzip-gpu", benchmark_ndzip<ndzip::gpu_encoder>},
+        {"ndzip-gpu", {benchmark_ndzip<ndzip::gpu_encoder>}},
 #endif
 #if NDZIP_BENCHMARK_HAVE_FPZIP
         {"fpzip", {benchmark_fpzip}},
