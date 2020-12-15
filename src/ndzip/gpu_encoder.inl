@@ -607,6 +607,16 @@ class stream_decompression_kernel;
 template<typename T, unsigned Dims>
 struct ndzip::gpu_encoder<T, Dims>::impl {
     sycl::queue q;
+
+    impl() : q{sycl::gpu_selector{}} {
+        if (auto env = getenv("NDZIP_VERBOSE"); env && *env) {
+            auto device = q.get_device();
+            printf("Using %s on %s %s\n",
+                    device.get_platform().get_info<sycl::info::platform::name>().c_str(),
+                    device.get_info<sycl::info::device::vendor>().c_str(),
+                    device.get_info<sycl::info::device::name>().c_str());
+        }
+    }
 };
 
 template<typename T, unsigned Dims>
@@ -674,7 +684,9 @@ size_t ndzip::gpu_encoder<T, Dims>::compress(
 
     detail::file_offset_type num_compressed_words;
     auto num_compressed_words_available = _pimpl->q.submit([&](sycl::handler &cgh) {
-      cgh.copy(stream_chunk_offsets_buffer.template get_access<sam::read>(cgh, sycl::range<1>{1}, sycl::id<1>{file.num_hypercubes() - 1}), &num_compressed_words);
+        cgh.copy(stream_chunk_offsets_buffer.template get_access<sam::read>(
+                         cgh, sycl::range<1>{1}, sycl::id<1>{file.num_hypercubes() - 1}),
+                &num_compressed_words);
     });
 
     sycl::buffer<detail::file_offset_type> stream_header_buffer(file.num_hypercubes());
@@ -690,7 +702,7 @@ size_t ndzip::gpu_encoder<T, Dims>::compress(
                         std::min(num_hypercubes, max_id_component_value)},
                 [=](sycl::item<2> item) {
                     auto hc_index = item.get_id(0) * max_id_component_value + item.get_id(1);
-                  if (hc_index < num_hypercubes) {
+                    if (hc_index < num_hypercubes) {
                         header_acc[hc_index]
                                 = offsets_acc[hc_index] * sizeof(bits_type) + header_length;
                     }

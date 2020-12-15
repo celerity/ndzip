@@ -35,7 +35,7 @@ template<typename T>
 bool for_vector_equality(const std::vector<T> &lhs, const std::vector<T> &rhs) {
     if (lhs.size() != rhs.size()) {
         std::cerr << "vectors differ in size: " << lhs.size() << " vs. " << rhs.size()
-                << " elements\n";
+                  << " elements\n";
         return false;
     }
 
@@ -48,8 +48,8 @@ bool for_vector_equality(const std::vector<T> &lhs, const std::vector<T> &rhs) {
     }
 
     if (first_mismatch <= last_mismatch) {
-        std::cerr << "vectors mismatch between index " << first_mismatch << " and "
-                << last_mismatch << ":\n    {";
+        std::cerr << "vectors mismatch between index " << first_mismatch << " and " << last_mismatch
+                  << ":\n    {";
         for (auto *vec : {&lhs, &rhs}) {
             for (size_t i = first_mismatch; i < last_mismatch;) {
                 std::cerr << (*vec)[i];
@@ -450,7 +450,7 @@ load_and_dump_hypercube(const slice<const typename Profile::data_type, Profile::
 
 TEMPLATE_TEST_CASE(
         "correctly load small hypercubes into local memory", "[gpu]", uint32_t, uint64_t) {
-    sycl::queue q;
+    sycl::queue q{sycl::gpu_selector{}};
 
     SECTION("1d") {
         using profile = mock_profile<TestType, 1>;
@@ -539,7 +539,7 @@ TEMPLATE_TEST_CASE("flattening of larger hypercubes is identical between CPU and
     hc_offset[dims - 1] = side_length;
     size_t hc_index = 1;
 
-    sycl::queue q;
+    sycl::queue q{sycl::gpu_selector{}};
     auto gpu_dump = load_and_dump_hypercube<profile>(input, hc_index, q);
 
     detail::cpu::simd_aligned_buffer<typename profile::bits_type> cpu_dump(ipow(side_length, dims));
@@ -559,7 +559,7 @@ static void test_cpu_gpu_transform_equality(
     auto cpu_transformed = input;
     cpu_transform(cpu_transformed.data());
 
-    sycl::queue q;
+    sycl::queue q{sycl::gpu_selector{}};
     buffer<Bits> global_buf{range<1>{hc_size}};
 
     q.submit([&](handler &cgh) {
@@ -659,7 +659,7 @@ TEMPLATE_TEST_CASE("CPU and GPU zero-word compaction is identical", "[gpu]", uin
     detail::cpu::compact_zero_words(
             input.data(), reinterpret_cast<std::byte *>(cpu_compacted.data()));
 
-    sycl::queue q;
+    sycl::queue q{sycl::gpu_selector{}};
 
     buffer<TestType> input_buf{range<1>{input.size()}};
     q.submit([&](handler &cgh) {
@@ -709,7 +709,7 @@ TEMPLATE_TEST_CASE("GPU zero-word expansion works", "[gpu]", uint32_t, uint64_t)
     detail::cpu::compact_zero_words(
             input.data(), reinterpret_cast<std::byte *>(cpu_compacted.data()));
 
-    sycl::queue q;
+    sycl::queue q{sycl::gpu_selector{}};
 
     buffer<TestType> compacted_buf{range<1>{cpu_compacted.size()}};
     q.submit([&](handler &cgh) {
@@ -763,7 +763,7 @@ TEMPLATE_TEST_CASE("CPU and GPU hypercube encodings are equivalent", "[gpu]", ui
     auto cpu_length = detail::cpu::zero_bit_encode(
             cpu_cube.data(), reinterpret_cast<std::byte *>(cpu_stream.data()), hc_size);
 
-    sycl::queue q;
+    sycl::queue q{sycl::gpu_selector{}};
 
     buffer<TestType> input_buf{range<1>{hc_size}};
     q.submit([&](handler &cgh) {
@@ -820,7 +820,7 @@ TEST_CASE("hierarchical_inclusive_prefix_sum produces the expected results", "[g
 
     sycl::buffer<size_t> prefix_sum_buffer(sycl::range<1>(input.size()));
     gpu::hierarchical_inclusive_prefix_sum<size_t> gpu_prefix_sum_operator(input.size(), 256);
-    sycl::queue q;
+    sycl::queue q{sycl::gpu_selector{}};
     q.submit([&](sycl::handler &cgh) {
         cgh.copy(input.data(), prefix_sum_buffer.get_access<sam::discard_write>(cgh));
     });
@@ -838,7 +838,7 @@ TEST_CASE("hierarchical_inclusive_prefix_sum produces the expected results", "[g
 
 
 TEST_CASE("hypercube_range can index past the CUDA index space limit", "[gpu]") {
-    sycl::queue q;
+    sycl::queue q{sycl::gpu_selector{}};
     auto num = size_t{100000};
     auto offset = size_t{10};
     auto write_buffer = sycl::buffer<size_t>{sycl::range<1>{num}};
