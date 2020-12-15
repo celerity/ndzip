@@ -629,6 +629,8 @@ size_t ndzip::gpu_encoder<T, Dims>::compress(
     const auto max_chunk_size
             = (profile::compressed_block_size_bound + sizeof(bits_type) - 1) / sizeof(bits_type);
 
+    // TODO edge case w/ 0 hypercubes
+
     detail::file<profile> file(data.size());
 
     sycl::buffer<data_type, dimensions> data_buffer{
@@ -658,7 +660,6 @@ size_t ndzip::gpu_encoder<T, Dims>::compress(
                     }
                 });
     });
-    _pimpl->q.wait_and_throw();
 
     sycl::buffer<detail::file_offset_type> stream_chunk_offsets_buffer{
             sycl::range<1>{file.num_hypercubes()}};
@@ -670,6 +671,11 @@ size_t ndzip::gpu_encoder<T, Dims>::compress(
     detail::gpu::hierarchical_inclusive_prefix_sum<detail::file_offset_type> prefix_sum(
             file.num_hypercubes(), 256 /* local size */);
     prefix_sum(_pimpl->q, stream_chunk_offsets_buffer);
+
+    detail::file_offset_type num_compressed_words;
+    auto num_compressed_words_available = _pimpl->q.submit([&](sycl::handler &cgh) {
+      cgh.copy(stream_chunk_offsets_buffer.template get_access<sam::read>(cgh, sycl::range<1>{1}, sycl::id<1>{file.num_hypercubes() - 1}), &num_compressed_words);
+    });
 
     sycl::buffer<detail::file_offset_type> stream_header_buffer(file.num_hypercubes());
     _pimpl->q.submit([&](sycl::handler &cgh) {
@@ -684,20 +690,22 @@ size_t ndzip::gpu_encoder<T, Dims>::compress(
                         std::min(num_hypercubes, max_id_component_value)},
                 [=](sycl::item<2> item) {
                     auto hc_index = item.get_id(0) * max_id_component_value + item.get_id(1);
-                    if (hc_index < num_hypercubes) {
+                  if (hc_index < num_hypercubes) {
                         header_acc[hc_index]
                                 = offsets_acc[hc_index] * sizeof(bits_type) + header_length;
                     }
                 });
     });
 
-    auto header_copy_event = _pimpl->q.submit([&](sycl::handler &cgh) {
+    auto header_transferred = _pimpl->q.submit([&](sycl::handler &cgh) {
         cgh.copy(stream_header_buffer.template get_access<sam::read>(cgh),
                 // TODO is this static_cast sane?
                 static_cast<detail::file_offset_type *>(stream));
     });
 
-    sycl::buffer<bits_type> stream_body_buffer(stream_chunks_buffer.get_count());
+    num_compressed_words_available.wait();
+
+    sycl::buffer<bits_type> stream_body_buffer(num_compressed_words);
     _pimpl->q.submit([&](sycl::handler &cgh) {
         auto stream_chunks_acc = stream_chunks_buffer.template get_access<sam::read>(cgh);
         auto stream_chunk_lengths_acc = stream_chunk_lengths_buffer.get_access<sam::read>(cgh);
@@ -706,7 +714,7 @@ size_t ndzip::gpu_encoder<T, Dims>::compress(
         auto hc_range = detail::gpu::hypercube_range{file.num_hypercubes()};
         cgh.parallel_for<detail::gpu::stream_compaction_kernel<T, Dims>>(
                 // TODO hypercube_range / hypercube_item might not be optimal here, experiment
-                // with other local sizes
+                //  with other local sizes
                 hc_range.item_space(), [=](detail::gpu::hypercube_item item) {
                     if (hc_range.contains(item)) {
                         detail::gpu::compact_stream<profile>(body_acc.get_pointer(),
@@ -717,22 +725,18 @@ size_t ndzip::gpu_encoder<T, Dims>::compress(
                 });
     });
 
-    auto body_copy_event = _pimpl->q.submit([&](sycl::handler &cgh) {
+    auto stream_pos = file.file_header_length();
+    auto body_transferred = _pimpl->q.submit([&, stream_pos](sycl::handler &cgh) {
         cgh.copy(stream_body_buffer.template get_access<sam::read>(cgh),
                 // TODO is this reinterpret_cast sane?
-                reinterpret_cast<bits_type *>(
-                        static_cast<std::byte *>(stream) + file.file_header_length()));
+                reinterpret_cast<bits_type *>(static_cast<std::byte *>(stream) + stream_pos));
     });
-
-    header_copy_event.wait();
-
-    auto stream_pos
-            = detail::load_aligned<detail::file_offset_type>(static_cast<const std::byte *>(stream)
-                    + ((file.num_hypercubes() - 1) * sizeof(detail::file_offset_type)));
+    stream_pos += num_compressed_words * sizeof(bits_type);
     stream_pos += detail::pack_border(
             static_cast<char *>(stream) + stream_pos, data, profile::hypercube_side_length);
 
-    body_copy_event.wait();
+    header_transferred.wait();
+    body_transferred.wait();
 
     return stream_pos;
 }
