@@ -123,6 +123,24 @@ class hypercube_range {
 };
 
 
+template<typename CGF>
+auto submit_and_profile(sycl::queue &q, const char *label, CGF &&cgf) {
+    if (auto env = getenv("NDZIP_VERBOSE"); env && *env) {
+        // no kernel profiling in hipSYCL yet!
+        q.wait_and_throw();
+        auto before = std::chrono::system_clock::now();
+        auto evt = q.submit(std::forward<CGF>(cgf));
+        q.wait_and_throw();
+        auto after = std::chrono::system_clock::now();
+        auto seconds = std::chrono::duration_cast<std::chrono::duration<double>>(after - before);
+        printf("[profile] %s: %.3fms\n", label, seconds.count() * 1e3);
+        return evt;
+    } else {
+        return q.submit(std::forward<CGF>(cgf));
+    }
+}
+
+
 template<typename DestAccessor, typename SourceAccessor, int ItemDims>
 void nd_memcpy(const DestAccessor &dest, const SourceAccessor &source, size_t count,
         work_item<ItemDims> item) {
@@ -207,7 +225,10 @@ class hierarchical_inclusive_prefix_sum {
                     (big_buffer.get_count() + _local_size - 1) / _local_size * _local_size};
             const auto local_range = sycl::range<1>{_local_size};
             const auto scratch_range = sycl::range<1>{_local_size * 2};
-            queue.submit([&](sycl::handler &cgh) {
+
+            char label[50];
+            sprintf(label, "hierarchical_inclusive_prefix_sum reduce %zu", i);
+            submit_and_profile(queue, label, [&](sycl::handler &cgh) {
                 auto big_acc = big_buffer.template get_access<sam::read_write>(cgh);
                 auto small_acc = small_buffer.template get_access<sam::discard_write>(cgh);
                 auto scratch_acc = local_accessor<Scalar>{scratch_range, cgh};
@@ -228,7 +249,10 @@ class hierarchical_inclusive_prefix_sum {
             const auto global_range = sycl::range<1>{
                     (big_buffer.get_count() + _local_size - 1) / _local_size * _local_size};
             const auto local_range = sycl::range<1>{_local_size};
-            queue.submit([&](sycl::handler &cgh) {
+
+            char label[50];
+            sprintf(label, "hierarchical_inclusive_prefix_sum expand %zu", ii);
+            submit_and_profile(queue, label, [&](sycl::handler &cgh) {
                 auto small_acc = small_buffer.template get_access<sam::read_write>(cgh);
                 auto big_acc = big_buffer.template get_access<sam::discard_write>(cgh);
                 cgh.parallel_for<expansion_kernel>(sycl::nd_range<1>(global_range, local_range),
@@ -611,10 +635,11 @@ struct ndzip::gpu_encoder<T, Dims>::impl {
     impl() : q{sycl::gpu_selector{}} {
         if (auto env = getenv("NDZIP_VERBOSE"); env && *env) {
             auto device = q.get_device();
-            printf("Using %s on %s %s\n",
+            printf("Using %s on %s %s (%lu bytes of local memory)\n",
                     device.get_platform().get_info<sycl::info::platform::name>().c_str(),
                     device.get_info<sycl::info::device::vendor>().c_str(),
-                    device.get_info<sycl::info::device::name>().c_str());
+                    device.get_info<sycl::info::device::name>().c_str(),
+                    (unsigned long) device.get_info<sycl::info::device::local_mem_size>());
         }
     }
 };
@@ -644,13 +669,17 @@ size_t ndzip::gpu_encoder<T, Dims>::compress(
     detail::file<profile> file(data.size());
 
     sycl::buffer<data_type, dimensions> data_buffer{
-            data.data(), detail::gpu::extent_cast<sycl::range<dimensions>>(data.size())};
+            detail::gpu::extent_cast<sycl::range<dimensions>>(data.size())};
     sycl::buffer<bits_type, 1> stream_chunks_buffer{
             sycl::range<1>{file.num_hypercubes() * max_chunk_size}};
     sycl::buffer<detail::file_offset_type, 1> stream_chunk_lengths_buffer{
             sycl::range<1>{file.num_hypercubes()}};
 
-    _pimpl->q.submit([&](sycl::handler &cgh) {
+    detail::gpu::submit_and_profile(_pimpl->q, "copy input to device", [&](sycl::handler &cgh) {
+        cgh.copy(data.data(), data_buffer.template get_access<sam::discard_write>(cgh));
+    });
+
+    detail::gpu::submit_and_profile(_pimpl->q, "block compression", [&](sycl::handler &cgh) {
         auto data_acc = data_buffer.template get_access<sam::read>(cgh);
         auto stream_chunks_acc
                 = stream_chunks_buffer.template get_access<sam::discard_read_write>(cgh);
@@ -673,7 +702,7 @@ size_t ndzip::gpu_encoder<T, Dims>::compress(
 
     sycl::buffer<detail::file_offset_type> stream_chunk_offsets_buffer{
             sycl::range<1>{file.num_hypercubes()}};
-    _pimpl->q.submit([&](sycl::handler &cgh) {
+    detail::gpu::submit_and_profile(_pimpl->q, "dup lengths", [&](sycl::handler &cgh) {
         cgh.copy(stream_chunk_lengths_buffer.get_access<sam::read>(cgh),
                 stream_chunk_offsets_buffer.get_access<sam::discard_write>(cgh));
     });
@@ -690,7 +719,7 @@ size_t ndzip::gpu_encoder<T, Dims>::compress(
     });
 
     sycl::buffer<detail::file_offset_type> stream_header_buffer(file.num_hypercubes());
-    _pimpl->q.submit([&](sycl::handler &cgh) {
+    detail::gpu::submit_and_profile(_pimpl->q, "encode header", [&](sycl::handler &cgh) {
         using detail::gpu::max_id_component_value;
         auto offsets_acc = stream_chunk_offsets_buffer.get_access<sam::read>(cgh);
         auto header_acc = stream_header_buffer.template get_access<sam::discard_write>(cgh);
@@ -709,16 +738,17 @@ size_t ndzip::gpu_encoder<T, Dims>::compress(
                 });
     });
 
-    auto header_transferred = _pimpl->q.submit([&](sycl::handler &cgh) {
-        cgh.copy(stream_header_buffer.template get_access<sam::read>(cgh),
-                // TODO is this static_cast sane?
-                static_cast<detail::file_offset_type *>(stream));
-    });
+    auto header_transferred = detail::gpu::submit_and_profile(
+            _pimpl->q, "copy header to host", [&](sycl::handler &cgh) {
+                cgh.copy(stream_header_buffer.template get_access<sam::read>(cgh),
+                        // TODO is this static_cast sane?
+                        static_cast<detail::file_offset_type *>(stream));
+            });
 
     num_compressed_words_available.wait();
 
     sycl::buffer<bits_type> stream_body_buffer(num_compressed_words);
-    _pimpl->q.submit([&](sycl::handler &cgh) {
+    detail::gpu::submit_and_profile(_pimpl->q, "compact chunks", [&](sycl::handler &cgh) {
         auto stream_chunks_acc = stream_chunks_buffer.template get_access<sam::read>(cgh);
         auto stream_chunk_lengths_acc = stream_chunk_lengths_buffer.get_access<sam::read>(cgh);
         auto stream_chunk_offsets_acc = stream_chunk_offsets_buffer.get_access<sam::read>(cgh);
@@ -738,11 +768,13 @@ size_t ndzip::gpu_encoder<T, Dims>::compress(
     });
 
     auto stream_pos = file.file_header_length();
-    auto body_transferred = _pimpl->q.submit([&, stream_pos](sycl::handler &cgh) {
-        cgh.copy(stream_body_buffer.template get_access<sam::read>(cgh),
-                // TODO is this reinterpret_cast sane?
-                reinterpret_cast<bits_type *>(static_cast<std::byte *>(stream) + stream_pos));
-    });
+    auto body_transferred = detail::gpu::submit_and_profile(
+            _pimpl->q, "transfer body to host", [&, stream_pos](sycl::handler &cgh) {
+                cgh.copy(stream_body_buffer.template get_access<sam::read>(cgh),
+                        // TODO is this reinterpret_cast sane?
+                        reinterpret_cast<bits_type *>(
+                                static_cast<std::byte *>(stream) + stream_pos));
+            });
     stream_pos += num_compressed_words * sizeof(bits_type);
     stream_pos += detail::pack_border(
             static_cast<char *>(stream) + stream_pos, data, profile::hypercube_side_length);
