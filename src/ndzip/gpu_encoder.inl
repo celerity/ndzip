@@ -50,14 +50,9 @@ template<typename U, typename T>
 
 constexpr size_t num_threads_per_hypercube = 32;
 
-// CUDA has a limit of 32K items per dimension for multi-dimensional kernels.
-// This means we need to split the index for larger files across two kernel dimensions,
-// See https://stackoverflow.com/questions/6048907/maximum-blocks-per-gridcuda#6048978
-// TODO investigate whether this limit is absent for one-dimensional kernels, in which case
-// we could simply schedule a global size of 32 * num_hypercubes and get the hypercube and thread
-// id with division / modulo 32. This would help us to get rid of unnecessary work groups.
-constexpr size_t max_id_component_value = 32768;
-
+// SYCL and CUDA have opposite indexing directions for vector components, so the last component of
+// any SYCL id is component 0 of the CUDA id. CUDA limits the global size along all components > 0,
+// so the largest extent (in our case: the HC index) should always be in the last component.
 
 template<int Dims>
 class work_item : public sycl::nd_item<Dims> {
@@ -65,8 +60,8 @@ class work_item : public sycl::nd_item<Dims> {
     work_item(const sycl::nd_item<Dims> &nd_item)  // NOLINT(google-explicit-constructor)
         : sycl::nd_item<Dims>(nd_item) {}
 
-    size_t num_threads() const { return this->get_local_range(Dims - 1); }
-    size_t thread_id() const { return this->get_local_id(Dims - 1); }
+    size_t num_threads() const { return this->get_local_range(0); }
+    size_t thread_id() const { return this->get_local_id(0); }
     void local_memory_barrier() const { this->barrier(sycl::access::fence_space::local_space); }
 };
 
@@ -87,12 +82,12 @@ class work_range : public sycl::nd_range<Dims> {
 
     template<size_t... Indices>
     work_range(const sycl::range<Dims - 1> &range, std::index_sequence<Indices...>)
-        : sycl::nd_range<Dims>{sycl::range<Dims>{range[Indices]..., num_threads_per_hypercube},
-                sycl::range<Dims>{one<Indices>..., num_threads_per_hypercube}} {}
+        : sycl::nd_range<Dims>{sycl::range<Dims>{num_threads_per_hypercube, range[Indices]...},
+                               sycl::range<Dims>{num_threads_per_hypercube, one<Indices>...}} {}
 };
 
 
-using hypercube_item = work_item<3>;
+using hypercube_item = work_item<2>;
 
 
 class hypercube_range {
@@ -100,15 +95,12 @@ class hypercube_range {
     explicit hypercube_range(size_t num_hypercubes, size_t first_hc_index = 0)
         : _num_hypercubes(num_hypercubes), _first_hc_index(first_hc_index) {}
 
-    sycl::nd_range<3> item_space() const {
-        return work_range<3>{sycl::range<2>{
-                (_num_hypercubes + max_id_component_value - 1) / max_id_component_value,
-                std::min(_num_hypercubes, max_id_component_value)}};
+    sycl::nd_range<2> item_space() const {
+        return work_range<2>{sycl::range<1>{_num_hypercubes}};
     }
 
     size_t index_of(hypercube_item item) const {
-        return _first_hc_index + item.get_global_id(0) * max_id_component_value
-                + item.get_global_id(1);
+        return _first_hc_index + item.get_global_id(1);
     }
 
     bool contains(hypercube_item item) const {
@@ -736,17 +728,14 @@ size_t ndzip::gpu_encoder<T, Dims>::compress(
 
     sycl::buffer<detail::file_offset_type> stream_header_buffer(file.num_hypercubes());
     detail::gpu::submit_and_profile(_pimpl->q, "encode header", [&](sycl::handler &cgh) {
-        using detail::gpu::max_id_component_value;
         auto offsets_acc = stream_chunk_offsets_buffer.get_access<sam::read>(cgh);
         auto header_acc = stream_header_buffer.template get_access<sam::discard_write>(cgh);
         auto header_length = file.file_header_length();
         const auto num_hypercubes = file.num_hypercubes();
         cgh.parallel_for<detail::gpu::header_encoding_kernel<T, Dims>>(
-                sycl::range<2>{
-                        (num_hypercubes + max_id_component_value - 1) / max_id_component_value,
-                        std::min(num_hypercubes, max_id_component_value)},
-                [=](sycl::item<2> item) {
-                    auto hc_index = item.get_id(0) * max_id_component_value + item.get_id(1);
+                sycl::range<1>{num_hypercubes},
+                [=](sycl::item<1> item) {
+                    auto hc_index = item.get_id(0);
                     if (hc_index < num_hypercubes) {
                         header_acc[hc_index]
                                 = offsets_acc[hc_index] * sizeof(bits_type) + header_length;
