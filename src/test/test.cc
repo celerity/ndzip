@@ -71,6 +71,16 @@ bool for_vector_equality(const std::vector<T> &lhs, const std::vector<T> &rhs) {
 }
 
 
+template<typename Bits>
+Bits zero_map_from_transposed(const Bits *transposed) {
+    Bits zero_map = 0;
+    for (size_t i = 0; i < bitsof<Bits>; ++i) {
+        zero_map = (zero_map << 1u) | (transposed[i] != 0);
+    }
+    return zero_map;
+}
+
+
 TEMPLATE_TEST_CASE("block transform is reversible", "[profile]", (profile<float, 1>),
         (profile<float, 2>), (profile<float, 3>), (profile<double, 1>), (profile<double, 2>),
         (profile<double, 3>) ) {
@@ -91,28 +101,33 @@ TEMPLATE_TEST_CASE("block transform is reversible", "[profile]", (profile<float,
 
 
 TEMPLATE_TEST_CASE("CPU zero-word compaction is reversible", "[cpu]", uint32_t, uint64_t) {
-    std::vector<TestType> input(bitsof<TestType>);
+    cpu::simd_aligned_buffer<TestType> input(bitsof<TestType>);
     auto gen = std::minstd_rand();  // NOLINT(cert-msc51-cpp)
     auto dist = std::uniform_int_distribution<TestType>();
     size_t zeroes = 0;
-    for (auto &v : input) {
+    for (size_t i = 0; i < bitsof<TestType>; ++i) {
         auto r = dist(gen);
         if (r % 5 == 2) {
-            v = 0;
+            input[i] = 0;
             zeroes++;
         } else {
-            v = r;
+            input[i] = r;
         }
     }
 
     std::vector<std::byte> compact((bitsof<TestType> + 1) * sizeof(TestType));
-    auto bytes_written = detail::cpu::compact_zero_words(input.data(), compact.data());
+    auto zero_map = zero_map_from_transposed(input.data());
+    auto compact_stream = compact.data();
+    store_aligned(compact_stream, zero_map);
+    compact_stream += sizeof(TestType);
+    compact_stream += cpu::compact_zero_words(input.data(), compact_stream);
+    auto bytes_written = static_cast<size_t>(compact_stream - compact.data());
     CHECK(bytes_written == (bitsof<TestType> + 1 - zeroes) * sizeof(TestType));
 
     std::vector<TestType> output(bitsof<TestType>);
-    auto bytes_read = detail::cpu::expand_zero_words(compact.data(), output.data());
+    auto bytes_read = cpu::expand_zero_words(compact.data(), output.data());
     CHECK(bytes_read == bytes_written);
-    CHECK(output == input);
+    CHECK(output == std::vector<TestType>(input.data(), input.data() + bitsof<TestType>));
 }
 
 
@@ -126,10 +141,10 @@ TEMPLATE_TEST_CASE("CPU bit transposition is reversible", "[cpu]", uint32_t, uin
     }
 
     alignas(cpu::simd_width_bytes) TestType transposed[bitsof<TestType>];
-    detail::cpu::transpose_bits(input, transposed);
+    cpu::transpose_bits(input, transposed);
 
     alignas(cpu::simd_width_bytes) TestType output[bitsof<TestType>];
-    detail::cpu::transpose_bits(transposed, output);
+    cpu::transpose_bits(transposed, output);
 
     CHECK(memcmp(input, output, sizeof input) == 0);
 }
@@ -542,8 +557,8 @@ TEMPLATE_TEST_CASE("flattening of larger hypercubes is identical between CPU and
     sycl::queue q{sycl::gpu_selector{}};
     auto gpu_dump = load_and_dump_hypercube<profile>(input, hc_index, q);
 
-    detail::cpu::simd_aligned_buffer<typename profile::bits_type> cpu_dump(ipow(side_length, dims));
-    detail::cpu::load_hypercube<profile>(hc_offset, input, cpu_dump.data());
+    cpu::simd_aligned_buffer<typename profile::bits_type> cpu_dump(ipow(side_length, dims));
+    cpu::load_hypercube<profile>(hc_offset, input, cpu_dump.data());
 
     CHECK(memcmp(gpu_dump.data(), cpu_dump.data(),
                   sizeof(typename profile::bits_type) * detail::ipow(side_length, dims))
@@ -600,7 +615,7 @@ TEMPLATE_TEST_CASE("CPU and GPU forward block transforms are identical", "[gpu]"
                 detail::block_transform(
                         block, TestType::dimensions, TestType::hypercube_side_length);
             },
-            // Uses lambda instead of the function name, otherwise a host function pointer will
+            // Use lambda instead of the function name, otherwise a host function pointer will
             // be passed into the device kernel
             [](bits_type *block, gpu::work_item<2> item) {
                 gpu::block_transform<TestType>(block, item);
@@ -620,7 +635,7 @@ TEMPLATE_TEST_CASE("CPU and GPU inverse block transforms are identical", "[gpu]"
                 detail::inverse_block_transform(
                         block, TestType::dimensions, TestType::hypercube_side_length);
             },
-            // Uses lambda instead of the function name, otherwise a host function pointer will
+            // Use lambda instead of the function name, otherwise a host function pointer will
             // be passed into the device kernel
             [](bits_type *block, gpu::work_item<2> item) {
                 gpu::inverse_block_transform<TestType>(block, item);
@@ -635,10 +650,10 @@ TEMPLATE_TEST_CASE("CPU and GPU bit transposition are identical", "[gpu]", uint3
             bitsof<TestType>,
             [](TestType *chunk) {
                 TestType tmp[bitsof<TestType>];
-                detail::cpu::transpose_bits_trivial(chunk, tmp);
+                cpu::transpose_bits_trivial(chunk, tmp);
                 memcpy(chunk, tmp, sizeof tmp);
             },
-            // Uses lambda instead of the function name, otherwise a host function pointer will
+            // Use lambda instead of the function name, otherwise a host function pointer will
             // be passed into the device kernel
             [](TestType *chunk, gpu::work_item<2> item) { gpu::transpose_bits(chunk, item); });
 }
@@ -656,7 +671,7 @@ TEMPLATE_TEST_CASE("CPU and GPU zero-word compaction is identical", "[gpu]", uin
     }
 
     std::vector<TestType> cpu_compacted(bitsof<TestType> * 2);
-    detail::cpu::compact_zero_words(
+    cpu::compact_zero_words(
             input.data(), reinterpret_cast<std::byte *>(cpu_compacted.data()));
 
     sycl::queue q{sycl::gpu_selector{}};
@@ -706,8 +721,9 @@ TEMPLATE_TEST_CASE("GPU zero-word expansion works", "[gpu]", uint32_t, uint64_t)
     }
 
     std::vector<TestType> cpu_compacted(bitsof<TestType>);
-    detail::cpu::compact_zero_words(
-            input.data(), reinterpret_cast<std::byte *>(cpu_compacted.data()));
+    cpu_compacted[0] = zero_map_from_transposed(input.data());
+    cpu::compact_zero_words(
+            input.data(), reinterpret_cast<std::byte *>(cpu_compacted.data() + 1));
 
     sycl::queue q{sycl::gpu_selector{}};
 
@@ -757,10 +773,10 @@ TEMPLATE_TEST_CASE("CPU and GPU hypercube encodings are equivalent", "[gpu]", ui
         }
     }
 
-    detail::cpu::simd_aligned_buffer<TestType> cpu_cube(input.size());
+    cpu::simd_aligned_buffer<TestType> cpu_cube(input.size());
     memcpy(cpu_cube.data(), input.data(), input.size() * sizeof(TestType));
     std::vector<TestType> cpu_stream(hc_size * 2);
-    auto cpu_length = detail::cpu::zero_bit_encode(
+    auto cpu_length = cpu::zero_bit_encode(
             cpu_cube.data(), reinterpret_cast<std::byte *>(cpu_stream.data()), hc_size);
 
     sycl::queue q{sycl::gpu_selector{}};

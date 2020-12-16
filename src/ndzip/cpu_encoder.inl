@@ -341,22 +341,13 @@ template<typename Profile>
 
 
 template<typename T>
-bool all_zero(const T *u) {
-#ifdef __AVX2__
-    __m256i por{};
-    for (unsigned i = 0; i < bitsof<T> * sizeof(T) / 32; ++i) {
-        por |= _mm256_load_si256(reinterpret_cast<const __m256i *>(u) + i);
-    }
-    return static_cast<uint32_t>(_mm256_movemask_epi8(_mm256_cmpeq_epi32(por, __m256i{})))
-            == ~uint32_t{};
-#else
+T generate_zero_map(const T *u) {
     u = assume_simd_aligned(u);
-    bool zero = true;
+    T zero_map = 0;
     for (unsigned j = 0; j < bitsof<T>; ++j) {
-        zero &= u[j] == 0;
+        zero_map |= u[j];
     }
-    return zero;
-#endif
+    return zero_map;
 }
 
 
@@ -523,16 +514,13 @@ template<typename T>
 
 template<typename T>
 [[gnu::always_inline]] size_t compact_zero_words(const T *shifted, std::byte *out0) {
-    auto out = out0 + sizeof(T);
-    T head = 0;
+    auto out = out0;
     for (unsigned i = 0; i < bitsof<T>; ++i) {
         if (shifted[i] != 0) {
-            head |= T{1} << i;
             store_aligned(out, shifted[i]);
             out += sizeof(T);
         }
     }
-    store_aligned(out0, head);
     return out - out0;
 }
 
@@ -541,7 +529,7 @@ template<typename T>
     auto in = in0 + sizeof(T);
     auto head = load_aligned<T>(in0);
     for (unsigned i = 0; i < bitsof<T>; ++i) {
-        if ((head >> i) & T{1}) {
+        if ((head >> (bitsof<T> - 1 - i)) & T{1}) {
             shifted[i] = load_aligned<T>(in);
             in += sizeof(T);
         } else {
@@ -556,14 +544,15 @@ template<typename Bits>
 [[gnu::noinline]] size_t
 zero_bit_encode(const Bits *cube, std::byte *stream, size_t hc_size) {
     size_t pos = 0;
-    for (size_t i = 0; i < hc_size; i += detail::bitsof<Bits>) {
-        if (all_zero(cube + i)) {
-            // fast path (all_zero is relatively common, transpose+compact is expensive)
-            store_aligned(stream + pos, Bits{});
-            pos += sizeof(Bits);
-        } else {
+    for (size_t offset = 0; offset < hc_size; offset += detail::bitsof<Bits>) {
+        auto in = cube + offset;
+        auto zero_map = generate_zero_map(in);
+        store_aligned(stream + pos, zero_map);
+        pos += sizeof(Bits);
+        // all-zero is relatively common, transpose+compact is expensive
+        if (zero_map != 0) {
             alignas(simd_width_bytes) Bits transposed[detail::bitsof<Bits>];
-            detail::cpu::transpose_bits(cube + i, transposed);
+            detail::cpu::transpose_bits(in, transposed);
             pos += detail::cpu::compact_zero_words(transposed, stream + pos);
         }
     }

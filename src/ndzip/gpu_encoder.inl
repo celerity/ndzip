@@ -448,6 +448,29 @@ void transpose_bits(/* local */ Bits *cube, work_item<ItemDims> item) {
 }
 
 
+// Header zero-bitmap is in scratch[0] afterwards
+template<typename Bits, int ItemDims>
+Bits generate_zero_map(/* local */ const Bits *__restrict in,
+        /* local */ Bits *__restrict scratch, work_item<ItemDims> item) {
+    constexpr auto n_columns = bitsof<Bits>;
+
+    for (size_t i = item.thread_id(); i < n_columns; i += item.num_threads()) {
+        // TODO unroll reduction once instead of copying here
+        scratch[i] = in[i];
+    }
+    item.local_memory_barrier();
+
+    for (size_t offset = n_columns / 2; offset > 0; offset /= 2) {
+        for (size_t i = item.thread_id(); i < n_columns; i += item.num_threads()) {
+            if (i < offset) { scratch[i] |= scratch[i + offset]; }
+        }
+        item.local_memory_barrier();
+    }
+
+    return scratch[0];
+}
+
+
 template<typename Bits, int ItemDims>
 size_t compact_zero_words(/* global */ Bits *__restrict out, /* local */ const Bits *__restrict in,
         /* local */ Bits *__restrict scratch, work_item<ItemDims> item) {
@@ -455,46 +478,39 @@ size_t compact_zero_words(/* global */ Bits *__restrict out, /* local */ const B
 
     for (size_t i = item.thread_id(); i < n_columns; i += item.num_threads()) {
         scratch[i] = in[i] != 0;
-        // TODO this is dumb, we can just OR values before transposition
-        scratch[2 * n_columns + i] = Bits{in[i] != 0} << i;
     }
 
     item.local_memory_barrier();
 
     local_inclusive_prefix_sum(scratch, n_columns, item);
 
-    // Header reduction - TODO merge with prefix sum loop, or better yet, move into a all_zero check
-    for (size_t offset = n_columns / 2; offset > 0; offset /= 2) {
-        for (size_t i = item.thread_id(); i < n_columns; i += item.num_threads()) {
-            if (i < offset) { scratch[2 * n_columns + i] |= scratch[2 * n_columns + i + offset]; }
-        }
-        item.local_memory_barrier();
-    }
-
-    if (item.thread_id() == 0) { out[0] = scratch[2 * n_columns]; }
-
     for (size_t i = item.thread_id(); i < n_columns; i += item.num_threads()) {
         if (in[i] != 0) {
             size_t offset = i ? scratch[i - 1] : 0;
-            out[1 + offset] = in[i];
+            out[offset] = in[i];
         }
     }
 
-    return 1 + scratch[n_columns - 1];
+    return scratch[n_columns - 1];
 }
 
 
 template<typename Bits, int ItemDims>
 size_t zero_bit_encode(/* local */ Bits *__restrict cube, /* global */ Bits *__restrict stream,
         /* local */ Bits *__restrict scratch, size_t hc_size, work_item<ItemDims> item) {
-    for (size_t offset = 0; offset < hc_size; offset += bitsof<Bits>) {
-        transpose_bits(cube + offset, item);
-    }
+    constexpr auto n_columns = bitsof<Bits>;
 
     auto out = stream;
-    for (size_t offset = 0; offset < hc_size; offset += bitsof<Bits>) {
-        item.local_memory_barrier();
-        out += compact_zero_words(out, cube + offset, scratch, item);
+    for (size_t offset = 0; offset < hc_size; offset += n_columns) {
+        auto in = cube + offset;
+        auto zero_map = generate_zero_map(in, scratch, item);
+        if (item.thread_id() == 0) { out[0] = zero_map; }
+        ++out;
+        if (zero_map != 0) {
+            transpose_bits(in, item);
+            item.local_memory_barrier();
+            out += compact_zero_words(out, in, scratch, item);
+        }
     }
 
     return out - stream;
@@ -508,7 +524,7 @@ size_t expand_zero_words(/* local */ Bits *__restrict out, /* global */ const Bi
 
     auto head = in[0];
     for (size_t i = item.thread_id(); i < n_columns; i += item.num_threads()) {
-        scratch[i] = (head >> i) & Bits{1};
+        scratch[i] = (head >> (n_columns - 1 - i)) & Bits{1};
     }
 
     item.local_memory_barrier();
@@ -516,7 +532,7 @@ size_t expand_zero_words(/* local */ Bits *__restrict out, /* global */ const Bi
     local_inclusive_prefix_sum(scratch, n_columns, item);
 
     for (size_t i = item.thread_id(); i < n_columns; i += item.num_threads()) {
-        if (((head >> i) & Bits{1}) != 0) {
+        if (((head >> (n_columns - 1 - i)) & Bits{1}) != 0) {
             out[i] = in[scratch[i]];  // +1 from header offset and -1 from inclusive scan cancel
         } else {
             out[i] = 0;
@@ -803,12 +819,12 @@ size_t ndzip::gpu_encoder<T, Dims>::decompress(
     sycl::buffer<data_type, dimensions> data_buffer{
             detail::gpu::extent_cast<sycl::range<dimensions>>(data.size())};
 
-    _pimpl->q.submit([&](sycl::handler &cgh) {
+    detail::gpu::submit_and_profile(_pimpl->q, "copy stream to device", [&](sycl::handler &cgh) {
         cgh.copy(static_cast<const bits_type *>(stream),
                 stream_buffer.template get_access<sam::discard_write>(cgh));
     });
 
-    _pimpl->q.submit([&](sycl::handler &cgh) {
+    detail::gpu::submit_and_profile(_pimpl->q, "decompress blocks", [&](sycl::handler &cgh) {
         auto stream_acc = stream_buffer.template get_access<sam::read>(cgh);
         auto data_acc = data_buffer.template get_access<sam::discard_write>(cgh);
         auto local_memory_acc = detail::gpu::local_accessor<bits_type>{
@@ -825,9 +841,10 @@ size_t ndzip::gpu_encoder<T, Dims>::decompress(
                 });
     });
 
-    auto data_copy_event = _pimpl->q.submit([&](sycl::handler &cgh) {
-        cgh.copy(data_buffer.template get_access<sam::read>(cgh), data.data());
-    });
+    auto data_copy_event = detail::gpu::submit_and_profile(
+            _pimpl->q, "copy output to host", [&](sycl::handler &cgh) {
+                cgh.copy(data_buffer.template get_access<sam::read>(cgh), data.data());
+            });
 
     auto stream_pos
             = detail::load_aligned<detail::file_offset_type>(static_cast<const std::byte *>(stream)
