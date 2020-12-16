@@ -445,7 +445,7 @@ load_and_dump_hypercube(const slice<const typename Profile::data_type, Profile::
         auto data_acc = data_buf.template get_access<sam::read>(cgh);
         auto local_acc = accessor<bits_type, 1, sam::read_write, sat::local>(hc_size, cgh);
         auto result_acc = result_buf.template get_access<sam ::discard_write>(cgh);
-        const auto hc_range = gpu::hypercube_range{1, hc_index};
+        const auto hc_range = gpu::hypercube_range{1, 1, hc_index};
         const auto data_size = data.size();
         cgh.parallel_for<load_and_dump_hypercube_kernel<Profile>>(
                 hc_range.item_space(), [=](gpu::hypercube_item item) {
@@ -863,10 +863,10 @@ TEST_CASE("hypercube_range can index past the CUDA index space limit", "[gpu]") 
     });
     q.submit([&](sycl::handler &cgh) {
         auto write_acc = write_buffer.get_access<sam::write>(cgh);
-        auto hc_range = gpu::hypercube_range{num - offset, offset};
+        auto hc_range = gpu::hypercube_range{num - offset, 1, offset};
         cgh.parallel_for(hc_range.item_space(), [=](gpu::hypercube_item item) {
             if (hc_range.contains(item) && item.thread_id() == 0) {
-                auto index = hc_range.index_of(item);
+                auto index = hc_range.global_index_of(item);
                 write_acc[index] = index;
             }
         });

@@ -73,17 +73,29 @@ class work_range : public sycl::nd_range<Dims> {
     static_assert(Dims > 1);
 
   public:
-    work_range(const sycl::range<Dims - 1> &range)  // NOLINT(google-explicit-constructor)
-        : work_range(range, std::make_index_sequence<static_cast<size_t>(Dims - 1)>{}) {}
+    work_range(const sycl::range<Dims - 1> &global_range, const sycl::range<Dims - 1> &local_range)
+        : work_range(global_range, local_range,
+                std::make_index_sequence<static_cast<size_t>(Dims - 1)>{}) {}
+
+    explicit work_range(const sycl::range<Dims - 1> &global_range)
+        : work_range(global_range, std::make_index_sequence<static_cast<size_t>(Dims - 1)>{}) {}
 
   private:
     template<size_t>
     constexpr static size_t one = 1;
 
     template<size_t... Indices>
-    work_range(const sycl::range<Dims - 1> &range, std::index_sequence<Indices...>)
-        : sycl::nd_range<Dims>{sycl::range<Dims>{num_threads_per_hypercube, range[Indices]...},
-                               sycl::range<Dims>{num_threads_per_hypercube, one<Indices>...}} {}
+    work_range(const sycl::range<Dims - 1> &global_range, const sycl::range<Dims - 1> &local_range,
+            std::index_sequence<Indices...>)
+        : sycl::nd_range<Dims>{
+                sycl::range<Dims>{num_threads_per_hypercube, global_range[Indices]...},
+                sycl::range<Dims>{num_threads_per_hypercube, local_range[Indices]...}} {}
+
+    template<size_t... Indices>
+    work_range(const sycl::range<Dims - 1> &global_range, std::index_sequence<Indices...>)
+        : sycl::nd_range<Dims>{
+                sycl::range<Dims>{num_threads_per_hypercube, global_range[Indices]...},
+                sycl::range<Dims>{num_threads_per_hypercube, one<Indices>...}} {}
 };
 
 
@@ -92,25 +104,31 @@ using hypercube_item = work_item<2>;
 
 class hypercube_range {
   public:
-    explicit hypercube_range(size_t num_hypercubes, size_t first_hc_index = 0)
-        : _num_hypercubes(num_hypercubes), _first_hc_index(first_hc_index) {}
+    explicit hypercube_range(
+            size_t num_hypercubes, size_t max_hcs_per_work_group, size_t first_hc_index = 0)
+        : _num_hypercubes(num_hypercubes)
+        , _max_hcs_per_work_group(max_hcs_per_work_group)
+        , _first_hc_index(first_hc_index) {}
 
     sycl::nd_range<2> item_space() const {
-        return work_range<2>{sycl::range<1>{_num_hypercubes}};
+        return work_range<2>{sycl::range<1>{(_num_hypercubes + _max_hcs_per_work_group - 1)
+                                     / _max_hcs_per_work_group * _max_hcs_per_work_group},
+                sycl::range<1>{_max_hcs_per_work_group}};
     }
 
-    size_t index_of(hypercube_item item) const {
+    size_t global_index_of(hypercube_item item) const {
         return _first_hc_index + item.get_global_id(1);
     }
 
-    bool contains(hypercube_item item) const {
-        return index_of(item) < _first_hc_index + _num_hypercubes;
-    }
+    size_t local_index_of(hypercube_item item) const { return item.get_local_id(1); }
+
+    bool contains(hypercube_item item) const { return item.get_global_id(1) < _num_hypercubes; }
 
     size_t num_hypercubes() const { return _num_hypercubes; }
 
   private:
     size_t _num_hypercubes;
+    size_t _max_hcs_per_work_group;
     size_t _first_hc_index;
 };
 
@@ -284,7 +302,8 @@ void distribute_for_hypercube_indices(extent<Profile::dimensions> data_size,
         hypercube_range hc_range, hypercube_item item, F &&f) {
     auto side_length = Profile::hypercube_side_length;
     auto hc_size = ipow(side_length, Profile::dimensions);
-    auto hc_offset = detail::extent_from_linear_id(hc_range.index_of(item), data_size / side_length)
+    auto hc_offset
+            = detail::extent_from_linear_id(hc_range.global_index_of(item), data_size / side_length)
             * side_length;
 
     size_t initial_offset = linear_offset(hc_offset, data_size);
@@ -551,6 +570,31 @@ void zero_bit_decode(/* global */ const Bits *__restrict stream, /* local */ Bit
 
 
 template<typename Profile>
+constexpr size_t local_memory_words_per_hypercube
+        = detail::ipow(Profile::hypercube_side_length, Profile::dimensions)
+        + 3 * detail::bitsof<typename Profile::bits_type>;
+
+inline size_t max_work_group_size(size_t local_memory_per_wg, const sycl::device &device) {
+    auto available_local_memory
+            = static_cast<size_t>(device.get_info<sycl::info::device::local_mem_size>());
+    auto max_local_size
+            = static_cast<size_t>(device.get_info<sycl::info::device::max_work_group_size>());
+    auto max_wg_size = available_local_memory / local_memory_per_wg;
+    if (max_wg_size == 0) {
+        throw std::runtime_error("Not enough local memory on this device (has "
+                + std::to_string(available_local_memory) + " bytes, needs at least "
+                + std::to_string(local_memory_per_wg) + " bytes)");
+    }
+    max_wg_size = std::min(max_wg_size, max_local_size / num_threads_per_hypercube);
+    if (auto env = getenv("NDZIP_VERBOSE"); env && *env) {
+        printf("Allowing %zu work groups per SM (allocates %zu of %zu bytes)\n", max_wg_size,
+                max_wg_size * local_memory_per_wg, available_local_memory);
+    }
+    return max_wg_size;
+}
+
+
+template<typename Profile>
 void compress_hypercubes(/* global */ const typename Profile::data_type *__restrict data,
         /* global */ typename Profile::bits_type *__restrict stream_chunks,
         /* global */ detail::file_offset_type *__restrict stream_chunk_lengths,
@@ -560,8 +604,10 @@ void compress_hypercubes(/* global */ const typename Profile::data_type *__restr
 
     const auto side_length = Profile::hypercube_side_length;
     const auto hc_size = detail::ipow(side_length, Profile::dimensions);
-    const auto cube = local_memory;
-    const auto scratch = local_memory + hc_size;
+    const auto this_hc_local_memory = local_memory
+            + hc_range.local_index_of(item) * local_memory_words_per_hypercube<Profile>;
+    const auto cube = this_hc_local_memory;
+    const auto scratch = this_hc_local_memory + hc_size;
     const auto max_chunk_size
             = (Profile::compressed_block_size_bound + sizeof(bits_type) - 1) / sizeof(bits_type);
 
@@ -569,8 +615,9 @@ void compress_hypercubes(/* global */ const typename Profile::data_type *__restr
     item.local_memory_barrier();
     block_transform<Profile>(cube, item);
     item.local_memory_barrier();
-    stream_chunk_lengths[hc_range.index_of(item)] = zero_bit_encode<bits_type>(
-            cube, stream_chunks + hc_range.index_of(item) * max_chunk_size, scratch, hc_size, item);
+    stream_chunk_lengths[hc_range.global_index_of(item)] = zero_bit_encode<bits_type>(cube,
+            stream_chunks + hc_range.global_index_of(item) * max_chunk_size, scratch, hc_size,
+            item);
 }
 
 
@@ -584,10 +631,11 @@ void compact_stream(/* global */ typename Profile::bits_type *stream,
 
     const auto max_chunk_size
             = (Profile::compressed_block_size_bound + sizeof(bits_type) - 1) / sizeof(bits_type);
-    const auto this_chunk_size = stream_chunk_lengths[hc_range.index_of(item)];
-    const auto this_chunk_offset
-            = hc_range.index_of(item) ? stream_chunk_offsets[hc_range.index_of(item) - 1] : 0;
-    const auto source = stream_chunks + hc_range.index_of(item) * max_chunk_size;
+    const auto this_chunk_size = stream_chunk_lengths[hc_range.global_index_of(item)];
+    const auto this_chunk_offset = hc_range.global_index_of(item)
+            ? stream_chunk_offsets[hc_range.global_index_of(item) - 1]
+            : 0;
+    const auto source = stream_chunks + hc_range.global_index_of(item) * max_chunk_size;
     const auto dest = stream + this_chunk_offset;
     detail::gpu::nd_memcpy(dest, source, this_chunk_size, item);
 }
@@ -602,13 +650,15 @@ void decompress_hypercubes(/* global */ const typename Profile::bits_type *__res
 
     const auto side_length = Profile::hypercube_side_length;
     const auto hc_size = detail::ipow(side_length, Profile::dimensions);
-    const auto cube = local_memory;
-    const auto scratch = local_memory + hc_size;
+    const auto this_hc_local_memory = local_memory
+            + hc_range.local_index_of(item) * local_memory_words_per_hypercube<Profile>;
+    const auto cube = this_hc_local_memory;
+    const auto scratch = this_hc_local_memory + hc_size;
 
     // TODO casting / byte-offsetting is ugly. Use separate buffers like in compress()
     const auto offset_table = reinterpret_cast<const file_offset_type *>(stream);
-    const auto chunk_offset_bytes = hc_range.index_of(item)
-            ? offset_table[hc_range.index_of(item) - 1]
+    const auto chunk_offset_bytes = hc_range.global_index_of(item)
+            ? offset_table[hc_range.global_index_of(item) - 1]
             : hc_range.num_hypercubes() * sizeof(file_offset_type);
     const auto chunk_offset_words = chunk_offset_bytes / sizeof(bits_type);
 
@@ -667,8 +717,6 @@ size_t ndzip::gpu_encoder<T, Dims>::compress(
     using bits_type = typename profile::bits_type;
     using sam = sycl::access::mode;
 
-    constexpr auto side_length = profile::hypercube_side_length;
-    constexpr auto hc_size = detail::ipow(side_length, profile::dimensions);
     const auto max_chunk_size
             = (profile::compressed_block_size_bound + sizeof(bits_type) - 1) / sizeof(bits_type);
 
@@ -687,6 +735,10 @@ size_t ndzip::gpu_encoder<T, Dims>::compress(
         cgh.copy(data.data(), data_buffer.template get_access<sam::discard_write>(cgh));
     });
 
+    auto local_memory_words_per_hc = detail::gpu::local_memory_words_per_hypercube<profile>;
+    auto max_hcs_per_work_group = detail::gpu::max_work_group_size(
+            local_memory_words_per_hc * sizeof(bits_type), _pimpl->q.get_device());
+
     detail::gpu::submit_and_profile(_pimpl->q, "block compression", [&](sycl::handler &cgh) {
         auto data_acc = data_buffer.template get_access<sam::read>(cgh);
         auto stream_chunks_acc
@@ -694,9 +746,9 @@ size_t ndzip::gpu_encoder<T, Dims>::compress(
         auto stream_chunk_lengths_acc
                 = stream_chunk_lengths_buffer.get_access<sam::discard_write>(cgh);
         auto local_memory_acc = detail::gpu::local_accessor<bits_type>{
-                hc_size + 3 * detail::bitsof<bits_type>, cgh};
+                local_memory_words_per_hc * max_hcs_per_work_group, cgh};
         auto data_size = data.size();
-        auto hc_range = detail::gpu::hypercube_range{file.num_hypercubes()};
+        auto hc_range = detail::gpu::hypercube_range{file.num_hypercubes(), max_hcs_per_work_group};
         cgh.parallel_for<detail::gpu::block_compression_kernel<T, Dims>>(
                 hc_range.item_space(), [=](detail::gpu::hypercube_item item) {
                     if (hc_range.contains(item)) {
@@ -733,8 +785,7 @@ size_t ndzip::gpu_encoder<T, Dims>::compress(
         auto header_length = file.file_header_length();
         const auto num_hypercubes = file.num_hypercubes();
         cgh.parallel_for<detail::gpu::header_encoding_kernel<T, Dims>>(
-                sycl::range<1>{num_hypercubes},
-                [=](sycl::item<1> item) {
+                sycl::range<1>{num_hypercubes}, [=](sycl::item<1> item) {
                     auto hc_index = item.get_id(0);
                     if (hc_index < num_hypercubes) {
                         header_acc[hc_index]
@@ -752,16 +803,17 @@ size_t ndzip::gpu_encoder<T, Dims>::compress(
 
     num_compressed_words_available.wait();
 
+    const auto compaction_local_size = 16;  // TODO tune
+    // TODO also, is explicit parallelism per HC even the best way to implement this?
+
     sycl::buffer<bits_type> stream_body_buffer(num_compressed_words);
     detail::gpu::submit_and_profile(_pimpl->q, "compact chunks", [&](sycl::handler &cgh) {
         auto stream_chunks_acc = stream_chunks_buffer.template get_access<sam::read>(cgh);
         auto stream_chunk_lengths_acc = stream_chunk_lengths_buffer.get_access<sam::read>(cgh);
         auto stream_chunk_offsets_acc = stream_chunk_offsets_buffer.get_access<sam::read>(cgh);
         auto body_acc = stream_body_buffer.template get_access<sam::write>(cgh);
-        auto hc_range = detail::gpu::hypercube_range{file.num_hypercubes()};
+        auto hc_range = detail::gpu::hypercube_range{file.num_hypercubes(), compaction_local_size};
         cgh.parallel_for<detail::gpu::stream_compaction_kernel<T, Dims>>(
-                // TODO hypercube_range / hypercube_item might not be optimal here, experiment
-                //  with other local sizes
                 hc_range.item_space(), [=](detail::gpu::hypercube_item item) {
                     if (hc_range.contains(item)) {
                         detail::gpu::compact_stream<profile>(body_acc.get_pointer(),
@@ -798,10 +850,11 @@ size_t ndzip::gpu_encoder<T, Dims>::decompress(
     using bits_type = typename profile::bits_type;
     using sam = sycl::access::mode;
 
-    constexpr auto side_length = profile::hypercube_side_length;
-    constexpr auto hc_size = detail::ipow(side_length, profile::dimensions);
-
     detail::file<profile> file(data.size());
+
+    auto local_memory_words_per_hc = detail::gpu::local_memory_words_per_hypercube<profile>;
+    auto max_hcs_per_work_group = detail::gpu::max_work_group_size(
+            local_memory_words_per_hc * sizeof(bits_type), _pimpl->q.get_device());
 
     // TODO the range computation here is questionable at best
     sycl::buffer<bits_type, 1> stream_buffer{sycl::range<1>{bytes / sizeof(bits_type)}};
@@ -817,9 +870,9 @@ size_t ndzip::gpu_encoder<T, Dims>::decompress(
         auto stream_acc = stream_buffer.template get_access<sam::read>(cgh);
         auto data_acc = data_buffer.template get_access<sam::discard_write>(cgh);
         auto local_memory_acc = detail::gpu::local_accessor<bits_type>{
-                hc_size + 2 * detail::bitsof<bits_type>, cgh};
+                local_memory_words_per_hc * max_hcs_per_work_group, cgh};
         auto data_size = data.size();
-        auto hc_range = detail::gpu::hypercube_range{file.num_hypercubes()};
+        auto hc_range = detail::gpu::hypercube_range{file.num_hypercubes(), max_hcs_per_work_group};
         cgh.parallel_for<detail::gpu::stream_decompression_kernel<T, Dims>>(
                 hc_range.item_space(), [=](detail::gpu::hypercube_item item) {
                     if (hc_range.contains(item)) {
