@@ -38,6 +38,8 @@ endif ()
 
 
 set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CUDA_STANDARD 17)
+
 set(NDZIP_COMPILE_FLAGS
     -Wall -Wextra -Werror=return-type -Werror=init-self -Werror=undef -Wno-attributes -Wimplicit-fallthrough
     # Force colored warnings in Ninja's output, if the compiler has -fdiagnostics-color support.
@@ -110,15 +112,16 @@ if (NDZIP_BUILD_BENCHMARK)
     if (FPZIP_FOUND)
         set(BUILD_UTILITIES OFF CACHE BOOL "Build command-line utilities for fpzip")
         set(BUILD_TESTING OFF CACHE BOOL "Build tests")
-        add_subdirectory(contrib/fpzip)
+        add_subdirectory(contrib/fpzip EXCLUDE_FROM_ALL)
     endif ()
 
-    add_subdirectory(contrib/fpc)
-    add_subdirectory(contrib/pfpc)
-    add_subdirectory(contrib/spdp)
+    add_subdirectory(contrib/fpc EXCLUDE_FROM_ALL)
+    add_subdirectory(contrib/pfpc EXCLUDE_FROM_ALL)
+    add_subdirectory(contrib/spdp EXCLUDE_FROM_ALL)
 
     if (CUDAToolkit_FOUND)
-        add_subdirectory(contrib/gfc)
+        add_subdirectory(contrib/gfc EXCLUDE_FROM_ALL)
+        add_subdirectory(contrib/mpc EXCLUDE_FROM_ALL)
     else ()
         message(WARNING "CUDA not found, omitting some algorithms in benchmark")
     endif ()
@@ -132,6 +135,7 @@ if (NDZIP_BUILD_BENCHMARK)
         "-DNDZIP_BENCHMARK_HAVE_LZMA=$<BOOL:${LZMA_FOUND}>"
         "-DNDZIP_BENCHMARK_HAVE_FPZIP=$<BOOL:${FPZIP_FOUND}>"
         "-DNDZIP_BENCHMARK_HAVE_GFC=$<BOOL:${CUDAToolkit_FOUND}>"
+        "-DNDZIP_BENCHMARK_HAVE_MPC=$<BOOL:${CUDAToolkit_FOUND}>"
         "-DNDZIP_BENCHMARK_HAVE_ZSTD=$<BOOL:${ZSTD_FOUND}>"
     )
     if (NDZIP_USE_OPENMP)
@@ -154,6 +158,7 @@ if (NDZIP_BUILD_BENCHMARK)
     endif ()
     if (CUDAToolkit_FOUND)
         target_link_libraries(benchmark PRIVATE gfc)
+        target_link_libraries(benchmark PRIVATE mpc)
     endif ()
     if (ZSTD_FOUND)
         target_link_libraries(benchmark PRIVATE PkgConfig::ZSTD)

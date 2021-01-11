@@ -35,6 +35,9 @@
 #if NDZIP_BENCHMARK_HAVE_GFC
 #include <GFC_22.h>
 #endif
+#if NDZIP_BENCHMARK_HAVE_MPC
+#include <MPC_12.h>
+#endif
 
 
 enum class data_type {
@@ -504,6 +507,90 @@ static benchmark_result benchmark_gfc(
 #endif
 
 
+#if NDZIP_BENCHMARK_HAVE_MPC
+static benchmark_result benchmark_mpc_float(
+        const void *input_buffer, const metadata &metadata, const benchmark_params &params) {
+    auto bench = benchmark{params};
+
+    const int dimensionality = 1;
+
+    const int *uncompressed_words = reinterpret_cast<const int *>(input_buffer);
+    const auto uncompressed_size = metadata.size_in_bytes();
+    int uncompressed_num_words = static_cast<int>(uncompressed_size / sizeof(int));
+    int compressed_num_words_bound = MPC_float_compressBound(uncompressed_num_words);
+
+    auto compress_buffer = scratch_buffer<int>{static_cast<size_t>(compressed_num_words_bound)};
+    int compressed_num_words = 0;
+    while (bench.compress_more()) {
+        uint64_t kernel_time_us;
+        compressed_num_words = MPC_float_compressMemory(compress_buffer.data(), uncompressed_words,
+                                                        uncompressed_num_words, dimensionality, &kernel_time_us);
+        bench.record_compression(std::chrono::microseconds(kernel_time_us));
+    }
+    auto compressed_size
+            = static_cast<size_t>(static_cast<long>(compressed_num_words)) * sizeof(int);
+
+    auto decompress_buffer = scratch_buffer<int>{static_cast<size_t>(uncompressed_num_words)};
+    int decompressed_num_words = 0;
+    while (bench.decompress_more()) {
+        uint64_t kernel_time_us;
+        decompressed_num_words = MPC_float_decompressMemory(decompress_buffer.data(),
+                                                            compress_buffer.data(), compressed_num_words, &kernel_time_us);
+        bench.record_decompression(std::chrono::microseconds(kernel_time_us));
+    }
+
+    if (decompressed_num_words != uncompressed_num_words) throw buffer_mismatch{};
+    assert_buffer_equality(input_buffer, decompress_buffer.data(), uncompressed_size);
+    return std::move(bench).result(uncompressed_size, compressed_size);
+}
+
+static benchmark_result benchmark_mpc_double(
+        const void *input_buffer, const metadata &metadata, const benchmark_params &params) {
+    auto bench = benchmark{params};
+
+    const int dimensionality = 1;
+
+    const long *uncompressed_words = reinterpret_cast<const long *>(input_buffer);
+    const auto uncompressed_size = metadata.size_in_bytes();
+    int uncompressed_num_words = static_cast<int>(uncompressed_size / sizeof(long));
+    int compressed_num_words_bound = MPC_float_compressBound(uncompressed_num_words);
+
+    auto compress_buffer = scratch_buffer<long>{static_cast<size_t>(compressed_num_words_bound)};
+    int compressed_num_words = 0;
+    while (bench.compress_more()) {
+        uint64_t kernel_time_us;
+        compressed_num_words = MPC_double_compressMemory(compress_buffer.data(), uncompressed_words,
+                uncompressed_num_words, dimensionality, &kernel_time_us);
+        bench.record_compression(std::chrono::microseconds(kernel_time_us));
+    }
+    auto compressed_size
+            = static_cast<size_t>(static_cast<long>(compressed_num_words)) * sizeof(long);
+
+    auto decompress_buffer = scratch_buffer<long>{static_cast<size_t>(uncompressed_num_words)};
+    int decompressed_num_words = 0;
+    while (bench.decompress_more()) {
+        uint64_t kernel_time_us;
+        decompressed_num_words = MPC_double_decompressMemory(decompress_buffer.data(),
+                compress_buffer.data(), compressed_num_words, &kernel_time_us);
+        bench.record_decompression(std::chrono::microseconds(kernel_time_us));
+    }
+
+    if (decompressed_num_words != uncompressed_num_words) throw buffer_mismatch{};
+    assert_buffer_equality(input_buffer, decompress_buffer.data(), uncompressed_size);
+    return std::move(bench).result(uncompressed_size, compressed_size);
+}
+
+static benchmark_result benchmark_mpc(
+        const void *input_buffer, const metadata &metadata, const benchmark_params &params) {
+    if (metadata.data_type == data_type::t_float) {
+        return benchmark_mpc_float(input_buffer, metadata, params);
+    } else {
+        return benchmark_mpc_double(input_buffer, metadata, params);
+    }
+}
+#endif
+
+
 #if NDZIP_BENCHMARK_HAVE_ZLIB
 static benchmark_result benchmark_deflate(
         const void *input_buffer, const metadata &metadata, const benchmark_params &params) {
@@ -833,6 +920,9 @@ const algorithm_map &available_algorithms() {
         {"spdp", {benchmark_spdp, 1, 5, 9}},
 #if NDZIP_BENCHMARK_HAVE_GFC
         {"gfc", {benchmark_gfc}},
+#endif
+#if NDZIP_BENCHMARK_HAVE_MPC
+        {"mpc", {benchmark_mpc}},
 #endif
 #if NDZIP_BENCHMARK_HAVE_ZLIB
         {"deflate", {benchmark_deflate, 1, 6, 9}},

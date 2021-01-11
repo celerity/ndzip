@@ -41,10 +41,14 @@ Using GPUs, pp. 7:1-7:7. March 2011.
 
 #include "GFC_22.h"
 
-#include <stdlib.h>
-#include <stdio.h>
-#include <assert.h>
-#include <cuda.h>
+#include <algorithm>
+#include <cstdlib>
+#include <cstdio>
+#include <cassert>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 #define ull unsigned long long
 #define MAX (64*1024*1024)
@@ -79,8 +83,8 @@ Compressed chunk offsets for offset table, in offd
 
 __global__ void CompressionKernel()
 {
-  register int offset, code, bcount, tmp, off, beg, end, lane, warp, iindex, lastidx, start, term;
-  register ull diff, prev;
+  int offset, code, bcount, tmp, off, beg, end, lane, warp, iindex, lastidx, start, term;
+  ull diff, prev;
   __shared__ int ibufs[32 * (3 * WARPSIZE / 2)]; // shared space for prefix sum
 
   // index within this warp
@@ -179,8 +183,8 @@ The decompressed data in fbufd
 
 __global__ void DecompressionKernel()
 {
-  register int offset, code, bcount, off, beg, end, lane, warp, iindex, lastidx, start, term;
-  register ull diff, prev;
+  int offset, code, bcount, off, beg, end, lane, warp, iindex, lastidx, start, term;
+  ull diff, prev;
   __shared__ int ibufs[32 * (3 * WARPSIZE / 2)];
 
   // index within this warp
@@ -260,7 +264,7 @@ static void CudaTest(const char *msg)
 {
   cudaError_t e;
 
-  cudaThreadSynchronize();
+  cudaDeviceSynchronize();
   if (cudaSuccess != (e = cudaGetLastError())) {
     fprintf(stderr, "%s: %d\n", msg, e);
     fprintf(stderr, "%s\n", cudaGetErrorString(e));
@@ -329,7 +333,7 @@ size_t GFC_Compress_Memory(const void *in_stream, size_t in_size, void *out_stre
   int curr = 0, before = 0, d = 0;
   for (int i = 0; i < blocks * warpsperblock; i++) {
     curr += per;
-    cut[i] = min(curr, doubles);
+    cut[i] = std::min(curr, doubles);
     if (cut[i] - before > 0) {
       d = cut[i] - before;
     }
@@ -530,7 +534,7 @@ size_t GFC_Decompress_Memory(const void *in_stream, size_t in_size, void *out_st
   int curr = 0;
   for (int i = 0; i < blocks * warpsperblock; i++) {
     curr += per;
-    cut[i] = min(curr, doubles);
+    cut[i] = std::min(curr, doubles);
   }
 
   // allocate GPU buffers
@@ -653,7 +657,7 @@ static int VerifySystemParameters()
   for (current_device = 0; current_device < device_count; current_device++) { 
     cudaGetDeviceProperties(&deviceProp, current_device);
     if (deviceProp.major > 0 && deviceProp.major < 9999) { 
-      best_SM_arch = max(best_SM_arch, deviceProp.major); 
+      best_SM_arch = std::max(best_SM_arch, deviceProp.major);
     }
   }
    
@@ -702,7 +706,7 @@ static int VerifySystemParameters()
     fprintf(stderr, "Warp size must be %d\n", deviceProp.warpSize);
     exit(-1);
   }
-  if ((WARPSIZE <= 0) || (WARPSIZE & (WARPSIZE-1) != 0)) {
+  if ((WARPSIZE <= 0) || ((WARPSIZE & (WARPSIZE-1)) != 0)) {
     fprintf(stderr, "Warp size must be greater than zero and a power of two\n");
     exit(-1);
   }
@@ -725,3 +729,7 @@ void GFC_Init()
 
 
 const char *GFC_Version_String = "GPU FP Compressor v2.2";
+
+#ifdef __cplusplus
+}
+#endif
