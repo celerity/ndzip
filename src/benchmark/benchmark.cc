@@ -483,8 +483,7 @@ static benchmark_result benchmark_gfc(
     const int dimensionality = 1;
     GFC_Init();
 
-    auto compress_buffer = scratch_buffer{
-            2 * uncompressed_size + 1000};  // no bound function, just guess large enough
+    auto compress_buffer = scratch_buffer{GFC_CompressBound(uncompressed_size)};
     size_t compressed_size;
     while (bench.compress_more()) {
         uint64_t kernel_time_us;
@@ -524,7 +523,7 @@ static benchmark_result benchmark_mpc_float(
     while (bench.compress_more()) {
         uint64_t kernel_time_us;
         compressed_num_words = MPC_float_compressMemory(compress_buffer.data(), uncompressed_words,
-                                                        uncompressed_num_words, dimensionality, &kernel_time_us);
+                uncompressed_num_words, dimensionality, &kernel_time_us);
         bench.record_compression(std::chrono::microseconds(kernel_time_us));
     }
     auto compressed_size
@@ -535,7 +534,7 @@ static benchmark_result benchmark_mpc_float(
     while (bench.decompress_more()) {
         uint64_t kernel_time_us;
         decompressed_num_words = MPC_float_decompressMemory(decompress_buffer.data(),
-                                                            compress_buffer.data(), compressed_num_words, &kernel_time_us);
+                compress_buffer.data(), compressed_num_words, &kernel_time_us);
         bench.record_decompression(std::chrono::microseconds(kernel_time_us));
     }
 

@@ -51,7 +51,7 @@ extern "C" {
 #endif
 
 #define ull unsigned long long
-#define MAX (64*1024*1024)
+#define MAX (128*1024*1024)
 
 #define WARPSIZE 32
 
@@ -293,9 +293,18 @@ static size_t stream_write(const void *buffer, size_t size, size_t items, void *
 
 /************************************************************************************/
 
+size_t GFC_CompressBound(size_t in_size)
+{
+    return 7 + ((in_size + 7) / 8 + 1) / 2 * 17;
+}
+
 size_t GFC_Compress_Memory(const void *in_stream, size_t in_size, void *out_stream, int blocks,
     int warpsperblock, int dimensionality, uint64_t *kernel_time_us)
 {
+  if (sizeof(ull) * MAX < in_size) {
+    fprintf(stderr, "GFC: in_size %zu exceeds max %d\n", in_size, sizeof(ull)*MAX); abort();
+  }
+
   size_t in_cursor = 0;
   size_t out_cursor = 0;
 
@@ -575,7 +584,7 @@ size_t GFC_Decompress_Memory(const void *in_stream, size_t in_size, void *out_st
     assert(off[i] == num);
     (void) num; // silence unused warning
     // transfer the chunk to the GPU
-    if (cudaSuccess != cudaMemcpy(dbufl + chbeg, dbuf + chbeg, sizeof(char) * off[i], cudaMemcpyHostToDevice)) 
+    if (cudaSuccess != cudaMemcpy(dbufl + chbeg, dbuf + chbeg, sizeof(char) * off[i], cudaMemcpyHostToDevice))
       fprintf(stderr, "copying of dbuf to device failed\n");
     CudaTest("dbuf copy to device failed");
   }
@@ -621,6 +630,9 @@ size_t GFC_Decompress_Memory(const void *in_stream, size_t in_size, void *out_st
 
   if(cudaSuccess != cudaFree(dbufl))
     fprintf(stderr, "could not deallocate dbufd\n");
+  CudaTest("couldn't deallocate dbufd");
+  if(cudaSuccess != cudaFree(fbufl))
+    fprintf(stderr, "could not deallocate fbufd\n");
   CudaTest("couldn't deallocate dbufd");
   if(cudaSuccess != cudaFree(cutl))
     fprintf(stderr, "could not deallocate cutd\n");

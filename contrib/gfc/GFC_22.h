@@ -9,6 +9,8 @@ extern "C" {
 
 void GFC_Init();
 
+size_t GFC_CompressBound(size_t in_size);
+
 size_t GFC_Compress_Memory(const void *in_stream, size_t in_size, void *out_stream, int blocks,
     int warpsperblock, int dimensionality, uint64_t *kernel_time_us);
 
