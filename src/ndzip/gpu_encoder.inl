@@ -517,11 +517,11 @@ size_t zero_bit_encode(/* local */ Bits *__restrict cube, /* global */ Bits *__r
         auto zero_map = generate_zero_map(in, scratch, item);
         if (item.thread_id() == 0) { out[0] = zero_map; }
         ++out;
-        if (zero_map != 0) {
-            transpose_bits(in, item);
-            item.local_memory_barrier();
-            out += compact_zero_words(out, in, scratch, item);
-        }
+        // TODO we *want* to do a `if (zero_map != 0)` check here, but that would cause divergence
+        //  around barriers (UB) if there are multiple blocks per thread
+        transpose_bits(in, item);
+        item.local_memory_barrier();
+        out += compact_zero_words(out, in, scratch, item);
     }
 
     return out - stream;
