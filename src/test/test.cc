@@ -398,8 +398,8 @@ TEMPLATE_TEST_CASE("file headers from different encoders are identical", "[encod
     auto test_stream_length = test_encoder.compress(input, test_stream.data());
     test_stream.resize(file.num_hypercubes());
 
-    CHECK(reference_stream_length == test_stream_length);
     CHECK(for_vector_equality(reference_stream, test_stream));
+    CHECK(reference_stream_length == test_stream_length);
 }
 #endif
 
