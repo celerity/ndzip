@@ -48,59 +48,32 @@ template<typename U, typename T>
 }
 
 
-constexpr size_t num_threads_per_hypercube = 32;
+inline const size_t warp_size = 32;
 
 // SYCL and CUDA have opposite indexing directions for vector components, so the last component of
 // any SYCL id is component 0 of the CUDA id. CUDA limits the global size along all components > 0,
 // so the largest extent (in our case: the HC index) should always be in the last component.
 
-template<int Dims>
-class work_item : public sycl::nd_item<Dims> {
+class work_item : public sycl::nd_item<1> {
   public:
-    work_item(const sycl::nd_item<Dims> &nd_item)  // NOLINT(google-explicit-constructor)
-        : sycl::nd_item<Dims>(nd_item) {}
+    work_item(const sycl::nd_item<1> &nd_item)  // NOLINT(google-explicit-constructor)
+        : sycl::nd_item<1>(nd_item) {}
 
-    size_t num_threads() const { return this->get_local_range(0); }
-    size_t thread_id() const { return this->get_local_id(0); }
+    size_t num_threads() const { return warp_size; }
+    size_t thread_id() const { return this->get_local_id(0) % warp_size; }
+    size_t global_warp_id() const { return this->get_global_id(0) / warp_size; }
+    size_t local_warp_id() const { return this->get_local_id(0) / warp_size; }
     void local_memory_barrier() const { this->barrier(sycl::access::fence_space::local_space); }
 };
 
-template<int Dims>
-work_item(const sycl::nd_item<Dims> &) -> work_item<Dims>;
-
-template<int Dims>
-class work_range : public sycl::nd_range<Dims> {
-    static_assert(Dims > 1);
-
+class work_range : public sycl::nd_range<1> {
   public:
-    work_range(const sycl::range<Dims - 1> &global_range, const sycl::range<Dims - 1> &local_range)
-        : work_range(global_range, local_range,
-                std::make_index_sequence<static_cast<size_t>(Dims - 1)>{}) {}
-
-    explicit work_range(const sycl::range<Dims - 1> &global_range)
-        : work_range(global_range, std::make_index_sequence<static_cast<size_t>(Dims - 1)>{}) {}
-
-  private:
-    template<size_t>
-    constexpr static size_t one = 1;
-
-    template<size_t... Indices>
-    work_range(const sycl::range<Dims - 1> &global_range, const sycl::range<Dims - 1> &local_range,
-            std::index_sequence<Indices...>)
-        : sycl::nd_range<Dims>{
-                sycl::range<Dims>{num_threads_per_hypercube, global_range[Indices]...},
-                sycl::range<Dims>{num_threads_per_hypercube, local_range[Indices]...}} {}
-
-    template<size_t... Indices>
-    work_range(const sycl::range<Dims - 1> &global_range, std::index_sequence<Indices...>)
-        : sycl::nd_range<Dims>{
-                sycl::range<Dims>{num_threads_per_hypercube, global_range[Indices]...},
-                sycl::range<Dims>{num_threads_per_hypercube, one<Indices>...}} {}
+    explicit work_range(size_t global_num_warps, size_t local_num_warps = 1)
+        : sycl::nd_range<1>{global_num_warps * warp_size, local_num_warps * warp_size}
+    {}
 };
 
-
-using hypercube_item = work_item<2>;
-
+using hypercube_item = work_item;
 
 class hypercube_range {
   public:
@@ -110,19 +83,19 @@ class hypercube_range {
         , _max_hcs_per_work_group(max_hcs_per_work_group)
         , _first_hc_index(first_hc_index) {}
 
-    sycl::nd_range<2> item_space() const {
-        return work_range<2>{sycl::range<1>{(_num_hypercubes + _max_hcs_per_work_group - 1)
-                                     / _max_hcs_per_work_group * _max_hcs_per_work_group},
-                sycl::range<1>{_max_hcs_per_work_group}};
+    work_range item_space() const {
+        return work_range{(_num_hypercubes + _max_hcs_per_work_group - 1)
+                                     / _max_hcs_per_work_group * _max_hcs_per_work_group,
+                _max_hcs_per_work_group};
     }
 
     size_t global_index_of(hypercube_item item) const {
-        return _first_hc_index + item.get_global_id(1);
+        return _first_hc_index + item.global_warp_id();
     }
 
-    size_t local_index_of(hypercube_item item) const { return item.get_local_id(1); }
+    size_t local_index_of(hypercube_item item) const { return item.local_warp_id(); }
 
-    bool contains(hypercube_item item) const { return item.get_global_id(1) < _num_hypercubes; }
+    bool contains(hypercube_item item) const { return item.global_warp_id() < _num_hypercubes; }
 
     size_t num_hypercubes() const { return _num_hypercubes; }
 
@@ -151,18 +124,18 @@ auto submit_and_profile(sycl::queue &q, const char *label, CGF &&cgf) {
 }
 
 
-template<typename DestAccessor, typename SourceAccessor, int ItemDims>
+template<typename DestAccessor, typename SourceAccessor>
 void nd_memcpy(const DestAccessor &dest, const SourceAccessor &source, size_t count,
-        work_item<ItemDims> item) {
+        work_item item) {
     for (size_t i = item.thread_id(); i < count; i += item.num_threads()) {
         dest[i] = source[i];
     }
 }
 
 
-template<typename Scalar, int ItemDims>
+template<typename Scalar>
 void local_inclusive_prefix_sum(
-        /* local */ Scalar *scratch, size_t n_elements, work_item<ItemDims> item) {
+        /* local */ Scalar *scratch, size_t n_elements, work_item item) {
     // Hillis-Steele (short-span) prefix sum
     size_t pout = 0;
     size_t pin;
@@ -185,7 +158,7 @@ void local_inclusive_prefix_sum(
 template<typename Scalar>
 void global_inclusive_prefix_sum_reduce(
         /* global */ Scalar *__restrict big, /* global */ Scalar *__restrict small,
-        /* local */ Scalar *__restrict scratch, size_t count, work_item<1> item) {
+        /* local */ Scalar *__restrict scratch, size_t count, work_item item) {
     const size_t global_id = item.get_global_id(0);
     const size_t local_id = item.get_local_id(0);
     const size_t local_size = item.get_local_range(0);
@@ -204,7 +177,7 @@ void global_inclusive_prefix_sum_reduce(
 
 template<typename Scalar>
 void global_inclusive_prefix_sum_expand(/* global */ Scalar *__restrict small,
-        /* global */ Scalar *__restrict big, size_t count, work_item<1> item) {
+        /* global */ Scalar *__restrict big, size_t count, work_item item) {
     // TODO range check (necessary? or can it be eliminated by increasing buffer size?)
     // `+ get_local_size`: We skip the first WG since `small` orginates from an inclusive, not an
     // exclusive scan
@@ -338,8 +311,8 @@ void store_hypercube(/* local */ const typename Profile::bits_type *__restrict c
 }
 
 
-template<typename Profile, int ItemDims>
-void block_transform(/* local */ typename Profile::bits_type *x, work_item<ItemDims> item) {
+template<typename Profile>
+void block_transform(/* local */ typename Profile::bits_type *x, work_item item) {
     constexpr auto n = Profile::hypercube_side_length;
     constexpr auto dims = Profile::dimensions;
     constexpr auto hc_size = ipow(n, dims);
@@ -387,9 +360,9 @@ void block_transform(/* local */ typename Profile::bits_type *x, work_item<ItemD
 }
 
 
-template<typename Profile, int ItemDims>
+template<typename Profile>
 void inverse_block_transform(
-        /* local */ typename Profile::bits_type *x, work_item<ItemDims> item) {
+        /* local */ typename Profile::bits_type *x, work_item item) {
     constexpr auto n = Profile::hypercube_side_length;
     constexpr auto dims = Profile::dimensions;
     constexpr auto hc_size = ipow(n, dims);
@@ -437,9 +410,9 @@ void inverse_block_transform(
 }
 
 
-template<typename Bits, int ItemDims>
-void transpose_bits(/* local */ Bits *cube, work_item<ItemDims> item) {
-    constexpr auto cols_per_thread = bitsof<Bits> / num_threads_per_hypercube;
+template<typename Bits>
+void transpose_bits(/* local */ Bits *cube, work_item item) {
+    constexpr auto cols_per_thread = bitsof<Bits> / warp_size;
 
     Bits columns[cols_per_thread] = {0};
     for (size_t k = 0; k < bitsof<Bits>; ++k) {
@@ -460,15 +433,18 @@ void transpose_bits(/* local */ Bits *cube, work_item<ItemDims> item) {
 
 
 // Header zero-bitmap is in scratch[0] afterwards
-template<typename Bits, int ItemDims>
+template<typename Bits>
 Bits generate_zero_map(/* local */ const Bits *__restrict in,
-        /* local */ Bits *__restrict scratch, work_item<ItemDims> item) {
+        /* local */ Bits *__restrict scratch, work_item item) {
     constexpr auto n_columns = bitsof<Bits>;
 
-    for (size_t i = item.thread_id(); i < n_columns; i += item.num_threads()) {
+    for (size_t i = 0; i < n_columns / warp_size; ++i) {
+        // Indexing works around LLVM bug
+        size_t ii = i * warp_size + item.thread_id();
         // TODO unroll reduction once instead of copying here
-        scratch[i] = in[i];
+        scratch[ii] = in[ii];
     }
+
     item.local_memory_barrier();
 
     for (size_t offset = n_columns / 2; offset > 0; offset /= 2) {
@@ -482,23 +458,40 @@ Bits generate_zero_map(/* local */ const Bits *__restrict in,
 }
 
 
-template<typename Bits, int ItemDims>
+template<typename Bits>
 size_t compact_zero_words(/* global */ Bits *__restrict out, /* local */ const Bits *__restrict in,
-        /* local */ Bits *__restrict scratch, work_item<ItemDims> item) {
+        /* local */ Bits *__restrict scratch, work_item item) {
     constexpr auto n_columns = bitsof<Bits>;
 
-    for (size_t i = item.thread_id(); i < n_columns; i += item.num_threads()) {
-        scratch[i] = in[i] != 0;
+    // printf("compact_zero_word gs=%lu ls=%lu lid=%lu nt=%lu tid=%lu\n", item.get_global_range(0),
+    //         item.get_local_range(0), item.get_local_id(0), item.num_threads(), item.thread_id());
+
+    item.local_memory_barrier();
+
+    // for (size_t i = item.thread_id(); i < n_columns; i += item.num_threads()) {
+    //     printf("compact_zero_word scratch_before [%lu] %d %d\n", i, int(in[i] != 0), (int)scratch[i]);
+    // }
+    // item.local_memory_barrier();
+
+    // for (size_t i = item.thread_id(); i < n_columns; i += item.num_threads()) {
+    for (size_t i = 0; i < n_columns / warp_size; ++i) {
+        // Indexing works around LLVM bug
+        size_t ii = i * warp_size + item.thread_id();
+        scratch[ii] = in[ii] != 0;
     }
 
     item.local_memory_barrier();
 
     local_inclusive_prefix_sum(scratch, n_columns, item);
 
-    for (size_t i = item.thread_id(); i < n_columns; i += item.num_threads()) {
-        if (in[i] != 0) {
-            size_t offset = i ? scratch[i - 1] : 0;
-            out[offset] = in[i];
+    // item.local_memory_barrier();
+
+    for (size_t i = 0; i < n_columns / warp_size; ++i) {
+        size_t ii = i * warp_size + item.thread_id();
+        if (in[ii] != 0) {
+            // Indexing works around LLVM bug
+            size_t offset = ii ? scratch[ii - 1] : 0;
+            out[offset] = in[ii];
         }
     }
 
@@ -506,9 +499,9 @@ size_t compact_zero_words(/* global */ Bits *__restrict out, /* local */ const B
 }
 
 
-template<typename Bits, int ItemDims>
+template<typename Bits>
 size_t zero_bit_encode(/* local */ Bits *__restrict cube, /* global */ Bits *__restrict stream,
-        /* local */ Bits *__restrict scratch, size_t hc_size, work_item<ItemDims> item) {
+        /* local */ Bits *__restrict scratch, size_t hc_size, work_item item) {
     constexpr auto n_columns = bitsof<Bits>;
 
     auto out = stream;
@@ -528,25 +521,29 @@ size_t zero_bit_encode(/* local */ Bits *__restrict cube, /* global */ Bits *__r
 }
 
 
-template<typename Bits, int ItemDims>
+template<typename Bits>
 size_t expand_zero_words(/* local */ Bits *__restrict out, /* global */ const Bits *__restrict in,
-        /* local */ Bits *__restrict scratch, work_item<ItemDims> item) {
+        /* local */ Bits *__restrict scratch, work_item item) {
     constexpr auto n_columns = bitsof<Bits>;
 
     auto head = in[0];
-    for (size_t i = item.thread_id(); i < n_columns; i += item.num_threads()) {
-        scratch[i] = (head >> (n_columns - 1 - i)) & Bits{1};
+    for (size_t i = 0; i < n_columns / warp_size; ++i) {
+        // Indexing works around LLVM bug
+        size_t ii = i * warp_size + item.thread_id();
+        scratch[ii] = (head >> (n_columns - 1 - ii)) & Bits{1};
     }
 
     item.local_memory_barrier();
 
     local_inclusive_prefix_sum(scratch, n_columns, item);
 
-    for (size_t i = item.thread_id(); i < n_columns; i += item.num_threads()) {
-        if (((head >> (n_columns - 1 - i)) & Bits{1}) != 0) {
-            out[i] = in[scratch[i]];  // +1 from header offset and -1 from inclusive scan cancel
+    for (size_t i = 0; i < n_columns / warp_size; ++i) {
+        // Indexing works around LLVM bug
+        size_t ii = i * warp_size + item.thread_id();
+        if (((head >> (n_columns - 1 - ii)) & Bits{1}) != 0) {
+            out[ii] = in[scratch[ii]];  // +1 from header offset and -1 from inclusive scan cancel
         } else {
-            out[i] = 0;
+            out[ii] = 0;
         }
     }
 
@@ -554,9 +551,9 @@ size_t expand_zero_words(/* local */ Bits *__restrict out, /* global */ const Bi
 }
 
 
-template<typename Bits, int ItemDims>
+template<typename Bits>
 void zero_bit_decode(/* global */ const Bits *__restrict stream, /* local */ Bits *__restrict cube,
-        /* local */ Bits *__restrict scratch, size_t hc_size, work_item<ItemDims> item) {
+        /* local */ Bits *__restrict scratch, size_t hc_size, work_item item) {
     auto in = stream;
     for (size_t offset = 0; offset < hc_size; offset += bitsof<Bits>) {
         in += expand_zero_words(cube + offset, in, scratch, item);
@@ -585,7 +582,7 @@ inline size_t max_work_group_size(size_t local_memory_per_wg, const sycl::device
                 + std::to_string(available_local_memory) + " bytes, needs at least "
                 + std::to_string(local_memory_per_wg) + " bytes)");
     }
-    max_wg_size = std::min(max_wg_size, max_local_size / num_threads_per_hypercube);
+    max_wg_size = std::min(max_wg_size, max_local_size / warp_size);
     if (auto env = getenv("NDZIP_VERBOSE"); env && *env) {
         printf("Allowing %zu work groups per SM (allocates %zu of %zu bytes)\n", max_wg_size,
                 max_wg_size * local_memory_per_wg, available_local_memory);
