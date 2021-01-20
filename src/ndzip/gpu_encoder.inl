@@ -47,6 +47,16 @@ template<typename U, typename T>
     return cast;
 }
 
+template<typename Integer>
+Integer div_ceil(Integer p, Integer q) {
+    return (p + q - 1) / q;
+}
+
+template<typename Integer>
+Integer ceil(Integer x, Integer multiple) {
+    return div_ceil(x, multiple) * multiple;
+}
+
 
 inline const size_t warp_size = 32;
 
@@ -714,14 +724,21 @@ void distribute_for_range(sycl::group<1> grp, index_type range, F &&f) {
 }
 
 
+// TODO we might be able to avoid this kernel altogeher by writing the reduction results directly
+//  to the stream header. Requires the stream format to be fixed first.
 template<typename Profile>
 void fill_stream_header(index_type num_hypercubes, global_write<stream_align_t> stream_acc,
         global_read<file_offset_type> offset_acc, sycl::handler &cgh) {
+    const index_type group_size = 256;
+    const index_type num_groups = div_ceil(num_hypercubes, group_size);
     cgh.parallel(
-            sycl::range<1>{1}, sycl::range<1>{32}, [=](sycl::group<1> grp, sycl::physical_item<1>) {
+            sycl::range<1>{num_groups}, sycl::range<1>{group_size},
+            [=](sycl::group<1> grp, sycl::physical_item<1>) {
                 stream<Profile> stream{num_hypercubes, stream_acc.get_pointer()};
-                distribute_for_range(grp, num_hypercubes, [&](sycl::sub_group, index_type i) {
-                    stream.set_offset_after(i, offset_acc[i]);
+                const index_type base = static_cast<index_type>(grp.get_id(0)) * group_size;
+                const index_type num_elements = std::min(group_size, num_hypercubes - base);
+                distribute_for_range(grp, num_elements, [&](sycl::sub_group, index_type i) {
+                    stream.set_offset_after(base + i, offset_acc[base + i]);
                 });
             });
 }
@@ -730,7 +747,8 @@ void fill_stream_header(index_type num_hypercubes, global_write<stream_align_t> 
 template<typename Profile>
 void compact_hypercubes(index_type num_hypercubes, global_write<stream_align_t> stream_acc,
         global_read<typename Profile::bits_type> chunks_acc, sycl::handler &cgh) {
-    cgh.parallel(sycl::range<1>{num_hypercubes}, sycl::range<1>{32},
+    constexpr index_type num_threads_per_hc = 64;
+    cgh.parallel(sycl::range<1>{num_hypercubes}, sycl::range<1>{num_threads_per_hc},
             [=](sycl::group<1> grp, sycl::physical_item<1>) {
                 auto hc_index = static_cast<index_type>(grp.get_id(0));
                 compressed_chunks<Profile> chunks{num_hypercubes, chunks_acc.get_pointer()};
@@ -825,6 +843,9 @@ size_t ndzip::gpu_encoder<T, Dims>::compress(
     // TODO edge case w/ 0 hypercubes
 
     detail::file<profile> file(data.size());
+    if (auto env = getenv("NDZIP_VERBOSE"); env && *env) {
+        printf("Have %zu hypercubes\n", file.num_hypercubes());
+    }
 
     sycl::buffer<data_type, dimensions> data_buffer{
             detail::gpu::extent_cast<sycl::range<dimensions>>(data.size())};
