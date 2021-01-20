@@ -48,12 +48,12 @@ template<typename U, typename T>
 }
 
 template<typename Integer>
-Integer div_ceil(Integer p, Integer q) {
+constexpr Integer div_ceil(Integer p, Integer q) {
     return (p + q - 1) / q;
 }
 
 template<typename Integer>
-Integer ceil(Integer x, Integer multiple) {
+constexpr Integer ceil(Integer x, Integer multiple) {
     return div_ceil(x, multiple) * multiple;
 }
 
@@ -657,6 +657,7 @@ using global_write = sycl::accessor<T, 1, sycl::access::mode::write>;
 template<typename T>
 using global_read_write = sycl::accessor<T, 1, sycl::access::mode::read_write>;
 
+
 template<typename Profile>
 struct compressed_chunks {
     using bits_type = typename Profile::bits_type;
@@ -713,14 +714,83 @@ struct stream {
 };
 
 
+template<typename Profile>
+struct grid {
+    using data_type = std::conditional_t<std::is_const_v<Profile>,
+            const typename Profile::data_type, typename Profile::data_type>;
+    constexpr static unsigned dimensions = Profile::dimensions;
+
+    slice<data_type, dimensions> data;
+};
+
+
+template<typename Profile>
+struct hypercube {
+    constexpr static unsigned dimensions = Profile::dimensions;
+    constexpr static unsigned side_length = Profile::hypercube_side_length;
+    constexpr static unsigned padding_every = 32;
+    constexpr static index_type allocation_size
+            = div_ceil(ipow(side_length, dimensions), padding_every) * (padding_every + 1);
+
+    using bits_type = typename Profile::bits_type;
+    using extent = ndzip::extent<dimensions>;
+
+    bits_type *bits;
+
+    bits_type &operator[](index_type linear_idx) {
+        return bits[(linear_idx / padding_every) * (padding_every + 1)
+                + linear_idx % padding_every];
+    }
+
+    bits_type &operator[](extent position) {
+        return at(linear_offset(position, extent::broadcast(side_length)));
+    }
+};
+
+
 template<typename F>
-void distribute_for_range(sycl::group<1> grp, index_type range, F &&f) {
+void for_range(sycl::group<1> grp, index_type range, F &&f) {
     grp.distribute_for([&](sycl::sub_group sg, sycl::logical_item<1> idx) {
         for (auto iter = static_cast<index_type>(idx.get_local_id(0)); iter < range;
                 iter += idx.get_local_range(0)) {
             f(sg, iter);
         }
     });
+}
+
+template<typename Profile, typename F>
+void for_hypercube_indices(
+        sycl::group<1> grp, index_type hc_index, extent<Profile::dimensions> data_size, F &&f) {
+    const auto side_length = Profile::hypercube_side_length;
+    const auto hc_size = ipow(side_length, Profile::dimensions);
+    const auto hc_offset
+            = detail::extent_from_linear_id(hc_index, data_size / side_length) * side_length;
+
+    size_t initial_offset = linear_offset(hc_offset, data_size);
+    for_range(grp, hc_size, [&](sycl::sub_group, index_type local_idx) {
+        size_t global_idx = initial_offset + global_offset<Profile>(local_idx, data_size);
+        f(global_idx, local_idx);
+    });
+}
+
+template<typename Profile>
+void load_hypercube(
+        sycl::group<1> grp, index_type hc_index, grid<const Profile> grid, hypercube<Profile> hc) {
+    using bits_type = typename Profile::bits_type;
+    for_hypercube_indices<Profile>(
+            grp, hc_index, grid.data.size(), [&](index_type global_idx, index_type local_idx) {
+                hc[local_idx] = rotate_left_1(bit_cast<bits_type>(grid.data.data()[global_idx]));
+            });
+}
+
+template<typename Profile>
+void store_hypercube(
+        sycl::group<1> grp, index_type hc_index, grid<Profile> grid, hypercube<Profile> hc) {
+    using data_type = typename Profile::data_type;
+    for_hypercube_indices<Profile>(
+            grp, hc_index, grid.data.size(), [&](index_type global_idx, index_type local_idx) {
+                grid.data.data()[global_idx] = bit_cast<data_type>(rotate_right_1(hc[local_idx]));
+            });
 }
 
 
@@ -731,13 +801,12 @@ void fill_stream_header(index_type num_hypercubes, global_write<stream_align_t> 
         global_read<file_offset_type> offset_acc, sycl::handler &cgh) {
     const index_type group_size = 256;
     const index_type num_groups = div_ceil(num_hypercubes, group_size);
-    cgh.parallel(
-            sycl::range<1>{num_groups}, sycl::range<1>{group_size},
+    cgh.parallel(sycl::range<1>{num_groups}, sycl::range<1>{group_size},
             [=](sycl::group<1> grp, sycl::physical_item<1>) {
                 stream<Profile> stream{num_hypercubes, stream_acc.get_pointer()};
                 const index_type base = static_cast<index_type>(grp.get_id(0)) * group_size;
                 const index_type num_elements = std::min(group_size, num_hypercubes - base);
-                distribute_for_range(grp, num_elements, [&](sycl::sub_group, index_type i) {
+                for_range(grp, num_elements, [&](sycl::sub_group, index_type i) {
                     stream.set_offset_after(base + i, offset_acc[base + i]);
                 });
             });
@@ -755,7 +824,7 @@ void compact_hypercubes(index_type num_hypercubes, global_write<stream_align_t> 
                 auto in = chunks.hypercube(hc_index);
                 stream<Profile> stream{num_hypercubes, stream_acc.get_pointer()};
                 auto out = stream.hypercube(hc_index);
-                distribute_for_range(grp, stream.hypercube_size(hc_index),
+                for_range(grp, stream.hypercube_size(hc_index),
                         [&](sycl::sub_group, index_type i) { out[i] = in[i]; });
             });
 }

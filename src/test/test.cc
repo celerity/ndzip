@@ -32,15 +32,9 @@ static std::vector<Arithmetic> make_random_vector(size_t size) {
 
 // Use as CHECK(for_vector_equality(a, b))
 template<typename T>
-bool for_vector_equality(const std::vector<T> &lhs, const std::vector<T> &rhs) {
-    if (lhs.size() != rhs.size()) {
-        std::cerr << "vectors differ in size: " << lhs.size() << " vs. " << rhs.size()
-                  << " elements\n";
-        return false;
-    }
-
+bool for_vector_equality(const T *lhs, const T *rhs, size_t size) {
     size_t first_mismatch = SIZE_MAX, last_mismatch = 0;
-    for (size_t i = 0; i < lhs.size(); ++i) {
+    for (size_t i = 0; i < size; ++i) {
         if (lhs[i] != rhs[i]) {
             first_mismatch = std::min(first_mismatch, i);
             last_mismatch = std::max(last_mismatch, i);
@@ -68,6 +62,17 @@ bool for_vector_equality(const std::vector<T> &lhs, const std::vector<T> &rhs) {
     }
 
     return true;
+}
+
+
+template<typename T>
+bool for_vector_equality(const std::vector<T> &lhs, const std::vector<T> &rhs) {
+    if (lhs.size() != rhs.size()) {
+        std::cerr << "vectors differ in size: " << lhs.size() << " vs. " << rhs.size()
+                  << " elements\n";
+        return false;
+    }
+    return for_vector_equality(lhs.data(), rhs.data(), lhs.size());
 }
 
 
@@ -348,7 +353,8 @@ TEMPLATE_TEST_CASE("decode(encode(input)) reproduces the input", "[encoder]", (p
 
 #if NDZIP_GPU_SUPPORT
     // SECTION("cpu_encoder::encode() => gpu_encoder::decode()") {
-    //     test_encoder_decoder_pair(cpu_encoder<data_type, dims>{}, gpu_encoder<data_type, dims>{});
+    //     test_encoder_decoder_pair(cpu_encoder<data_type, dims>{}, gpu_encoder<data_type,
+    //     dims>{});
     // }
 
     SECTION("gpu_encoder::encode() => cpu_encoder::decode()") {
@@ -409,7 +415,8 @@ TEMPLATE_TEST_CASE("file headers from different encoders are identical", "[encod
 using sam = sycl::access::mode;
 using sat = sycl::access::target;
 using sycl::accessor, sycl::nd_range, sycl::buffer, sycl::nd_item, sycl::range, sycl::id,
-        sycl::handler;
+        sycl::handler, sycl::group, sycl::physical_item, sycl::logical_item, sycl::sub_group,
+        sycl::local_memory;
 
 template<typename T, unsigned Dims>
 struct mock_profile {
@@ -423,43 +430,43 @@ struct mock_profile {
 
 
 template<typename Profile>
-class load_and_dump_hypercube_kernel;
-
-template<typename Profile>
 static std::vector<typename Profile::bits_type>
-load_and_dump_hypercube(const slice<const typename Profile::data_type, Profile::dimensions> &data,
+load_and_dump_hypercube(const slice<const typename Profile::data_type, Profile::dimensions> &in,
         size_t hc_index, sycl::queue &q) {
     using data_type = typename Profile::data_type;
     using bits_type = typename Profile::bits_type;
 
     auto hc_size = ipow(Profile::hypercube_side_length, Profile::dimensions);
-    buffer<data_type> data_buf{data.data(), range<1>{num_elements(data.size())}};
-    std::vector<bits_type> result(hc_size * 2);
-    buffer<bits_type> result_buf{result.size()};
-    detail::file<Profile> file(data.size());
+    buffer<data_type> load_buf{in.data(), range<1>{num_elements(in.size())}};
+    std::vector<bits_type> out(hc_size * 2);
+    buffer<data_type> store_buf{out.size()};
+    detail::file<Profile> file(in.size());
 
     q.submit([&](handler &cgh) {
-        cgh.fill(result_buf.template get_access<sam::discard_write>(cgh), bits_type{0});
+        cgh.fill(store_buf.template get_access<sam::discard_write>(cgh), data_type{0});
     });
     q.submit([&](handler &cgh) {
-        auto data_acc = data_buf.template get_access<sam::read>(cgh);
-        auto local_acc = accessor<bits_type, 1, sam::read_write, sat::local>(hc_size, cgh);
-        auto result_acc = result_buf.template get_access<sam ::discard_write>(cgh);
-        const auto hc_range = gpu::hypercube_range{1, 1, hc_index};
-        const auto data_size = data.size();
-        cgh.parallel_for<load_and_dump_hypercube_kernel<Profile>>(
-                hc_range.item_space(), [=](gpu::hypercube_item item) {
-                    gpu::load_hypercube<Profile>(data_acc.get_pointer(), local_acc.get_pointer(),
-                            data_size, hc_range, item);
-                    item.local_memory_barrier();
-                    gpu::nd_memcpy(result_acc, local_acc, hc_size, item);
-                });
+        auto data_acc = load_buf.template get_access<sam::read>(cgh);
+        auto result_acc = store_buf.template get_access<sam ::discard_write>(cgh);
+        const auto data_size = in.size();
+        cgh.parallel(range<1>{1}, range<1>{64}, [=](group<1> grp, physical_item<1>) {
+            auto grid_in = gpu::grid<const Profile>{
+                    slice<const data_type, Profile::dimensions>{data_acc.get_pointer(), data_size}};
+            auto grid_out = gpu::grid<Profile>{slice<data_type, Profile::dimensions>{
+                    result_acc.get_pointer(),
+                    extent<Profile::dimensions>::broadcast(Profile::hypercube_side_length)}};
+            auto hc_mem = local_memory<bits_type[gpu::hypercube<Profile>::allocation_size]>{grp};
+            auto hc = gpu::hypercube<Profile>{hc_mem()};
+            gpu::load_hypercube<Profile>(grp, hc_index, grid_in, hc);
+            gpu::store_hypercube<Profile>(grp, hc_index, grid_out, hc);
+        });
     });
     q.submit([&](handler &cgh) {
-        cgh.copy(result_buf.template get_access<sam::read>(cgh), result.data());
+        cgh.copy(store_buf.template get_access<sam::read>(cgh),
+                reinterpret_cast<data_type *>(out.data()));
     });
     q.wait();
-    return result;
+    return out;
 }
 
 
@@ -542,9 +549,11 @@ TEMPLATE_TEST_CASE("flattening of larger hypercubes is identical between CPU and
         (gpu_encoder<double, 1>), (gpu_encoder<double, 2>), (gpu_encoder<double, 3>) ) {
     using data_type = typename TestType::data_type;
     using profile = detail::profile<data_type, TestType::dimensions>;
+    using bits_type = typename profile::bits_type;
 
     constexpr auto dims = profile::dimensions;
     constexpr auto side_length = profile::hypercube_side_length;
+    const size_t hc_size = ipow(side_length, dims);
     const size_t n = side_length * 4 - 1;
 
     auto input_data = make_random_vector<data_type>(ipow(n, dims));
@@ -557,12 +566,10 @@ TEMPLATE_TEST_CASE("flattening of larger hypercubes is identical between CPU and
     sycl::queue q{sycl::gpu_selector{}};
     auto gpu_dump = load_and_dump_hypercube<profile>(input, hc_index, q);
 
-    cpu::simd_aligned_buffer<typename profile::bits_type> cpu_dump(ipow(side_length, dims));
+    cpu::simd_aligned_buffer<bits_type> cpu_dump(hc_size);
     cpu::load_hypercube<profile>(hc_offset, input, cpu_dump.data());
 
-    CHECK(memcmp(gpu_dump.data(), cpu_dump.data(),
-                  sizeof(typename profile::bits_type) * detail::ipow(side_length, dims))
-            == 0);
+    CHECK(for_vector_equality(gpu_dump.data(), cpu_dump.data(), hc_size));
 }
 
 
@@ -664,15 +671,15 @@ class gpu_compact_zero_words_test_kernel;
 template<typename>
 class gpu_expand_zero_words_test_kernel;
 
-TEMPLATE_TEST_CASE("CPU and GPU zero-word compaction is identical", "[gpu][cpc]", uint32_t, uint64_t) {
+TEMPLATE_TEST_CASE(
+        "CPU and GPU zero-word compaction is identical", "[gpu][cpc]", uint32_t, uint64_t) {
     auto input = make_random_vector<TestType>(bitsof<TestType>);
     for (auto idx : {0, 12, 13, 29, static_cast<int>(bitsof<TestType> - 2)}) {
         input[idx] = 0;
     }
 
     std::vector<TestType> cpu_compacted(bitsof<TestType> * 2);
-    cpu::compact_zero_words(
-            input.data(), reinterpret_cast<std::byte *>(cpu_compacted.data()));
+    cpu::compact_zero_words(input.data(), reinterpret_cast<std::byte *>(cpu_compacted.data()));
 
     sycl::queue q{sycl::gpu_selector{}};
 
@@ -695,8 +702,7 @@ TEMPLATE_TEST_CASE("CPU and GPU zero-word compaction is identical", "[gpu][cpc]"
         auto local_in_acc
                 = accessor<TestType, 1, sam::read_write, sat::local>(bitsof<TestType>, cgh);
         auto scratch_acc = accessor<TestType, 1, sam::read_write, sat::local>(scratch_size, cgh);
-        cgh.parallel_for<gpu_compact_zero_words_test_kernel<TestType>>(
-                gpu::work_range{1},
+        cgh.parallel_for<gpu_compact_zero_words_test_kernel<TestType>>(gpu::work_range{1},
                 [input_acc, output_acc, local_in_acc, scratch_acc](gpu::work_item item) {
                     gpu::nd_memcpy(local_in_acc, input_acc, input_acc.get_range()[0], item);
                     item.local_memory_barrier();
@@ -722,8 +728,7 @@ TEMPLATE_TEST_CASE("GPU zero-word expansion works", "[gpu]", uint32_t, uint64_t)
 
     std::vector<TestType> cpu_compacted(bitsof<TestType>);
     cpu_compacted[0] = zero_map_from_transposed(input.data());
-    cpu::compact_zero_words(
-            input.data(), reinterpret_cast<std::byte *>(cpu_compacted.data() + 1));
+    cpu::compact_zero_words(input.data(), reinterpret_cast<std::byte *>(cpu_compacted.data() + 1));
 
     sycl::queue q{sycl::gpu_selector{}};
 
@@ -741,8 +746,7 @@ TEMPLATE_TEST_CASE("GPU zero-word expansion works", "[gpu]", uint32_t, uint64_t)
         auto local_out_acc
                 = accessor<TestType, 1, sam::read_write, sat::local>(bitsof<TestType>, cgh);
         auto scratch_acc = accessor<TestType, 1, sam::read_write, sat::local>(scratch_size, cgh);
-        cgh.parallel_for<gpu_expand_zero_words_test_kernel<TestType>>(
-                gpu::work_range{1},
+        cgh.parallel_for<gpu_expand_zero_words_test_kernel<TestType>>(gpu::work_range{1},
                 [input_acc, output_acc, local_out_acc, scratch_acc](gpu::work_item item) {
                     gpu::expand_zero_words<TestType>(local_out_acc.get_pointer(),
                             input_acc.get_pointer(), scratch_acc.get_pointer(), item);
@@ -799,8 +803,7 @@ TEMPLATE_TEST_CASE("CPU and GPU hypercube encodings are equivalent", "[gpu]", ui
         auto cube_acc = accessor<TestType, 1, sam::read_write, sat::local>(hc_size, cgh);
         auto scratch_acc = accessor<TestType, 1, sam::read_write, sat::local>(scratch_size, cgh);
         auto length_acc = length_buf.get_access<sam::discard_write>(cgh);
-        cgh.parallel_for<gpu_hypercube_encoding_test_kernel<TestType>>(
-                gpu::work_range{1},
+        cgh.parallel_for<gpu_hypercube_encoding_test_kernel<TestType>>(gpu::work_range{1},
                 [input_acc, stream_acc, cube_acc, hc_size = hc_size, scratch_acc, length_acc](
                         gpu::work_item item) {
                     gpu::nd_memcpy(cube_acc, input_acc, hc_size, item);
