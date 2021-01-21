@@ -609,6 +609,47 @@ static void test_cpu_gpu_transform_equality(
     CHECK(for_vector_equality(gpu_transformed, cpu_transformed));
 }
 
+template<typename Profile, typename CPUTransform, typename GPUTransform>
+static void test_cpu_gpu_transform_equality_scoped(
+        const CPUTransform &cpu_transform, const GPUTransform &gpu_transform) {
+    using bits_type = typename Profile::bits_type;
+    const auto hc_size = ipow(Profile::hypercube_side_length, Profile::dimensions);
+
+    const auto input = make_random_vector<bits_type>(hc_size);
+
+    auto cpu_transformed = input;
+    cpu_transform(cpu_transformed.data());
+
+    sycl::queue q{sycl::gpu_selector{}};
+    buffer<bits_type> io_buf{range<1>{hc_size}};
+
+    q.submit([&](handler &cgh) {
+        cgh.copy(input.data(), io_buf.template get_access<sam::discard_write>(cgh));
+    });
+    q.submit([&](handler &cgh) {
+        auto global_acc = io_buf.template get_access<sam::read_write>(cgh);
+        cgh.parallel(range<1>{1}, range<1>{gpu::hypercube_group_size},
+                [global_acc, hc_size = hc_size, gpu_transform](group<1> grp, physical_item<1>) {
+                    auto hc_mem = local_memory<bits_type[gpu::hypercube<Profile>::allocation_size]>{
+                            grp};
+                    auto hc = gpu::hypercube<Profile>{hc_mem()};
+                    gpu::for_range(grp, gpu::hypercube_group_size, hc_size,
+                            [&](gpu::index_type i) { hc[i] = rotate_left_1(global_acc[i]); });
+                    gpu_transform(grp, hc);
+                    gpu::for_range(grp, gpu::hypercube_group_size, hc_size,
+                            [&](gpu::index_type i) { global_acc[i] = hc[i]; });
+                });
+    });
+
+    std::vector<bits_type> gpu_transformed(hc_size);
+    q.submit([&](handler &cgh) {
+        cgh.copy(io_buf.template get_access<sam::read>(cgh), gpu_transformed.data());
+    });
+    q.wait();
+
+    CHECK(for_vector_equality(gpu_transformed, cpu_transformed));
+}
+
 template<typename>
 class gpu_forward_transform_test_kernel;
 
@@ -626,6 +667,22 @@ TEMPLATE_TEST_CASE("CPU and GPU forward block transforms are identical", "[gpu]"
             // be passed into the device kernel
             [](bits_type *block, gpu::work_item item) {
                 gpu::block_transform<TestType>(block, item);
+            });
+}
+
+TEMPLATE_TEST_CASE("CPU and NEW GPU forward block transforms are identical", "[gpu]",
+        (profile<float, 1>), (profile<float, 2>), (profile<float, 3>), (profile<double, 1>),
+        (profile<double, 2>), (profile<double, 3>) ) {
+    using bits_type = typename TestType::bits_type;
+    test_cpu_gpu_transform_equality_scoped<TestType>(
+            [](bits_type *block) {
+                detail::block_transform(
+                        block, TestType::dimensions, TestType::hypercube_side_length);
+            },
+            // Use lambda instead of the function name, otherwise a host function pointer will
+            // be passed into the device kernel
+            [](sycl::group<1> grp, gpu::hypercube<TestType> hc) {
+                gpu::block_transform<TestType>(grp, hc);
             });
 }
 
