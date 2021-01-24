@@ -573,8 +573,7 @@ static void test_cpu_gpu_transform_equality_scoped(
                     auto hc_mem = local_memory<bits_type[gpu::hypercube<Profile>::allocation_size]>{
                             grp};
                     auto hc = gpu::hypercube<Profile>{hc_mem()};
-                    grp.distribute_for(hc_size,
-                            [&](gpu::index_type i) { hc[i] = rotate_left_1(global_acc[i]); });
+                    grp.distribute_for(hc_size, [&](gpu::index_type i) { hc[i] = global_acc[i]; });
                     gpu_transform(grp, hc);
                     grp.distribute_for(hc_size, [&](gpu::index_type i) { global_acc[i] = hc[i]; });
                 });
@@ -620,7 +619,10 @@ TEMPLATE_TEST_CASE("CPU and NEW GPU forward block transforms are identical", "[g
             },
             // Use lambda instead of the function name, otherwise a host function pointer will
             // be passed into the device kernel
-            [](sycl::group<1> grp, gpu::hypercube<TestType> hc) {
+            [](gpu::hypercube_group grp, gpu::hypercube<TestType> hc) {
+                const auto hc_size = ipow(TestType::hypercube_side_length, TestType::dimensions);
+                grp.distribute_for(
+                        hc_size, [&](gpu::index_type i) { hc[i] = rotate_left_1(hc[i]); });
                 gpu::block_transform<TestType>(grp, hc);
             });
 }
@@ -642,6 +644,25 @@ TEMPLATE_TEST_CASE("CPU and GPU inverse block transforms are identical", "[gpu]"
             // be passed into the device kernel
             [](bits_type *block, gpu::work_item item) {
                 gpu::inverse_block_transform<TestType>(block, item);
+            });
+}
+
+TEMPLATE_TEST_CASE("CPU and NEW GPU inverse block transforms are identical", "[gpu]",
+        (profile<float, 1>), (profile<float, 2>), (profile<float, 3>), (profile<double, 1>),
+        (profile<double, 2>), (profile<double, 3>) ) {
+    using bits_type = typename TestType::bits_type;
+    test_cpu_gpu_transform_equality_scoped<TestType>(
+            [](bits_type *block) {
+                detail::inverse_block_transform(
+                        block, TestType::dimensions, TestType::hypercube_side_length);
+            },
+            // Use lambda instead of the function name, otherwise a host function pointer will
+            // be passed into the device kernel
+            [](gpu::hypercube_group grp, gpu::hypercube<TestType> hc) {
+                gpu::inverse_block_transform<TestType>(grp, hc);
+                const auto hc_size = ipow(TestType::hypercube_side_length, TestType::dimensions);
+                grp.distribute_for(
+                        hc_size, [&](gpu::index_type i) { hc[i] = rotate_right_1(hc[i]); });
             });
 }
 

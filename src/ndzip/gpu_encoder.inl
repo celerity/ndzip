@@ -714,13 +714,47 @@ struct hypercube {
 
     bits_type *bits;
 
-    bits_type &operator[](index_type linear_idx) {
+    bits_type &operator[](index_type linear_idx) const {
         return bits[(linear_idx / padding_every) * (padding_every + 1)
                 + linear_idx % padding_every];
     }
 
-    bits_type &operator[](extent position) {
+    bits_type &operator[](extent position) const {
         return at(linear_offset(position, extent::broadcast(side_length)));
+    }
+};
+
+template<typename Profile, unsigned Direction>
+struct directional_hypercube_accessor;
+
+template<typename Profile>
+struct directional_hypercube_accessor<Profile, 1> {
+    hypercube<Profile> hc;
+
+    typename Profile::bits_type &operator[](index_type i) const {
+        return hc[i];
+    }
+};
+
+template<typename Profile>
+struct directional_hypercube_accessor<Profile, 2> {
+    hypercube<Profile> hc;
+
+    typename Profile::bits_type &operator[](index_type i) const {
+        constexpr auto n = Profile::hypercube_side_length;
+        constexpr auto n2 = n * n;
+        return hc[i % n * n + i % n2 / n + i / n2 * n2];
+    }
+};
+
+template<typename Profile>
+struct directional_hypercube_accessor<Profile, 3> {
+    hypercube<Profile> hc;
+
+    typename Profile::bits_type &operator[](index_type i) const {
+        constexpr auto n = Profile::hypercube_side_length;
+        constexpr auto n2 = n * n;
+        return hc[i % n * n2 + i / n];
     }
 };
 
@@ -766,8 +800,8 @@ void store_hypercube(
 }
 
 
-template<typename Profile, typename IndexFn>
-void forward_transform_step(hypercube_group grp, hypercube<Profile> hc, IndexFn &&index_fn) {
+template<typename Profile, typename Accessor>
+void forward_transform_step(hypercube_group grp, Accessor acc) {
     using bits_type = typename Profile::bits_type;
     constexpr auto n = Profile::hypercube_side_length;
     constexpr index_type hc_size = ipow(n, Profile::dimensions);
@@ -775,29 +809,26 @@ void forward_transform_step(hypercube_group grp, hypercube<Profile> hc, IndexFn 
     sycl::private_memory<bits_type[div_ceil(hc_size, hypercube_group_size)]> a{grp};
     grp.distribute_for(hc_size,
             [&](index_type item, index_type iteration, sycl::logical_item<1> idx) {
-                a(idx)[iteration] = hc[index_fn(item)];
+                a(idx)[iteration] = acc[item];
             });
     grp.distribute_for(hc_size,
             [&](index_type item, index_type iteration, sycl::logical_item<1> idx) {
-                if (item % n != n - 1) { hc[index_fn(item + 1)] -= a(idx)[iteration]; }
+                if (item % n != n - 1) { acc[item + 1] -= a(idx)[iteration]; }
             });
 }
 
 
 template<typename Profile>
 void block_transform(hypercube_group grp, hypercube<Profile> hc) {
-    constexpr auto n = Profile::hypercube_side_length;
-    constexpr auto n2 = n * n;
     constexpr auto dims = Profile::dimensions;
-    constexpr index_type hc_size = ipow(n, dims);
+    constexpr index_type hc_size = ipow(Profile::hypercube_side_length, dims);
 
-    forward_transform_step(grp, hc, [](index_type item) { return item; });
+    forward_transform_step<Profile>(grp, directional_hypercube_accessor<Profile, 1>{hc});
     if (dims >= 2) {
-        forward_transform_step(grp, hc,
-                [](index_type item) { return item % n * n + item % n2 / n + item / n2 * n2; });
+        forward_transform_step<Profile>(grp, directional_hypercube_accessor<Profile, 2>{hc});
     }
     if (dims >= 3) {
-        forward_transform_step(grp, hc, [](index_type item) { return item % n * n2 + item / n; });
+        forward_transform_step<Profile>(grp, directional_hypercube_accessor<Profile, 3>{hc});
     }
 
     // TODO move complement operation elsewhere to avoid local memory round-trip
@@ -807,34 +838,41 @@ void block_transform(hypercube_group grp, hypercube<Profile> hc) {
 
 
 
-template<typename Profile, typename IndexFn>
-void inverse_transform_step(hypercube_group grp, hypercube<Profile> hc, IndexFn &&index_fn) {
+template<typename Profile, typename Accessor>
+void inverse_transform_step(hypercube_group grp, Accessor acc) {
     using bits_type = typename Profile::bits_type;
     constexpr auto n = Profile::hypercube_side_length;
-    constexpr index_type hc_size = ipow(n, Profile::dimensions);
 
-    // TODO inclusive prefix sum. How to without doubling local memory size like in Hillis Steele?
+    // 1D
+    inclusive_scan<n>(grp, acc, sycl::plus<bits_type>{});
+
+    // TODO how to do 2D / 3D?
+    //  - For 2D we have 64 parallel work items but we _probably_ want at least 256 threads per SM
+    //    (= per HC for double) to hide latencies. Maybe hybrid approach - do (64/32)*64 sub-group
+    //    prefix sums and optimize inclusive_prefix_sum to skip the recursion since the second
+    //    level does not actually need a reduction. Benchmark against leaving 256-64 = 192 threads
+    //    idle and going with a sequential-per-lane transform.
+    //  - For 3D we have 256 parallel work items, so implementing that w/o prefix sum should be
+    //    the most efficient
 }
 
 
 template<typename Profile>
 void inverse_block_transform(hypercube_group grp, hypercube<Profile> hc) {
-    constexpr auto n = Profile::hypercube_side_length;
-    constexpr auto n2 = n * n;
     constexpr auto dims = Profile::dimensions;
-    constexpr index_type hc_size = ipow(n, dims);
+    constexpr index_type hc_size = ipow(Profile::hypercube_side_length, dims);
 
     // TODO move complement operation elsewhere to avoid local memory round-trip
     grp.distribute_for(hc_size,
             [&](index_type item) { hc[item] = complement_negative(hc[item]); });
 
-    inverse_transform_step(grp, hc, [](index_type item) { return item; });
+
+    inverse_transform_step<Profile>(grp, directional_hypercube_accessor<Profile, 1>{hc});
     if (dims >= 2) {
-        inverse_transform_step(grp, hc,
-                [](index_type item) { return item % n * n + item % n2 / n + item / n2 * n2; });
+        inverse_transform_step<Profile>(grp, directional_hypercube_accessor<Profile, 2>{hc});
     }
     if (dims >= 3) {
-        inverse_transform_step(grp, hc, [](index_type item) { return item % n * n2 + item / n; });
+        inverse_transform_step<Profile>(grp, directional_hypercube_accessor<Profile, 3>{hc});
     }
 }
 

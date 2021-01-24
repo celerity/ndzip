@@ -86,6 +86,7 @@ std::enable_if_t<(Range <= warp_size)>
 inclusive_scan(known_size_group<LocalSize> grp, Accessor acc, BinaryOp op) {
     grp.distribute_for(
             Range, [&](index_type item, index_type, sycl::logical_item<1>, sycl::sub_group sg) {
+                // TODO group_inclusive_scan will break for partial iterations!
                 acc[item] = sycl::group_inclusive_scan(sg, acc[item], op);
             });
 }
@@ -100,6 +101,7 @@ inclusive_scan(known_size_group<LocalSize> grp, Accessor acc, BinaryOp op) {
     grp.distribute_for(Range,
             [&](index_type item, index_type iteration, sycl::logical_item<1> idx,
                     sycl::sub_group sg) {
+                // TODO group_inclusive_scan will break for partial iterations!
                 fine(idx)[iteration] = sycl::group_inclusive_scan(sg, acc[item], op);
                 if (item % warp_size == warp_size - 1) {
                     coarse[item / warp_size] = fine(idx)[iteration];
