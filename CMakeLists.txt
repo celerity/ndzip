@@ -67,6 +67,7 @@ endif ()
 
 if (NDZIP_USE_HIPSYCL)
     add_library(ndzip-gpu SHARED
+        src/ndzip/gpu_bits.hh
         src/ndzip/gpu_encoder.inl
         src/ndzip/gpu_encoder.cc
     )
@@ -95,7 +96,11 @@ endif ()
 
 
 if (NDZIP_BUILD_TEST AND Catch2_FOUND)
-    add_executable(test src/test/test.cc)
+    add_executable(test
+            src/test/test_utils.hh
+            src/test/test.cc
+            src/test/gpu_bits_test.cc
+            src/test/test_main.cc)
     target_include_directories(test PRIVATE src)
     target_compile_options(test PRIVATE ${NDZIP_COMPILE_FLAGS})
     target_link_libraries(test PRIVATE ndzip Catch2::Catch2)
@@ -103,6 +108,16 @@ if (NDZIP_BUILD_TEST AND Catch2_FOUND)
         add_sycl_to_target(TARGET test)
         target_link_libraries(test PRIVATE ndzip-gpu)
     endif ()
+endif ()
+
+if (NDZIP_BUILD_TEST AND NDZIP_USE_HIPSYCL)
+    add_executable(gpu_ubench
+            src/gpu_ubench/gpu_bits_ubench.cc
+            src/gpu_ubench/ubench_main.cc)
+    target_include_directories(gpu_ubench PRIVATE src)
+    target_compile_options(gpu_ubench PRIVATE ${NDZIP_COMPILE_FLAGS})
+    target_link_libraries(gpu_ubench PRIVATE Catch2::Catch2)
+    add_sycl_to_target(TARGET gpu_ubench)
 endif ()
 
 

@@ -1,3 +1,5 @@
+#include "test_utils.hh"
+
 #include <ndzip/common.hh>
 #include <ndzip/cpu_encoder.inl>
 
@@ -7,73 +9,9 @@
 
 #include <iostream>
 
-#define CATCH_CONFIG_MAIN
-#include <catch2/catch.hpp>
-
 
 using namespace ndzip;
 using namespace ndzip::detail;
-
-
-template<typename Arithmetic>
-static std::vector<Arithmetic> make_random_vector(size_t size) {
-    std::vector<Arithmetic> vector(size);
-    auto gen = std::minstd_rand();
-    if constexpr (std::is_floating_point_v<Arithmetic>) {
-        auto dist = std::uniform_real_distribution<Arithmetic>();
-        std::generate(vector.begin(), vector.end(), [&] { return dist(gen); });
-    } else {
-        auto dist = std::uniform_int_distribution<Arithmetic>();
-        std::generate(vector.begin(), vector.end(), [&] { return dist(gen); });
-    }
-    return vector;
-}
-
-
-// Use as CHECK(for_vector_equality(a, b))
-template<typename T>
-bool for_vector_equality(const T *lhs, const T *rhs, size_t size) {
-    size_t first_mismatch = SIZE_MAX, last_mismatch = 0;
-    for (size_t i = 0; i < size; ++i) {
-        if (lhs[i] != rhs[i]) {
-            first_mismatch = std::min(first_mismatch, i);
-            last_mismatch = std::max(last_mismatch, i);
-        }
-    }
-
-    if (first_mismatch <= last_mismatch) {
-        std::cerr << "vectors mismatch between index " << first_mismatch << " and " << last_mismatch
-                  << ":\n    {";
-        for (auto *vec : {&lhs, &rhs}) {
-            for (size_t i = first_mismatch; i <= last_mismatch;) {
-                std::cerr << (*vec)[i];
-                if (i < last_mismatch) { std::cerr << ", "; }
-                if (i >= first_mismatch + 20 && i < last_mismatch - 20) {
-                    i = last_mismatch - 20;
-                    std::cerr << "..., ";
-                } else {
-                    ++i;
-                }
-            }
-            if (vec == &lhs) { std::cerr << "}\n != {"; }
-        }
-        std::cerr << "}\n";
-        return false;
-    }
-
-    return true;
-}
-
-
-template<typename T>
-bool for_vector_equality(const std::vector<T> &lhs, const std::vector<T> &rhs) {
-    if (lhs.size() != rhs.size()) {
-        std::cerr << "vectors differ in size: " << lhs.size() << " vs. " << rhs.size()
-                  << " elements\n";
-        return false;
-    }
-    return for_vector_equality(lhs.data(), rhs.data(), lhs.size());
-}
 
 
 template<typename Bits>
@@ -332,7 +270,7 @@ TEMPLATE_TEST_CASE("decode(encode(input)) reproduces the input", "[encoder]", (p
         auto stream_bytes_read = decoder.decompress(stream.data(), stream.size(), output);
 
         CHECK(stream_bytes_read == stream.size());
-        CHECK(for_vector_equality(input_data, output_data));
+        check_for_vector_equality(input_data, output_data);
     };
 
     SECTION("cpu_encoder::encode() => cpu_encoder::decode()") {
@@ -404,7 +342,7 @@ TEMPLATE_TEST_CASE("file headers from different encoders are identical", "[encod
     auto test_stream_length = test_encoder.compress(input, test_stream.data());
     test_stream.resize(file.num_hypercubes());
 
-    CHECK(for_vector_equality(reference_stream, test_stream));
+    check_for_vector_equality(reference_stream, test_stream);
     CHECK(reference_stream_length == test_stream_length);
 }
 #endif
@@ -569,7 +507,7 @@ TEMPLATE_TEST_CASE("flattening of larger hypercubes is identical between CPU and
     cpu::simd_aligned_buffer<bits_type> cpu_dump(hc_size);
     cpu::load_hypercube<profile>(hc_offset, input, cpu_dump.data());
 
-    CHECK(for_vector_equality(gpu_dump.data(), cpu_dump.data(), hc_size));
+    check_for_vector_equality(gpu_dump.data(), cpu_dump.data(), hc_size);
 }
 
 
@@ -606,14 +544,15 @@ static void test_cpu_gpu_transform_equality(
     });
     q.wait();
 
-    CHECK(for_vector_equality(gpu_transformed, cpu_transformed));
+    check_for_vector_equality(gpu_transformed, cpu_transformed);
 }
 
 template<typename Profile, typename CPUTransform, typename GPUTransform>
 static void test_cpu_gpu_transform_equality_scoped(
         const CPUTransform &cpu_transform, const GPUTransform &gpu_transform) {
     using bits_type = typename Profile::bits_type;
-    const auto hc_size = ipow(Profile::hypercube_side_length, Profile::dimensions);
+    constexpr auto hc_size = static_cast<gpu::index_type>(
+            ipow(Profile::hypercube_side_length, Profile::dimensions));
 
     const auto input = make_random_vector<bits_type>(hc_size);
 
@@ -629,15 +568,15 @@ static void test_cpu_gpu_transform_equality_scoped(
     q.submit([&](handler &cgh) {
         auto global_acc = io_buf.template get_access<sam::read_write>(cgh);
         cgh.parallel(range<1>{1}, range<1>{gpu::hypercube_group_size},
-                [global_acc, hc_size = hc_size, gpu_transform](group<1> grp, physical_item<1>) {
+                [global_acc, hc_size = hc_size, gpu_transform](
+                        gpu::hypercube_group grp, physical_item<1>) {
                     auto hc_mem = local_memory<bits_type[gpu::hypercube<Profile>::allocation_size]>{
                             grp};
                     auto hc = gpu::hypercube<Profile>{hc_mem()};
-                    gpu::for_range(grp, gpu::hypercube_group_size, hc_size,
+                    grp.distribute_for(hc_size,
                             [&](gpu::index_type i) { hc[i] = rotate_left_1(global_acc[i]); });
                     gpu_transform(grp, hc);
-                    gpu::for_range(grp, gpu::hypercube_group_size, hc_size,
-                            [&](gpu::index_type i) { global_acc[i] = hc[i]; });
+                    grp.distribute_for(hc_size, [&](gpu::index_type i) { global_acc[i] = hc[i]; });
                 });
     });
 
@@ -647,7 +586,7 @@ static void test_cpu_gpu_transform_equality_scoped(
     });
     q.wait();
 
-    CHECK(for_vector_equality(gpu_transformed, cpu_transformed));
+    check_for_vector_equality(gpu_transformed, cpu_transformed);
 }
 
 template<typename>
@@ -773,7 +712,7 @@ TEMPLATE_TEST_CASE(
     });
     q.wait();
 
-    CHECK(for_vector_equality(gpu_compacted, cpu_compacted));
+    check_for_vector_equality(gpu_compacted, cpu_compacted);
 }
 
 
@@ -817,7 +756,7 @@ TEMPLATE_TEST_CASE("GPU zero-word expansion works", "[gpu]", uint32_t, uint64_t)
     });
     q.wait();
 
-    CHECK(for_vector_equality(gpu_expanded, input));
+    check_for_vector_equality(gpu_expanded, input);
 }
 
 template<typename Bits>
@@ -883,7 +822,7 @@ TEMPLATE_TEST_CASE("CPU and GPU hypercube encodings are equivalent", "[gpu]", ui
     q.wait();
 
     CHECK(sizeof(TestType) * gpu_length == cpu_length);
-    CHECK(for_vector_equality(gpu_stream, cpu_stream));
+    check_for_vector_equality(gpu_stream, cpu_stream);
 }
 
 
@@ -909,7 +848,7 @@ TEST_CASE("hierarchical_inclusive_prefix_sum produces the expected results", "[g
     });
     q.wait();
 
-    CHECK(for_vector_equality(gpu_prefix_sum, cpu_prefix_sum));
+    check_for_vector_equality(gpu_prefix_sum, cpu_prefix_sum);
 }
 
 
@@ -940,7 +879,7 @@ TEST_CASE("hypercube_range can index past the CUDA index space limit", "[gpu]") 
     std::iota(cpu_iota.begin() + offset, cpu_iota.end(), offset);
 
     q.wait();
-    CHECK(for_vector_equality(cpu_iota, gpu_iota));
+    check_for_vector_equality(cpu_iota, gpu_iota);
 }
 
 #endif

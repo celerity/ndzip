@@ -1,12 +1,11 @@
 #pragma once
 
 #include "common.hh"
+#include "gpu_bits.hh"
 
 #include <numeric>
 #include <stdexcept>
 #include <vector>
-
-#include <SYCL/sycl.hpp>
 
 
 namespace ndzip::detail::gpu {
@@ -47,18 +46,6 @@ template<typename U, typename T>
     return cast;
 }
 
-template<typename Integer>
-constexpr Integer div_ceil(Integer p, Integer q) {
-    return (p + q - 1) / q;
-}
-
-template<typename Integer>
-constexpr Integer ceil(Integer x, Integer multiple) {
-    return div_ceil(x, multiple) * multiple;
-}
-
-
-inline const size_t warp_size = 32;
 
 // SYCL and CUDA have opposite indexing directions for vector components, so the last component of
 // any SYCL id is component 0 of the CUDA id. CUDA limits the global size along all components > 0,
@@ -648,16 +635,6 @@ void compact_stream(/* global */ typename Profile::bits_type *stream,
 }
 
 
-using index_type = file_offset_type;
-
-template<typename T>
-using global_read = sycl::accessor<T, 1, sycl::access::mode::read>;
-template<typename T>
-using global_write = sycl::accessor<T, 1, sycl::access::mode::write>;
-template<typename T>
-using global_read_write = sycl::accessor<T, 1, sycl::access::mode::read_write>;
-
-
 template<typename Profile>
 struct compressed_chunks {
     using bits_type = typename Profile::bits_type;
@@ -748,54 +725,19 @@ struct hypercube {
 };
 
 
-template<typename F>
-void for_range(sycl::group<1> grp, index_type known_group_size, index_type range, F &&f) {
-    auto invoke_f = [&](index_type item, index_type iteration, sycl::logical_item<1> idx) {
-        if constexpr (std::is_invocable_v<F, index_type, index_type, sycl::logical_item<1>>) {
-            f(item, iteration, idx);
-        } else if constexpr (std::is_invocable_v<F, index_type, index_type>) {
-            f(item, iteration);
-        } else {
-            f(item);
-        }
-    };
-
-    grp.distribute_for([&](sycl::sub_group, sycl::logical_item<1> idx) {
-        const index_type num_full_iterations = range / known_group_size;
-        const index_type partial_iteration_length = range % known_group_size;
-        const auto tid = static_cast<index_type>(idx.get_local_id(0));
-
-#pragma unroll
-        for (index_type iteration = 0; iteration < num_full_iterations; ++iteration) {
-            auto item = iteration * known_group_size + tid;
-            invoke_f(item, iteration, idx);
-        }
-
-        if (tid < partial_iteration_length) {
-            auto iteration = num_full_iterations;
-            auto item = iteration * known_group_size + tid;
-            invoke_f(item, iteration, idx);
-        }
-    });
-}
-
-template<typename F>
-void for_range(sycl::group<1> grp, index_type range, F &&f) {
-    for_range(grp, static_cast<index_type>(grp.get_local_range(0)), range, std::forward<F>(f));
-}
-
-inline const index_type hypercube_group_size = 64;
+inline constexpr index_type hypercube_group_size = 64;
+using hypercube_group = known_size_group<hypercube_group_size>;
 
 template<typename Profile, typename F>
 void for_hypercube_indices(
-        sycl::group<1> grp, index_type hc_index, extent<Profile::dimensions> data_size, F &&f) {
+        hypercube_group grp, index_type hc_index, extent<Profile::dimensions> data_size, F &&f) {
     const auto side_length = Profile::hypercube_side_length;
     const auto hc_size = ipow(side_length, Profile::dimensions);
     const auto hc_offset
             = detail::extent_from_linear_id(hc_index, data_size / side_length) * side_length;
 
     size_t initial_offset = linear_offset(hc_offset, data_size);
-    for_range(grp, hypercube_group_size, hc_size, [&](index_type local_idx) {
+    grp.distribute_for(hc_size, [&](index_type local_idx) {
         size_t global_idx = initial_offset + global_offset<Profile>(local_idx, data_size);
         f(global_idx, local_idx);
     });
@@ -825,17 +767,17 @@ void store_hypercube(
 
 
 template<typename Profile, typename IndexFn>
-void forward_transform_step(sycl::group<1> grp, hypercube<Profile> hc, IndexFn &&index_fn) {
+void forward_transform_step(hypercube_group grp, hypercube<Profile> hc, IndexFn &&index_fn) {
     using bits_type = typename Profile::bits_type;
     constexpr auto n = Profile::hypercube_side_length;
     constexpr index_type hc_size = ipow(n, Profile::dimensions);
 
     sycl::private_memory<bits_type[div_ceil(hc_size, hypercube_group_size)]> a{grp};
-    for_range(grp, hypercube_group_size, hc_size,
+    grp.distribute_for(hc_size,
             [&](index_type item, index_type iteration, sycl::logical_item<1> idx) {
                 a(idx)[iteration] = hc[index_fn(item)];
             });
-    for_range(grp, hypercube_group_size, hc_size,
+    grp.distribute_for(hc_size,
             [&](index_type item, index_type iteration, sycl::logical_item<1> idx) {
                 if (item % n != n - 1) { hc[index_fn(item + 1)] -= a(idx)[iteration]; }
             });
@@ -843,7 +785,7 @@ void forward_transform_step(sycl::group<1> grp, hypercube<Profile> hc, IndexFn &
 
 
 template<typename Profile>
-void block_transform(sycl::group<1> grp, hypercube<Profile> hc) {
+void block_transform(hypercube_group grp, hypercube<Profile> hc) {
     constexpr auto n = Profile::hypercube_side_length;
     constexpr auto n2 = n * n;
     constexpr auto dims = Profile::dimensions;
@@ -859,14 +801,14 @@ void block_transform(sycl::group<1> grp, hypercube<Profile> hc) {
     }
 
     // TODO move complement operation elsewhere to avoid local memory round-trip
-    for_range(grp, hypercube_group_size, hc_size,
+    grp.distribute_for(hc_size,
             [&](index_type item) { hc[item] = complement_negative(hc[item]); });
 }
 
 
 
 template<typename Profile, typename IndexFn>
-void inverse_transform_step(sycl::group<1> grp, hypercube<Profile> hc, IndexFn &&index_fn) {
+void inverse_transform_step(hypercube_group grp, hypercube<Profile> hc, IndexFn &&index_fn) {
     using bits_type = typename Profile::bits_type;
     constexpr auto n = Profile::hypercube_side_length;
     constexpr index_type hc_size = ipow(n, Profile::dimensions);
@@ -876,14 +818,14 @@ void inverse_transform_step(sycl::group<1> grp, hypercube<Profile> hc, IndexFn &
 
 
 template<typename Profile>
-void inverse_block_transform(sycl::group<1> grp, hypercube<Profile> hc) {
+void inverse_block_transform(hypercube_group grp, hypercube<Profile> hc) {
     constexpr auto n = Profile::hypercube_side_length;
     constexpr auto n2 = n * n;
     constexpr auto dims = Profile::dimensions;
     constexpr index_type hc_size = ipow(n, dims);
 
     // TODO move complement operation elsewhere to avoid local memory round-trip
-    for_range(grp, hypercube_group_size, hc_size,
+    grp.distribute_for(hc_size,
             [&](index_type item) { hc[item] = complement_negative(hc[item]); });
 
     inverse_transform_step(grp, hc, [](index_type item) { return item; });
@@ -903,14 +845,14 @@ void inverse_block_transform(sycl::group<1> grp, hypercube<Profile> hc) {
 template<typename Profile>
 void fill_stream_header(index_type num_hypercubes, global_write<stream_align_t> stream_acc,
         global_read<file_offset_type> offset_acc, sycl::handler &cgh) {
-    const index_type group_size = 256;
+    constexpr index_type group_size = 256;
     const index_type num_groups = div_ceil(num_hypercubes, group_size);
     cgh.parallel(sycl::range<1>{num_groups}, sycl::range<1>{group_size},
-            [=](sycl::group<1> grp, sycl::physical_item<1>) {
+            [=](known_size_group<group_size> grp, sycl::physical_item<1>) {
                 stream<Profile> stream{num_hypercubes, stream_acc.get_pointer()};
                 const index_type base = static_cast<index_type>(grp.get_id(0)) * group_size;
                 const index_type num_elements = std::min(group_size, num_hypercubes - base);
-                for_range(grp, num_elements, [&](index_type i) {
+                grp.distribute_for(num_elements, [&](index_type i) {
                     stream.set_offset_after(base + i, offset_acc[base + i]);
                 });
             });
@@ -922,14 +864,14 @@ void compact_hypercubes(index_type num_hypercubes, global_write<stream_align_t> 
         global_read<typename Profile::bits_type> chunks_acc, sycl::handler &cgh) {
     constexpr index_type num_threads_per_hc = 64;
     cgh.parallel(sycl::range<1>{num_hypercubes}, sycl::range<1>{num_threads_per_hc},
-            [=](sycl::group<1> grp, sycl::physical_item<1>) {
+            [=](known_size_group<num_threads_per_hc> grp, sycl::physical_item<1>) {
                 auto hc_index = static_cast<index_type>(grp.get_id(0));
                 compressed_chunks<Profile> chunks{num_hypercubes, chunks_acc.get_pointer()};
                 auto in = chunks.hypercube(hc_index);
                 stream<Profile> stream{num_hypercubes, stream_acc.get_pointer()};
                 auto out = stream.hypercube(hc_index);
-                for_range(grp, stream.hypercube_size(hc_index),
-                        [&](index_type i) { out[i] = in[i]; });
+                grp.distribute_for(stream.hypercube_size(hc_index),
+                                   [&](index_type i) { out[i] = in[i]; });
             });
 }
 
