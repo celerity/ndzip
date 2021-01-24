@@ -759,14 +759,18 @@ void for_range(sycl::group<1> grp, index_type known_group_size, index_type range
             f(item);
         }
     };
+
     grp.distribute_for([&](sycl::sub_group, sycl::logical_item<1> idx) {
         const index_type num_full_iterations = range / known_group_size;
         const index_type partial_iteration_length = range % known_group_size;
         const auto tid = static_cast<index_type>(idx.get_local_id(0));
+
+#pragma unroll
         for (index_type iteration = 0; iteration < num_full_iterations; ++iteration) {
             auto item = iteration * known_group_size + tid;
             invoke_f(item, iteration, idx);
         }
+
         if (tid < partial_iteration_length) {
             auto iteration = num_full_iterations;
             auto item = iteration * known_group_size + tid;
@@ -820,50 +824,38 @@ void store_hypercube(
 }
 
 
+template<typename Profile, typename IndexFn>
+void forward_transform_step(sycl::group<1> grp, hypercube<Profile> hc, IndexFn &&index_fn) {
+    using bits_type = typename Profile::bits_type;
+    constexpr auto n = Profile::hypercube_side_length;
+    constexpr index_type hc_size = ipow(n, Profile::dimensions);
+
+    sycl::private_memory<bits_type[div_ceil(hc_size, hypercube_group_size)]> a{grp};
+    for_range(grp, hypercube_group_size, hc_size,
+            [&](index_type item, index_type iteration, sycl::logical_item<1> idx) {
+                a(idx)[iteration] = hc[index_fn(item)];
+            });
+    for_range(grp, hypercube_group_size, hc_size,
+            [&](index_type item, index_type iteration, sycl::logical_item<1> idx) {
+                if (item % n != n - 1) { hc[index_fn(item + 1)] -= a(idx)[iteration]; }
+            });
+}
+
+
 template<typename Profile>
 void block_transform(sycl::group<1> grp, hypercube<Profile> hc) {
-    using bits_type = typename Profile::bits_type;
-
     constexpr auto n = Profile::hypercube_side_length;
     constexpr auto n2 = n * n;
     constexpr auto dims = Profile::dimensions;
-    constexpr auto hc_size = ipow(n, dims);
+    constexpr index_type hc_size = ipow(n, dims);
 
-    sycl::private_memory<bits_type[hc_size / hypercube_group_size]> a{grp};
-
-    for_range(grp, hypercube_group_size, hc_size,
-            [&](index_type item, index_type iteration, sycl::logical_item<1> idx) {
-                a(idx)[iteration] = hc[item];
-            });
-    for_range(grp, hypercube_group_size, hc_size,
-            [&](index_type item, index_type iteration, sycl::logical_item<1> idx) {
-                if (item % n != n - 1) { hc[item + 1] -= a(idx)[iteration]; }
-            });
-
+    forward_transform_step(grp, hc, [](index_type item) { return item; });
     if (dims >= 2) {
-        for_range(grp, hypercube_group_size, hc_size,
-                [&](index_type item, index_type iteration, sycl::logical_item<1> idx) {
-                    a(idx)[iteration] = hc[item % n * n + item % n2 / n + item / n2 * n2];
-                });
-        for_range(grp, hypercube_group_size, hc_size,
-                [&](index_type item, index_type iteration, sycl::logical_item<1> idx) {
-                    if (item % n != n - 1) {
-                        hc[item % n * n + item % n2 / n + item / n2 * n2 + n] -= a(idx)[iteration];
-                    }
-                });
+        forward_transform_step(grp, hc,
+                [](index_type item) { return item % n * n + item % n2 / n + item / n2 * n2; });
     }
-
     if (dims >= 3) {
-        for_range(grp, hypercube_group_size, hc_size,
-                [&](index_type item, index_type iteration, sycl::logical_item<1> idx) {
-                    a(idx)[iteration] = hc[item % n * n2 + item / n];
-                });
-        for_range(grp, hypercube_group_size, hc_size,
-                [&](index_type item, index_type iteration, sycl::logical_item<1> idx) {
-                    if (item % n != n - 1) {
-                        hc[item % n * n2 + item / n + n2] -= a(idx)[iteration];
-                    }
-                });
+        forward_transform_step(grp, hc, [](index_type item) { return item % n * n2 + item / n; });
     }
 
     // TODO move complement operation elsewhere to avoid local memory round-trip
@@ -872,7 +864,40 @@ void block_transform(sycl::group<1> grp, hypercube<Profile> hc) {
 }
 
 
-// TODO we might be able to avoid this kernel altogeher by writing the reduction results
+
+template<typename Profile, typename IndexFn>
+void inverse_transform_step(sycl::group<1> grp, hypercube<Profile> hc, IndexFn &&index_fn) {
+    using bits_type = typename Profile::bits_type;
+    constexpr auto n = Profile::hypercube_side_length;
+    constexpr index_type hc_size = ipow(n, Profile::dimensions);
+
+    // TODO inclusive prefix sum. How to without doubling local memory size like in Hillis Steele?
+}
+
+
+template<typename Profile>
+void inverse_block_transform(sycl::group<1> grp, hypercube<Profile> hc) {
+    constexpr auto n = Profile::hypercube_side_length;
+    constexpr auto n2 = n * n;
+    constexpr auto dims = Profile::dimensions;
+    constexpr index_type hc_size = ipow(n, dims);
+
+    // TODO move complement operation elsewhere to avoid local memory round-trip
+    for_range(grp, hypercube_group_size, hc_size,
+            [&](index_type item) { hc[item] = complement_negative(hc[item]); });
+
+    inverse_transform_step(grp, hc, [](index_type item) { return item; });
+    if (dims >= 2) {
+        inverse_transform_step(grp, hc,
+                [](index_type item) { return item % n * n + item % n2 / n + item / n2 * n2; });
+    }
+    if (dims >= 3) {
+        inverse_transform_step(grp, hc, [](index_type item) { return item % n * n2 + item / n; });
+    }
+}
+
+
+// TODO we might be able to avoid this kernel altogether by writing the reduction results
 // directly
 //  to the stream header. Requires the stream format to be fixed first.
 template<typename Profile>
