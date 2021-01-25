@@ -48,6 +48,10 @@ set(NDZIP_COMPILE_FLAGS
 
 add_library(ndzip SHARED
     include/ndzip/ndzip.hh
+    include/ndzip/array.hh
+    include/ndzip/cpu_encoder.hh
+    include/ndzip/mt_cpu_encoder.hh
+    include/ndzip/gpu_encoder.hh
     src/ndzip/common.hh
     src/ndzip/common.cc
     src/ndzip/cpu_encoder.inl
@@ -112,9 +116,11 @@ endif ()
 
 if (NDZIP_BUILD_TEST AND NDZIP_USE_HIPSYCL)
     add_executable(gpu_ubench
+            src/gpu_ubench/ubench.hh
+            src/gpu_ubench/encoder_ubench.cc
             src/gpu_ubench/gpu_bits_ubench.cc
             src/gpu_ubench/ubench_main.cc)
-    target_include_directories(gpu_ubench PRIVATE src)
+    target_include_directories(gpu_ubench PRIVATE src include)
     target_compile_options(gpu_ubench PRIVATE ${NDZIP_COMPILE_FLAGS})
     target_link_libraries(gpu_ubench PRIVATE Catch2::Catch2)
     add_sycl_to_target(TARGET gpu_ubench)

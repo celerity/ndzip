@@ -7,6 +7,8 @@
 #include <stdexcept>
 #include <vector>
 
+#include <ndzip/gpu_encoder.hh>
+
 
 namespace ndzip::detail::gpu {
 
@@ -730,15 +732,15 @@ struct directional_hypercube_accessor;
 template<typename Profile>
 struct directional_hypercube_accessor<Profile, 1> {
     hypercube<Profile> hc;
+    index_type offset = 0;
 
-    typename Profile::bits_type &operator[](index_type i) const {
-        return hc[i];
-    }
+    typename Profile::bits_type &operator[](index_type i) const { return hc[i]; }
 };
 
 template<typename Profile>
 struct directional_hypercube_accessor<Profile, 2> {
     hypercube<Profile> hc;
+    index_type offset = 0;
 
     typename Profile::bits_type &operator[](index_type i) const {
         constexpr auto n = Profile::hypercube_side_length;
@@ -750,6 +752,7 @@ struct directional_hypercube_accessor<Profile, 2> {
 template<typename Profile>
 struct directional_hypercube_accessor<Profile, 3> {
     hypercube<Profile> hc;
+    index_type offset = 0;
 
     typename Profile::bits_type &operator[](index_type i) const {
         constexpr auto n = Profile::hypercube_side_length;
@@ -807,12 +810,12 @@ void forward_transform_step(hypercube_group grp, Accessor acc) {
     constexpr index_type hc_size = ipow(n, Profile::dimensions);
 
     sycl::private_memory<bits_type[div_ceil(hc_size, hypercube_group_size)]> a{grp};
-    grp.distribute_for(hc_size,
-            [&](index_type item, index_type iteration, sycl::logical_item<1> idx) {
+    grp.distribute_for(
+            hc_size, [&](index_type item, index_type iteration, sycl::logical_item<1> idx) {
                 a(idx)[iteration] = acc[item];
             });
-    grp.distribute_for(hc_size,
-            [&](index_type item, index_type iteration, sycl::logical_item<1> idx) {
+    grp.distribute_for(
+            hc_size, [&](index_type item, index_type iteration, sycl::logical_item<1> idx) {
                 if (item % n != n - 1) { acc[item + 1] -= a(idx)[iteration]; }
             });
 }
@@ -832,19 +835,34 @@ void block_transform(hypercube_group grp, hypercube<Profile> hc) {
     }
 
     // TODO move complement operation elsewhere to avoid local memory round-trip
-    grp.distribute_for(hc_size,
-            [&](index_type item) { hc[item] = complement_negative(hc[item]); });
+    grp.distribute_for(hc_size, [&](index_type item) { hc[item] = complement_negative(hc[item]); });
 }
 
 
+template<typename Accessor>
+void inverse_transform_lanes(
+        hypercube_group grp, index_type n_lanes, index_type lane_length, Accessor acc) {
+    grp.distribute_for(n_lanes, [&](index_type i) {
+        // TODO this is almost exactly common.hh / inverse_transform_step => to "detail::seq::"
+        auto a = acc[i * lane_length];
+        for (size_t j = 1; j < lane_length; ++j) {
+            a += acc[i * lane_length + j];
+            acc[i * lane_length + j] = a;
+        }
+    });
+}
 
-template<typename Profile, typename Accessor>
-void inverse_transform_step(hypercube_group grp, Accessor acc) {
+
+template<typename Profile>
+void inverse_block_transform(hypercube_group grp, hypercube<Profile> hc) {
     using bits_type = typename Profile::bits_type;
+    constexpr auto dims = Profile::dimensions;
     constexpr auto n = Profile::hypercube_side_length;
+    constexpr auto n2 = n * n;
+    constexpr index_type hc_size = ipow(n, dims);
 
-    // 1D
-    inclusive_scan<n>(grp, acc, sycl::plus<bits_type>{});
+    // TODO move complement operation elsewhere to avoid local memory round-trip
+    grp.distribute_for(hc_size, [&](index_type item) { hc[item] = complement_negative(hc[item]); });
 
     // TODO how to do 2D / 3D?
     //  - For 2D we have 64 parallel work items but we _probably_ want at least 256 threads per SM
@@ -854,25 +872,17 @@ void inverse_transform_step(hypercube_group grp, Accessor acc) {
     //    idle and going with a sequential-per-lane transform.
     //  - For 3D we have 256 parallel work items, so implementing that w/o prefix sum should be
     //    the most efficient
-}
 
-
-template<typename Profile>
-void inverse_block_transform(hypercube_group grp, hypercube<Profile> hc) {
-    constexpr auto dims = Profile::dimensions;
-    constexpr index_type hc_size = ipow(Profile::hypercube_side_length, dims);
-
-    // TODO move complement operation elsewhere to avoid local memory round-trip
-    grp.distribute_for(hc_size,
-            [&](index_type item) { hc[item] = complement_negative(hc[item]); });
-
-
-    inverse_transform_step<Profile>(grp, directional_hypercube_accessor<Profile, 1>{hc});
-    if (dims >= 2) {
-        inverse_transform_step<Profile>(grp, directional_hypercube_accessor<Profile, 2>{hc});
+    if (dims == 1) { inclusive_scan<n>(grp, hc, sycl::plus<bits_type>{}); }
+    if (dims == 2) {
+        // TODO inefficient, see above
+        inverse_transform_lanes(grp, n, n, directional_hypercube_accessor<Profile, 1>{hc});
+        inverse_transform_lanes(grp, n, n, directional_hypercube_accessor<Profile, 2>{hc});
     }
-    if (dims >= 3) {
-        inverse_transform_step<Profile>(grp, directional_hypercube_accessor<Profile, 3>{hc});
+    if (dims == 3) {
+        inverse_transform_lanes(grp, n2, n, directional_hypercube_accessor<Profile, 1>{hc});
+        inverse_transform_lanes(grp, n2, n, directional_hypercube_accessor<Profile, 2>{hc});
+        inverse_transform_lanes(grp, n2, n, directional_hypercube_accessor<Profile, 3>{hc});
     }
 }
 
@@ -908,8 +918,8 @@ void compact_hypercubes(index_type num_hypercubes, global_write<stream_align_t> 
                 auto in = chunks.hypercube(hc_index);
                 stream<Profile> stream{num_hypercubes, stream_acc.get_pointer()};
                 auto out = stream.hypercube(hc_index);
-                grp.distribute_for(stream.hypercube_size(hc_index),
-                                   [&](index_type i) { out[i] = in[i]; });
+                grp.distribute_for(
+                        stream.hypercube_size(hc_index), [&](index_type i) { out[i] = in[i]; });
             });
 }
 

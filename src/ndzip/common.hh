@@ -8,7 +8,7 @@
 #include <limits>
 #include <optional>
 
-#include <ndzip/ndzip.hh>
+#include <ndzip/array.hh>
 
 
 #define NDZIP_BIG_ENDIAN 0

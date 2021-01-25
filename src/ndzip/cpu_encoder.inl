@@ -5,6 +5,8 @@
 #include <stdexcept>
 #include <vector>
 
+#include <ndzip/cpu_encoder.hh>
+
 #ifdef __AVX2__
 #include <immintrin.h>
 #endif
@@ -17,6 +19,7 @@
 #include <boost/container/static_vector.hpp>
 #include <boost/lockfree/queue.hpp>
 #include <boost/thread/thread.hpp>
+#include <ndzip/mt_cpu_encoder.hh>
 #endif
 
 
@@ -541,8 +544,7 @@ template<typename T>
 
 
 template<typename Bits>
-[[gnu::noinline]] size_t
-zero_bit_encode(const Bits *cube, std::byte *stream, size_t hc_size) {
+[[gnu::noinline]] size_t zero_bit_encode(const Bits *cube, std::byte *stream, size_t hc_size) {
     size_t pos = 0;
     for (size_t offset = 0; offset < hc_size; offset += detail::bitsof<Bits>) {
         auto in = cube + offset;
@@ -561,8 +563,7 @@ zero_bit_encode(const Bits *cube, std::byte *stream, size_t hc_size) {
 }
 
 template<typename Bits>
-[[gnu::noinline]] size_t
-zero_bit_decode(const std::byte *stream, Bits *cube, size_t hc_size) {
+[[gnu::noinline]] size_t zero_bit_decode(const std::byte *stream, Bits *cube, size_t hc_size) {
     size_t pos = 0;
     for (size_t i = 0; i < hc_size; i += detail::bitsof<Bits>) {
         alignas(simd_width_bytes) Bits transposed[detail::bitsof<Bits>];
