@@ -20,7 +20,7 @@ template<typename>
 class block_inverse_transform_kernel;
 
 TEMPLATE_TEST_CASE("Block transform", "[transform]", ALL_PROFILES) {
-    constexpr index_type n_blocks = 256;
+    constexpr index_type n_blocks = 16384;
 
     SYCL_BENCHMARK("Reference: rotate only")(sycl::queue & q) {
         using bits_type = typename TestType::bits_type;

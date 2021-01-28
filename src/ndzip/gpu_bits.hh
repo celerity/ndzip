@@ -108,37 +108,36 @@ class known_size_group : public sycl::group<1> {
 template<index_type Range, index_type LocalSize, typename Accessor, typename BinaryOp>
 std::enable_if_t<(Range <= warp_size)>
 inclusive_scan(known_size_group<LocalSize> grp, Accessor acc, BinaryOp op) {
-    static_assert(Range % warp_size == 0);
     static_assert(LocalSize % warp_size == 0);
-    grp.template distribute_for<Range>(
+    grp.template distribute_for<ceil(Range, warp_size)>(
             [&](index_type item, index_type, sycl::logical_item<1>, sycl::sub_group sg) {
-                // TODO group_inclusive_scan will break for partial iterations!
-                acc[item] = sycl::group_inclusive_scan(sg, acc[item], op);
+                auto a = item < Range ? acc[item] : 0;
+                auto b = sycl::group_inclusive_scan(sg, a, op);
+                if (item < Range) { acc[item] = b; }
             });
 }
 
 template<index_type Range, index_type LocalSize, typename Accessor, typename BinaryOp>
 std::enable_if_t<(Range > warp_size)>
 inclusive_scan(known_size_group<LocalSize> grp, Accessor acc, BinaryOp op) {
-    static_assert(Range % warp_size == 0);
     static_assert(LocalSize % warp_size == 0);
     using value_type = std::decay_t<decltype(acc[index_type{}])>;
 
     sycl::private_memory<value_type[div_ceil(Range, LocalSize)]> fine{grp};
     sycl::local_memory<value_type[div_ceil(Range, warp_size)]> coarse{grp};
-    grp.template distribute_for<Range>([&](index_type item, index_type iteration,
-                                               sycl::logical_item<1> idx, sycl::sub_group sg) {
-        // TODO group_inclusive_scan will break for partial iterations!
-        fine(idx)[iteration] = sycl::group_inclusive_scan(sg, acc[item], op);
+    grp.template distribute_for<ceil(Range, warp_size)>([&](index_type item, index_type iteration,
+                                                                sycl::logical_item<1> idx,
+                                                                sycl::sub_group sg) {
+        fine(idx)[iteration] = sycl::group_inclusive_scan(sg, item < Range ? acc[item] : 0, op);
         if (item % warp_size == warp_size - 1) { coarse[item / warp_size] = fine(idx)[iteration]; }
     });
     inclusive_scan<div_ceil(Range, warp_size)>(grp, coarse(), op);
-    grp.template distribute_for<Range>([&](index_type item, index_type iteration,
-                                               sycl::logical_item<1> idx, sycl::sub_group sg) {
-        auto value = fine(idx)[iteration];
-        if (item >= warp_size) { value = op(value, coarse[item / warp_size - 1]); }
-        acc[item] = value;
-    });
+    grp.template distribute_for<Range>(
+            [&](index_type item, index_type iteration, sycl::logical_item<1> idx) {
+                auto value = fine(idx)[iteration];
+                if (item >= warp_size) { value = op(value, coarse[item / warp_size - 1]); }
+                acc[item] = value;
+            });
 }
 
 }  // namespace ndzip::detail::gpu

@@ -7,8 +7,8 @@ using sam = sycl::access::mode;
 
 
 TEMPLATE_TEST_CASE("Subgroup hierarchical inclusive scan works", "[gpu_bits]", uint32_t, uint64_t) {
-    constexpr index_type group_size = 64;
-    constexpr index_type n_groups = 2;
+    constexpr index_type group_size = 1024;
+    constexpr index_type n_groups = 9;
     constexpr index_type range = group_size * n_groups;
 
     sycl::queue q;
