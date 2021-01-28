@@ -786,7 +786,7 @@ TEMPLATE_TEST_CASE("GPU zero-word expansion works", "[gpu]", uint32_t, uint64_t)
 }
 
 TEMPLATE_TEST_CASE("CPU and NEW GPU hypercube encodings are equivalent", "[gpu]",
-        (profile<float, 1>)) {
+        (profile<float, 1>), (profile<double, 1>) ) {
     using bits_type = typename TestType::bits_type;
     const auto hc_size = ipow(TestType::hypercube_side_length, TestType::dimensions);
 
@@ -795,6 +795,7 @@ TEMPLATE_TEST_CASE("CPU and NEW GPU hypercube encodings are equivalent", "[gpu]"
         for (auto idx : {0, 12, 13, 29, static_cast<int>(bitsof<bits_type> - 2)}) {
             input[i] &= ~(bits_type{1} << ((static_cast<unsigned>(idx) * (i / bitsof<bits_type>) )
                                   % bitsof<bits_type>) );
+            input[gpu::floor(i, bitsof<bits_type>) + idx] = 0;
         }
     }
 

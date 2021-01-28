@@ -902,59 +902,74 @@ void encode_chunks(hypercube_group grp, hypercube<Profile> hc, typename Profile:
     // One group per warp (for subgroup reductions)
     constexpr index_type chunk_size = bitsof<bits_type>;
     constexpr index_type num_chunks = hc_size / chunk_size;
+    constexpr index_type num_warps = hc_size / warp_size;
+    constexpr index_type warps_per_chunk = num_warps / num_chunks;
 
     // TODO assumes chunk_size == warp_size
     // TODO even if there is a use case for index_type > 32 bits, this should always be 32 bits
-    sycl::local_memory<index_type[num_chunks + 1]> chunk_offsets{grp};
-    sycl::private_memory<bits_type[hc_size / hypercube_group_size]> chunk_heads{grp};
+    sycl::local_memory<index_type[num_warps + 1]> warp_offsets{grp};
+    // TODO can be private memory for 32 bit!
+    sycl::local_memory<bits_type[num_warps]> chunk_heads{grp};
     sycl::private_memory<bits_type[hc_size / hypercube_group_size]> chunk_columns{grp};
     sycl::private_memory<index_type[hc_size / hypercube_group_size]> column_relative_positions{grp};
     grp.distribute_for<hc_size>([&](index_type item, index_type iteration,
                                         sycl::logical_item<1> idx, sycl::sub_group sg) {
-        auto chunk_index = item / chunk_size;
+        auto warp_index = item / warp_size;
         auto head = sycl::group_reduce(sg, hc[item], sycl::bit_or<bits_type>{});
-        chunk_heads(idx)[iteration] = head;
-        index_type this_chunk_size = 0;
+        index_type this_warp_size = 0;
         bits_type column = 0;
         index_type relative_pos = 0;
-        if (head != 0) {
+        if (warps_per_chunk > 0 /* TODO merge head before */ || head != 0) {
             const auto chunk_base = floor(item, chunk_size);
             const auto cell = item - chunk_base;
             for (index_type i = 0; i < chunk_size; ++i) {
                 column |= (hc[chunk_base + i] >> (chunk_size - 1 - cell) & bits_type{1})
                         << (chunk_size - 1 - i);
             }
-            this_chunk_size = sycl::group_reduce(sg, index_type{column != 0},
+            this_warp_size = sycl::group_reduce(sg, index_type{column != 0},
                     sycl::plus<bits_type>{});  // TODO use popcount(head) instead
             relative_pos = sycl::group_exclusive_scan(
                     sg, index_type{column != 0}, sycl::plus<index_type>{});
         }
         chunk_columns(idx)[iteration] = column;
         column_relative_positions(idx)[iteration] = relative_pos;
-        if (sg.leader()) { chunk_offsets[1 + chunk_index] = 1 + this_chunk_size; }
+        if (sg.leader()) {
+            if (warp_index % warps_per_chunk == 0) { this_warp_size += 1;
+            }
+            warp_offsets[1 + warp_index] = this_warp_size;
+            chunk_heads[warp_index] = head;
+        }
     });
 
-    grp.single_item([&] { chunk_offsets[0] = 0; });
+    grp.single_item([&] { warp_offsets[0] = 0; });
+    inclusive_scan<num_warps>(grp, warp_offsets() + 1, sycl::plus<index_type>{});
 
-    inclusive_scan<num_chunks>(grp, chunk_offsets() + 1, sycl::plus<index_type>{});
+    for (index_type i = 1; i < warps_per_chunk; ++i) {
+        grp.distribute_for<num_chunks>([&](index_type item) {
+            chunk_heads[item * warps_per_chunk] |= chunk_heads[item * warps_per_chunk + i];
+        });
+    }
 
     grp.distribute_for<hc_size>([&](index_type item, index_type iteration,
                                         sycl::logical_item<1> idx, sycl::sub_group sg) {
-        auto chunk_index = item / chunk_size;
-        auto chunk_base = chunk_offsets[chunk_index];
-        if (sg.leader()) {
-            // TODO maybe avoid branch by writing all headers to LM in first loop and then copying
-            //  in an additional distribute_for<num_chunks>()?
-            //  Or even better, **change the file format to group chunk headers at fixed positions**
-            stream[chunk_base] = chunk_heads(idx)[iteration];
+        auto warp_index = item / warp_size;
+      auto warp_base = warp_offsets[warp_index];
+        if (warp_index % warps_per_chunk == 0) {
+            if (sg.leader()) {
+                // TODO maybe avoid branch by writing all headers to LM in first loop and then copying
+                //  in an additional distribute_for<num_chunks>()?
+                //  Or even better, **change the file format to group chunk headers at fixed positions**
+                stream[warp_base] = chunk_heads[warp_index];
+            }
+            warp_base += 1;
         }
         if (auto column = chunk_columns(idx)[iteration]) {
             auto relative_pos = column_relative_positions(idx)[iteration];
-            stream[chunk_base + 1 + relative_pos] = column;
+            stream[warp_base + relative_pos] = column;
         }
     });
 
-    if (grp.leader()) { *out_stream_length = chunk_offsets[num_chunks]; }
+    if (grp.leader()) { *out_stream_length = warp_offsets[num_warps]; }
 }
 
 
