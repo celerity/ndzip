@@ -388,17 +388,21 @@ load_and_dump_hypercube(const slice<const typename Profile::data_type, Profile::
         auto data_acc = load_buf.template get_access<sam::read>(cgh);
         auto result_acc = store_buf.template get_access<sam ::discard_write>(cgh);
         const auto data_size = in.size();
-        cgh.parallel(range<1>{1}, range<1>{64}, [=](group<1> grp, physical_item<1>) {
-            auto grid_in = gpu::grid<const Profile>{
-                    slice<const data_type, Profile::dimensions>{data_acc.get_pointer(), data_size}};
-            auto grid_out = gpu::grid<Profile>{slice<data_type, Profile::dimensions>{
-                    result_acc.get_pointer(),
-                    extent<Profile::dimensions>::broadcast(Profile::hypercube_side_length)}};
-            auto hc_mem = local_memory<bits_type[gpu::hypercube<Profile>::allocation_size]>{grp};
-            auto hc = gpu::hypercube<Profile>{hc_mem()};
-            gpu::load_hypercube<Profile>(grp, hc_index, grid_in, hc);
-            gpu::store_hypercube<Profile>(grp, hc_index, grid_out, hc);
-        });
+        cgh.parallel(range<1>{1}, range<1>{gpu::hypercube_group_size},
+                [=](group<1> grp, physical_item<1>) {
+                    auto grid_in
+                            = gpu::grid<const Profile>{slice<const data_type, Profile::dimensions>{
+                                    data_acc.get_pointer(), data_size}};
+                    auto grid_out = gpu::grid<Profile>{
+                            slice<data_type, Profile::dimensions>{result_acc.get_pointer(),
+                                    extent<Profile::dimensions>::broadcast(
+                                            Profile::hypercube_side_length)}};
+                    auto hc_mem = local_memory<bits_type[gpu::hypercube<Profile>::allocation_size]>{
+                            grp};
+                    auto hc = gpu::hypercube<Profile>{hc_mem()};
+                    gpu::load_hypercube<Profile>(grp, hc_index, grid_in, hc);
+                    gpu::store_hypercube<Profile>(grp, hc_index, grid_out, hc);
+                });
     });
     q.submit([&](handler &cgh) {
         cgh.copy(store_buf.template get_access<sam::read>(cgh),

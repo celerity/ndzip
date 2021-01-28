@@ -708,8 +708,7 @@ struct hypercube {
     constexpr static unsigned dimensions = Profile::dimensions;
     constexpr static unsigned side_length = Profile::hypercube_side_length;
     constexpr static unsigned padding_every = 32;
-    constexpr static index_type allocation_size
-            = div_ceil(ipow(side_length, dimensions), padding_every) * (padding_every + 1);
+    constexpr static index_type allocation_size = side_length * ipow(side_length + 1, dimensions - 1);
 
     using bits_type = typename Profile::bits_type;
     using extent = ndzip::extent<dimensions>;
@@ -717,8 +716,8 @@ struct hypercube {
     bits_type *bits;
 
     bits_type &operator[](index_type linear_idx) const {
-        return bits[(linear_idx / padding_every) * (padding_every + 1)
-                + linear_idx % padding_every];
+        auto pads = linear_idx / side_length + linear_idx / (side_length * side_length);
+        return bits[linear_idx + pads];
     }
 
     bits_type &operator[](extent position) const {
@@ -762,7 +761,7 @@ struct directional_hypercube_accessor<Profile, 3> {
 };
 
 
-inline constexpr index_type hypercube_group_size = 64;
+inline constexpr index_type hypercube_group_size = 256;
 using hypercube_group = known_size_group<hypercube_group_size>;
 
 template<typename Profile, typename F>
