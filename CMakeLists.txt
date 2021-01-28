@@ -100,21 +100,27 @@ endif ()
 
 
 if (NDZIP_BUILD_TEST AND Catch2_FOUND)
-    add_executable(test
+    add_executable(encoder_test
             src/test/test_utils.hh
-            src/test/test.cc
-            src/test/gpu_bits_test.cc
-            src/test/test_main.cc)
-    target_include_directories(test PRIVATE src)
-    target_compile_options(test PRIVATE ${NDZIP_COMPILE_FLAGS})
-    target_link_libraries(test PRIVATE ndzip Catch2::Catch2)
+            src/test/encoder_test.cc)
+    target_include_directories(encoder_test PRIVATE src)
+    target_compile_options(encoder_test PRIVATE ${NDZIP_COMPILE_FLAGS})
+    target_link_libraries(encoder_test PRIVATE ndzip Catch2::Catch2)
     if (NDZIP_USE_HIPSYCL)
-        add_sycl_to_target(TARGET test)
-        target_link_libraries(test PRIVATE ndzip-gpu)
+        add_sycl_to_target(TARGET encoder_test)
+        target_link_libraries(encoder_test PRIVATE ndzip-gpu)
     endif ()
 endif ()
 
-if (NDZIP_BUILD_TEST AND NDZIP_USE_HIPSYCL)
+if (NDZIP_BUILD_TEST AND Catch2_FOUND AND NDZIP_USE_HIPSYCL)
+    add_executable(gpu_bits_test
+            src/test/test_utils.hh
+            src/test/gpu_bits_test.cc)
+    target_include_directories(gpu_bits_test PRIVATE src include)
+    target_compile_options(gpu_bits_test PRIVATE ${NDZIP_COMPILE_FLAGS} -Werror=pass-failed)
+    target_link_libraries(gpu_bits_test PRIVATE Catch2::Catch2)
+    add_sycl_to_target(TARGET gpu_bits_test)
+
     add_executable(gpu_ubench
             src/gpu_ubench/ubench.hh
             src/gpu_ubench/encoder_ubench.cc
