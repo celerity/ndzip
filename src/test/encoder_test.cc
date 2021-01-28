@@ -785,6 +785,73 @@ TEMPLATE_TEST_CASE("GPU zero-word expansion works", "[gpu]", uint32_t, uint64_t)
     check_for_vector_equality(gpu_expanded, input);
 }
 
+TEMPLATE_TEST_CASE("CPU and NEW GPU hypercube encodings are equivalent", "[gpu]",
+        (profile<float, 1>)) {
+    using bits_type = typename TestType::bits_type;
+    const auto hc_size = ipow(TestType::hypercube_side_length, TestType::dimensions);
+
+    auto input = make_random_vector<bits_type>(hc_size);
+    for (size_t i = 0; i < hc_size; ++i) {
+        for (auto idx : {0, 12, 13, 29, static_cast<int>(bitsof<bits_type> - 2)}) {
+            input[i] &= ~(bits_type{1} << ((static_cast<unsigned>(idx) * (i / bitsof<bits_type>) )
+                                  % bitsof<bits_type>) );
+        }
+    }
+
+    cpu::simd_aligned_buffer<bits_type> cpu_cube(input.size());
+    memcpy(cpu_cube.data(), input.data(), input.size() * sizeof(bits_type));
+    std::vector<bits_type> cpu_stream(hc_size * 2);
+    auto cpu_length = cpu::zero_bit_encode(
+            cpu_cube.data(), reinterpret_cast<std::byte *>(cpu_stream.data()), hc_size);
+
+    sycl::queue q{sycl::gpu_selector{}};
+
+    buffer<bits_type> input_buf{range<1>{hc_size}};
+    q.submit([&](handler &cgh) {
+        cgh.copy(input.data(), input_buf.template get_access<sam::discard_write>(cgh));
+    });
+
+    buffer<bits_type> stream_buf(range<1>{hc_size * 2});
+    q.submit([&](handler &cgh) {
+        cgh.fill(stream_buf.template get_access<sam::discard_write>(cgh), bits_type{0});
+    });
+
+    buffer<file_offset_type> length_buf{range<1>{1}};
+    q.submit([&](handler &cgh) {
+        auto input_acc = input_buf.template get_access<sam::read>(cgh);
+        auto stream_acc = stream_buf.template get_access<sam::discard_write>(cgh);
+        auto length_acc = length_buf.get_access<sam::discard_write>(cgh);
+        cgh.parallel(sycl::range<1>{1}, sycl::range<1>{gpu::hypercube_group_size},
+                [input_acc, stream_acc, length_acc](
+                        gpu::hypercube_group grp, sycl::physical_item<1>) {
+                    auto hc_mem
+                            = local_memory<bits_type[gpu::hypercube<TestType>::allocation_size]>{
+                                    grp};
+                    auto hc = gpu::hypercube<TestType>{hc_mem()};
+                    grp.distribute_for(hc_size, [&](gpu::index_type i) { hc[i] = input_acc[i]; });
+
+                    bits_type *stream = stream_acc.get_pointer();
+                    file_offset_type *length = length_acc.get_pointer();
+
+                    gpu::encode_chunks(grp, hc, stream, length);
+                });
+    });
+
+    std::vector<bits_type> gpu_stream(stream_buf.get_range()[0]);
+    q.submit([&](handler &cgh) {
+        cgh.copy(stream_buf.template get_access<sam::read>(cgh), gpu_stream.data());
+    });
+    file_offset_type gpu_length;
+    q.submit([&](handler &cgh) {
+        cgh.copy(length_buf.template get_access<sam::read>(cgh), &gpu_length);
+    });
+    q.wait();
+
+    CHECK(sizeof(bits_type) * gpu_length == cpu_length);
+    check_for_vector_equality(gpu_stream, cpu_stream);
+}
+
+
 template<typename Bits>
 class gpu_hypercube_encoding_test_kernel;
 

@@ -708,7 +708,8 @@ struct hypercube {
     constexpr static unsigned dimensions = Profile::dimensions;
     constexpr static unsigned side_length = Profile::hypercube_side_length;
     constexpr static unsigned padding_every = 32;
-    constexpr static index_type allocation_size = side_length * ipow(side_length + 1, dimensions - 1);
+    constexpr static index_type allocation_size
+            = side_length * ipow(side_length + 1, dimensions - 1);
 
     using bits_type = typename Profile::bits_type;
     using extent = ndzip::extent<dimensions>;
@@ -888,6 +889,72 @@ void inverse_block_transform(hypercube_group grp, hypercube<Profile> hc) {
         inverse_transform_lanes(grp, n2, n, directional_hypercube_accessor<Profile, 2>{hc});
         inverse_transform_lanes(grp, n2, n, directional_hypercube_accessor<Profile, 3>{hc});
     }
+}
+
+
+template<typename Profile>
+void encode_chunks(hypercube_group grp, hypercube<Profile> hc, typename Profile::bits_type *stream,
+        file_offset_type *out_stream_length) {
+    using bits_type = typename Profile::bits_type;
+    constexpr index_type hc_size = ipow(Profile::hypercube_side_length, Profile::dimensions);
+    static_assert(hc_size % warp_size == 0);
+
+    // One group per warp (for subgroup reductions)
+    constexpr index_type chunk_size = bitsof<bits_type>;
+    constexpr index_type num_chunks = hc_size / chunk_size;
+
+    // TODO assumes chunk_size == warp_size
+    // TODO even if there is a use case for index_type > 32 bits, this should always be 32 bits
+    sycl::local_memory<index_type[num_chunks + 1]> chunk_offsets{grp};
+    sycl::private_memory<bits_type[hc_size / hypercube_group_size]> chunk_heads{grp};
+    sycl::private_memory<bits_type[hc_size / hypercube_group_size]> chunk_columns{grp};
+    sycl::private_memory<index_type[hc_size / hypercube_group_size]> column_relative_positions{grp};
+    grp.distribute_for<hc_size>([&](index_type item, index_type iteration,
+                                        sycl::logical_item<1> idx, sycl::sub_group sg) {
+        auto chunk_index = item / chunk_size;
+        auto head = sycl::group_reduce(sg, hc[item], sycl::bit_or<bits_type>{});
+        chunk_heads(idx)[iteration] = head;
+        index_type this_chunk_size = 0;
+        bits_type column = 0;
+        index_type relative_pos = 0;
+        if (head != 0) {
+            const auto chunk_base = floor(item, chunk_size);
+            const auto cell = item - chunk_base;
+            for (index_type i = 0; i < chunk_size; ++i) {
+                column |= (hc[chunk_base + i] >> (chunk_size - 1 - cell) & bits_type{1})
+                        << (chunk_size - 1 - i);
+            }
+            this_chunk_size = sycl::group_reduce(sg, index_type{column != 0},
+                    sycl::plus<bits_type>{});  // TODO use popcount(head) instead
+            relative_pos = sycl::group_exclusive_scan(
+                    sg, index_type{column != 0}, sycl::plus<index_type>{});
+        }
+        chunk_columns(idx)[iteration] = column;
+        column_relative_positions(idx)[iteration] = relative_pos;
+        if (sg.leader()) { chunk_offsets[1 + chunk_index] = 1 + this_chunk_size; }
+    });
+
+    grp.single_item([&] { chunk_offsets[0] = 0; });
+
+    inclusive_scan<num_chunks>(grp, chunk_offsets() + 1, sycl::plus<index_type>{});
+
+    grp.distribute_for<hc_size>([&](index_type item, index_type iteration,
+                                        sycl::logical_item<1> idx, sycl::sub_group sg) {
+        auto chunk_index = item / chunk_size;
+        auto chunk_base = chunk_offsets[chunk_index];
+        if (sg.leader()) {
+            // TODO maybe avoid branch by writing all headers to LM in first loop and then copying
+            //  in an additional distribute_for<num_chunks>()?
+            //  Or even better, **change the file format to group chunk headers at fixed positions**
+            stream[chunk_base] = chunk_heads(idx)[iteration];
+        }
+        if (auto column = chunk_columns(idx)[iteration]) {
+            auto relative_pos = column_relative_positions(idx)[iteration];
+            stream[chunk_base + 1 + relative_pos] = column;
+        }
+    });
+
+    if (grp.leader()) { *out_stream_length = chunk_offsets[num_chunks]; }
 }
 
 
