@@ -716,6 +716,8 @@ struct hypercube {
     bits_type *bits;
 
     bits_type &operator[](index_type linear_idx) const {
+        // TODO micro-optimizations: It might be useful to pad differently for forward and inverse
+        // transform
         auto pads = linear_idx / side_length + linear_idx / (side_length * side_length);
         return bits[linear_idx + pads];
     }
@@ -760,8 +762,11 @@ struct directional_hypercube_accessor<Profile, 3> {
     }
 };
 
-
-inline constexpr index_type hypercube_group_size = 256;
+// Fine tuning block size. For block transform:
+//    -  double precision, 256 >> 128
+//    - single precision 1D, 512 >> 128 > 256.
+//    - single precision forward 1D 2D, 512 >> 256.
+inline constexpr index_type hypercube_group_size = 512;
 using hypercube_group = known_size_group<hypercube_group_size>;
 
 template<typename Profile, typename F>
