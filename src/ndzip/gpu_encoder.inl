@@ -131,6 +131,7 @@ void nd_memcpy(
 }
 
 
+// TODO do a sub-group inclusive scan, as implemented in gpu_bits.hh
 template<typename Scalar>
 void local_inclusive_prefix_sum(
         /* local */ Scalar *scratch, size_t n_elements, work_item item) {
@@ -722,7 +723,7 @@ void encode_chunks(hypercube_group grp, hypercube<Profile> hc, typename Profile:
         index_type this_warp_size = 0;
         bits_type column = 0;
         index_type relative_pos = 0;
-        if (warps_per_chunk > 0 /* TODO merge head before */ || head != 0) {
+        if (warps_per_chunk > 1 /* TODO merge head before */ || head != 0) {
             const auto chunk_base = floor(item, chunk_size);
             const auto cell = item - chunk_base;
             for (index_type i = 0; i < chunk_size; ++i) {
