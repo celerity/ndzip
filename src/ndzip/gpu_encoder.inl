@@ -288,17 +288,6 @@ void distribute_for_hypercube_indices(extent<Profile::dimensions> data_size,
 
 
 template<typename Profile>
-void load_hypercube(/* global */ const typename Profile::data_type *__restrict data,
-        /* local */ typename Profile::bits_type *__restrict cube,
-        extent<Profile::dimensions> data_size, hypercube_range hc_range, hypercube_item item) {
-    distribute_for_hypercube_indices<Profile>(
-            data_size, hc_range, item, [&](size_t global_idx, size_t local_idx) {
-                cube[local_idx] = bit_cast<typename Profile::bits_type>(data[global_idx]);
-            });
-}
-
-
-template<typename Profile>
 void store_hypercube(/* local */ const typename Profile::bits_type *__restrict cube,
         /* global */ typename Profile::data_type *__restrict data,
         extent<Profile::dimensions> data_size, hypercube_range hc_range, hypercube_item item) {
@@ -306,55 +295,6 @@ void store_hypercube(/* local */ const typename Profile::bits_type *__restrict c
             data_size, hc_range, item, [&](size_t global_idx, size_t local_idx) {
                 data[global_idx] = bit_cast<typename Profile::data_type>(cube[local_idx]);
             });
-}
-
-
-template<typename Profile>
-void block_transform(/* local */ typename Profile::bits_type *x, work_item item) {
-    constexpr auto n = Profile::hypercube_side_length;
-    constexpr auto dims = Profile::dimensions;
-    constexpr auto hc_size = ipow(n, dims);
-
-    for (size_t i = item.thread_id(); i < hc_size; i += item.num_threads()) {
-        x[i] = rotate_left_1(x[i]);
-    }
-
-    item.local_memory_barrier();
-
-    if constexpr (dims == 1) {
-        if (item.thread_id() == 0) { block_transform_step(x, n, 1); }
-    } else if constexpr (dims == 2) {
-        for (size_t i = item.thread_id(); i < n; i += item.num_threads()) {
-            const auto ii = n * i;
-            block_transform_step(x + ii, n, 1);
-        }
-        item.local_memory_barrier();
-        for (size_t i = item.thread_id(); i < n; i += item.num_threads()) {
-            block_transform_step(x + i, n, n);
-        }
-    } else if constexpr (dims == 3) {
-        for (size_t i = item.thread_id(); i < n; i += item.num_threads()) {
-            const auto ii = n * n * i;
-            for (size_t j = 0; j < n; ++j) {
-                block_transform_step(x + ii + j, n, n);
-            }
-        }
-        item.local_memory_barrier();
-        for (size_t i = item.thread_id(); i < n * n; i += item.num_threads()) {
-            const auto ii = n * i;
-            block_transform_step(x + ii, n, 1);
-        }
-        item.local_memory_barrier();
-        for (size_t i = item.thread_id(); i < n * n; i += item.num_threads()) {
-            block_transform_step(x + i, n, n * n);
-        }
-    }
-
-    item.local_memory_barrier();
-
-    for (size_t i = item.thread_id(); i < hc_size; i += item.num_threads()) {
-        x[i] = complement_negative(x[i]);
-    }
 }
 
 
@@ -430,96 +370,6 @@ void transpose_bits(/* local */ Bits *cube, work_item item) {
 }
 
 
-// Header zero-bitmap is in scratch[0] afterwards
-template<typename Bits>
-Bits generate_zero_map(/* local */ const Bits *__restrict in,
-        /* local */ Bits *__restrict scratch, work_item item) {
-    constexpr auto n_columns = bitsof<Bits>;
-
-    for (size_t i = 0; i < n_columns / warp_size; ++i) {
-        // Indexing works around LLVM bug
-        size_t ii = i * warp_size + item.thread_id();
-        // TODO unroll reduction once instead of copying here
-        scratch[ii] = in[ii];
-    }
-
-    item.local_memory_barrier();
-
-    for (size_t offset = n_columns / 2; offset > 0; offset /= 2) {
-        for (size_t i = item.thread_id(); i < n_columns; i += item.num_threads()) {
-            if (i < offset) { scratch[i] |= scratch[i + offset]; }
-        }
-        item.local_memory_barrier();
-    }
-
-    return scratch[0];
-}
-
-
-template<typename Bits>
-size_t compact_zero_words(/* global */ Bits *__restrict out, /* local */ const Bits *__restrict in,
-        /* local */ Bits *__restrict scratch, work_item item) {
-    constexpr auto n_columns = bitsof<Bits>;
-
-    // printf("compact_zero_word gs=%lu ls=%lu lid=%lu nt=%lu tid=%lu\n", item.get_global_range(0),
-    //         item.get_local_range(0), item.get_local_id(0), item.num_threads(), item.thread_id());
-
-    item.local_memory_barrier();
-
-    // for (size_t i = item.thread_id(); i < n_columns; i += item.num_threads()) {
-    //     printf("compact_zero_word scratch_before [%lu] %d %d\n", i, int(in[i] != 0),
-    //     (int)scratch[i]);
-    // }
-    // item.local_memory_barrier();
-
-    // for (size_t i = item.thread_id(); i < n_columns; i += item.num_threads()) {
-    for (size_t i = 0; i < n_columns / warp_size; ++i) {
-        // Indexing works around LLVM bug
-        size_t ii = i * warp_size + item.thread_id();
-        scratch[ii] = in[ii] != 0;
-    }
-
-    item.local_memory_barrier();
-
-    local_inclusive_prefix_sum(scratch, n_columns, item);
-
-    // item.local_memory_barrier();
-
-    for (size_t i = 0; i < n_columns / warp_size; ++i) {
-        size_t ii = i * warp_size + item.thread_id();
-        if (in[ii] != 0) {
-            // Indexing works around LLVM bug
-            size_t offset = ii ? scratch[ii - 1] : 0;
-            out[offset] = in[ii];
-        }
-    }
-
-    return scratch[n_columns - 1];
-}
-
-
-template<typename Bits>
-size_t zero_bit_encode(/* local */ Bits *__restrict cube, /* global */ Bits *__restrict stream,
-        /* local */ Bits *__restrict scratch, size_t hc_size, work_item item) {
-    constexpr auto n_columns = bitsof<Bits>;
-
-    auto out = stream;
-    for (size_t offset = 0; offset < hc_size; offset += n_columns) {
-        auto in = cube + offset;
-        auto zero_map = generate_zero_map(in, scratch, item);
-        if (item.thread_id() == 0) { out[0] = zero_map; }
-        ++out;
-        // TODO we *want* to do a `if (zero_map != 0)` check here, but that would cause divergence
-        //  around barriers (UB) if there are multiple blocks per thread
-        transpose_bits(in, item);
-        item.local_memory_barrier();
-        out += compact_zero_words(out, in, scratch, item);
-    }
-
-    return out - stream;
-}
-
-
 template<typename Bits>
 size_t expand_zero_words(/* local */ Bits *__restrict out, /* global */ const Bits *__restrict in,
         /* local */ Bits *__restrict scratch, work_item item) {
@@ -587,53 +437,6 @@ inline size_t max_work_group_size(size_t local_memory_per_wg, const sycl::device
                 max_wg_size * local_memory_per_wg, available_local_memory);
     }
     return max_wg_size;
-}
-
-
-template<typename Profile>
-void compress_hypercubes(/* global */ const typename Profile::data_type *__restrict data,
-        /* global */ typename Profile::bits_type *__restrict stream_chunks,
-        /* global */ detail::file_offset_type *__restrict stream_chunk_lengths,
-        /* local */ typename Profile::bits_type *__restrict local_memory,
-        extent<Profile::dimensions> data_size, hypercube_range hc_range, hypercube_item item) {
-    using bits_type = typename Profile::bits_type;
-
-    const auto side_length = Profile::hypercube_side_length;
-    const auto hc_size = detail::ipow(side_length, Profile::dimensions);
-    const auto this_hc_local_memory = local_memory
-            + hc_range.local_index_of(item) * local_memory_words_per_hypercube<Profile>;
-    const auto cube = this_hc_local_memory;
-    const auto scratch = this_hc_local_memory + hc_size;
-    const auto max_chunk_size
-            = (Profile::compressed_block_size_bound + sizeof(bits_type) - 1) / sizeof(bits_type);
-
-    load_hypercube<Profile>(data, cube, data_size, hc_range, item);
-    item.local_memory_barrier();
-    block_transform<Profile>(cube, item);
-    item.local_memory_barrier();
-    stream_chunk_lengths[hc_range.global_index_of(item)] = zero_bit_encode<bits_type>(cube,
-            stream_chunks + hc_range.global_index_of(item) * max_chunk_size, scratch, hc_size,
-            item);
-}
-
-
-template<typename Profile>
-void compact_stream(/* global */ typename Profile::bits_type *stream,
-        /* global */ typename Profile::bits_type *stream_chunks,
-        /* global */ const file_offset_type *stream_chunk_offsets,
-        /* global */ const file_offset_type *stream_chunk_lengths, hypercube_range hc_range,
-        hypercube_item item) {
-    using bits_type = typename Profile::bits_type;
-
-    const auto max_chunk_size
-            = (Profile::compressed_block_size_bound + sizeof(bits_type) - 1) / sizeof(bits_type);
-    const auto this_chunk_size = stream_chunk_lengths[hc_range.global_index_of(item)];
-    const auto this_chunk_offset = hc_range.global_index_of(item)
-            ? stream_chunk_offsets[hc_range.global_index_of(item) - 1]
-            : 0;
-    const auto source = stream_chunks + hc_range.global_index_of(item) * max_chunk_size;
-    const auto dest = stream + this_chunk_offset;
-    detail::gpu::nd_memcpy(dest, source, this_chunk_size, item);
 }
 
 
@@ -707,7 +510,6 @@ template<typename Profile>
 struct hypercube {
     constexpr static unsigned dimensions = Profile::dimensions;
     constexpr static unsigned side_length = Profile::hypercube_side_length;
-    constexpr static unsigned padding_every = 32;
     constexpr static index_type allocation_size
             = side_length * ipow(side_length + 1, dimensions - 1);
 
@@ -767,7 +569,8 @@ struct directional_hypercube_accessor<Profile, 3> {
 //    -  double precision, 256 >> 128
 //    - single precision 1D, 512 >> 128 > 256.
 //    - single precision forward 1D 2D, 512 >> 256.
-inline constexpr index_type hypercube_group_size = 512;
+// At least for sm_61 profile<double, 3d> exceeds maximum register usage with 512
+inline constexpr index_type hypercube_group_size = 256;
 using hypercube_group = known_size_group<hypercube_group_size>;
 
 template<typename Profile, typename F>
@@ -934,8 +737,7 @@ void encode_chunks(hypercube_group grp, hypercube<Profile> hc, typename Profile:
         chunk_columns(idx)[iteration] = column;
         column_relative_positions(idx)[iteration] = relative_pos;
         if (sg.leader()) {
-            if (warp_index % warps_per_chunk == 0) { this_warp_size += 1;
-            }
+            if (warp_index % warps_per_chunk == 0) { this_warp_size += 1; }
             warp_offsets[1 + warp_index] = this_warp_size;
             chunk_heads[warp_index] = head;
         }
@@ -953,12 +755,13 @@ void encode_chunks(hypercube_group grp, hypercube<Profile> hc, typename Profile:
     grp.distribute_for<hc_size>([&](index_type item, index_type iteration,
                                         sycl::logical_item<1> idx, sycl::sub_group sg) {
         auto warp_index = item / warp_size;
-      auto warp_base = warp_offsets[warp_index];
+        auto warp_base = warp_offsets[warp_index];
         if (warp_index % warps_per_chunk == 0) {
             if (sg.leader()) {
-                // TODO maybe avoid branch by writing all headers to LM in first loop and then copying
-                //  in an additional distribute_for<num_chunks>()?
-                //  Or even better, **change the file format to group chunk headers at fixed positions**
+                // TODO maybe avoid branch by writing all headers to LM in first loop and then
+                //  copying in an additional distribute_for<num_chunks>()?
+                //  Or even better, **change the file format to group chunk headers at fixed
+                //  positions**
                 stream[warp_base] = chunk_heads[warp_index];
             }
             warp_base += 1;
@@ -973,8 +776,7 @@ void encode_chunks(hypercube_group grp, hypercube<Profile> hc, typename Profile:
 }
 
 
-// TODO we might be able to avoid this kernel altogether by writing the reduction results
-// directly
+// TODO we might be able to avoid this kernel altogether by writing the reduction results directly
 //  to the stream header. Requires the stream format to be fixed first.
 template<typename Profile>
 void fill_stream_header(index_type num_hypercubes, global_write<stream_align_t> stream_acc,
@@ -1107,28 +909,29 @@ size_t ndzip::gpu_encoder<T, Dims>::compress(
         cgh.copy(data.data(), data_buffer.template get_access<sam::discard_write>(cgh));
     });
 
-    auto local_memory_words_per_hc = detail::gpu::local_memory_words_per_hypercube<profile>;
-    auto max_hcs_per_work_group = detail::gpu::max_work_group_size(
-            local_memory_words_per_hc * sizeof(bits_type), _pimpl->q.get_device());
-
     detail::gpu::submit_and_profile(_pimpl->q, "block compression", [&](sycl::handler &cgh) {
         auto data_acc = data_buffer.template get_access<sam::read>(cgh);
         auto stream_chunks_acc
                 = stream_chunks_buffer.template get_access<sam::discard_read_write>(cgh);
         auto stream_chunk_lengths_acc
                 = stream_chunk_lengths_buffer.get_access<sam::discard_write>(cgh);
-        auto local_memory_acc = detail::gpu::local_accessor<bits_type>{
-                local_memory_words_per_hc * max_hcs_per_work_group, cgh};
         auto data_size = data.size();
-        auto hc_range = detail::gpu::hypercube_range{file.num_hypercubes(), max_hcs_per_work_group};
-        cgh.parallel_for<detail::gpu::block_compression_kernel<T, Dims>>(
-                hc_range.item_space(), [=](detail::gpu::hypercube_item item) {
-                    if (hc_range.contains(item)) {
-                        detail::gpu::compress_hypercubes<profile>(data_acc.get_pointer(),
-                                stream_chunks_acc.get_pointer(),
-                                stream_chunk_lengths_acc.get_pointer(),
-                                local_memory_acc.get_pointer(), data_size, hc_range, item);
-                    }
+        cgh.parallel<detail::gpu::block_compression_kernel<T, Dims>>(
+                sycl::range<1>{file.num_hypercubes()},
+                sycl::range<1>{detail::gpu::hypercube_group_size},
+                [=](detail::gpu::hypercube_group grp, sycl::physical_item<1>) {
+                    detail::gpu::index_type hc_index = grp.get_id(0);
+                    slice<const data_type, dimensions> data{data_acc.get_pointer(), data_size};
+                    bits_type *stream = stream_chunks_acc.get_pointer() + max_chunk_size * hc_index;
+                    detail::file_offset_type *length
+                            = stream_chunk_lengths_acc.get_pointer() + hc_index;
+                    sycl::local_memory<bits_type[detail::gpu::hypercube<profile>::allocation_size]>
+                            lm{grp};
+                    detail::gpu::hypercube<profile> hc{&lm[0]};
+
+                    detail::gpu::load_hypercube(grp, hc_index, {data}, hc);
+                    detail::gpu::block_transform(grp, hc);
+                    detail::gpu::encode_chunks(grp, hc, stream, length);
                 });
     });
 
