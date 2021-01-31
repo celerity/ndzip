@@ -580,7 +580,6 @@ struct directional_hypercube_accessor<Profile, 2> {
                     3588, 3596, 3589, 3597, 3590, 3598, 3591, 3599, 3840, 3848, 3841, 3849, 3842,
                     3850, 3843, 3851, 3844, 3852, 3845, 3853, 3846, 3854, 3847, 3855};
 
-            constexpr auto q = warp_size / n;
             index_type b = i / n;
             index_type start = start_lut[b];
             return start + i % n * n;
@@ -793,8 +792,11 @@ void encode_chunks(hypercube_group grp, hypercube<Profile> hc, typename Profile:
                 column |= (hc[chunk_base + i] >> (chunk_size - 1 - cell) & bits_type{1})
                         << (chunk_size - 1 - i);
             }
-            this_warp_size = sycl::group_reduce(sg, index_type{column != 0},
-                    sycl::plus<bits_type>{});  // TODO use popcount(head) instead
+            if constexpr (sizeof(bits_type) == 4) {
+                this_warp_size = __builtin_popcount(head);
+            } else {
+                this_warp_size = __builtin_popcountl(head);
+            }
             relative_pos = sycl::group_exclusive_scan(
                     sg, index_type{column != 0}, sycl::plus<index_type>{});
         }
