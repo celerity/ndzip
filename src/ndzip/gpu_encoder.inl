@@ -512,7 +512,9 @@ struct hypercube {
     constexpr static unsigned dimensions = Profile::dimensions;
     constexpr static unsigned side_length = Profile::hypercube_side_length;
     constexpr static index_type allocation_size
-            = side_length * ipow(side_length + 1, dimensions - 1);
+            = dimensions == 1 ? side_length
+            : dimensions == 2 ? side_length * (side_length + 1)
+            : ipow(side_length, 3) + ipow(side_length, 3) / warp_size + side_length;
 
     using bits_type = typename Profile::bits_type;
     using extent = ndzip::extent<dimensions>;
@@ -520,14 +522,14 @@ struct hypercube {
     bits_type *bits;
 
     bits_type &operator[](index_type linear_idx) const {
-        // TODO micro-optimizations: It might be useful to pad differently for forward and inverse
-        // transform
-        auto pads = linear_idx / side_length + linear_idx / (side_length * side_length);
+        index_type pads = 0;
+        if constexpr (dimensions == 2) {
+            pads = linear_idx / side_length;
+        }
+        if constexpr (dimensions == 3) {
+            pads = linear_idx / warp_size + linear_idx / ipow(side_length, 2);
+        }
         return bits[linear_idx + pads];
-    }
-
-    bits_type &operator[](extent position) const {
-        return at(linear_offset(position, extent::broadcast(side_length)));
     }
 };
 
@@ -550,7 +552,17 @@ struct directional_hypercube_accessor<Profile, 2> {
     typename Profile::bits_type &operator[](index_type i) const {
         constexpr auto n = Profile::hypercube_side_length;
         constexpr auto n2 = n * n;
-        return hc[i % n * n + i % n2 / n + i / n2 * n2];
+        if constexpr (Profile::dimensions == 2) {
+            return hc[i % n * n + i % n2 / n + i / n2 * n2]; // TODO simplify for 2d
+        }
+        else /* Profile::dimensions == 3 */ {
+            constexpr auto q = warp_size / n;
+            index_type b = i / n;
+            // TODO mapping b -> start in LUT
+            index_type col = b % q * (n / q) + b / (q) + (b / n) * (n / q);
+            index_type start = col % n + col/n * n*n;
+            return hc[start + i % n * n];
+        }
     }
 };
 
@@ -562,7 +574,10 @@ struct directional_hypercube_accessor<Profile, 3> {
     typename Profile::bits_type &operator[](index_type i) const {
         constexpr auto n = Profile::hypercube_side_length;
         constexpr auto n2 = n * n;
-        return hc[i % n * n2 + i / n];
+        index_type b = i / n;
+        // TODO mapping b -> start in LUT
+        index_type start = b / n + b % n * n;
+        return hc[start + i % n * n * n];
     }
 };
 
@@ -619,12 +634,12 @@ void forward_transform_step(hypercube_group grp, Accessor acc) {
     constexpr index_type hc_size = ipow(n, Profile::dimensions);
 
     sycl::private_memory<bits_type[div_ceil(hc_size, hypercube_group_size)]> a{grp};
-    grp.distribute_for(
-            hc_size, [&](index_type item, index_type iteration, sycl::logical_item<1> idx) {
+    grp.distribute_for<hc_size>(
+            [&](index_type item, index_type iteration, sycl::logical_item<1> idx) {
                 a(idx)[iteration] = acc[item];
             });
-    grp.distribute_for(
-            hc_size, [&](index_type item, index_type iteration, sycl::logical_item<1> idx) {
+    grp.distribute_for<hc_size>(
+            [&](index_type item, index_type iteration, sycl::logical_item<1> idx) {
                 if (item % n != n - 1) { acc[item + 1] -= a(idx)[iteration]; }
             });
 }
@@ -636,10 +651,10 @@ void block_transform(hypercube_group grp, hypercube<Profile> hc) {
     constexpr index_type hc_size = ipow(Profile::hypercube_side_length, dims);
 
     forward_transform_step<Profile>(grp, directional_hypercube_accessor<Profile, 1>{hc});
-    if (dims >= 2) {
+    if constexpr (dims >= 2) {
         forward_transform_step<Profile>(grp, directional_hypercube_accessor<Profile, 2>{hc});
     }
-    if (dims >= 3) {
+    if constexpr (dims >= 3) {
         forward_transform_step<Profile>(grp, directional_hypercube_accessor<Profile, 3>{hc});
     }
 
