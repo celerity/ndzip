@@ -541,6 +541,10 @@ struct directional_hypercube_accessor<Profile, 1> {
     hypercube<Profile> hc;
     index_type offset = 0;
 
+    constexpr static index_type stride = 1;
+
+    index_type linear_index(index_type i) const { return i; }
+
     typename Profile::bits_type &operator[](index_type i) const { return hc[i]; }
 };
 
@@ -549,20 +553,25 @@ struct directional_hypercube_accessor<Profile, 2> {
     hypercube<Profile> hc;
     index_type offset = 0;
 
-    typename Profile::bits_type &operator[](index_type i) const {
+    constexpr static index_type stride = Profile::hypercube_side_length;
+
+    index_type linear_index(index_type i) const {
         constexpr auto n = Profile::hypercube_side_length;
         constexpr auto n2 = n * n;
         if constexpr (Profile::dimensions == 2) {
-            return hc[i % n * n + i % n2 / n + i / n2 * n2]; // TODO simplify for 2d
-        }
-        else /* Profile::dimensions == 3 */ {
+            return i % n * n + i % n2 / n + i / n2 * n2; // TODO simplify for 2d
+        } else /* Profile::dimensions == 3 */ {
             constexpr auto q = warp_size / n;
             index_type b = i / n;
             // TODO mapping b -> start in LUT
             index_type col = b % q * (n / q) + b / (q) + (b / n) * (n / q);
             index_type start = col % n + col/n * n*n;
-            return hc[start + i % n * n];
+            return start + i % n * n;
         }
+    }
+
+    typename Profile::bits_type &operator[](index_type i) const {
+        return hc[linear_index(i)];
     }
 };
 
@@ -571,13 +580,18 @@ struct directional_hypercube_accessor<Profile, 3> {
     hypercube<Profile> hc;
     index_type offset = 0;
 
-    typename Profile::bits_type &operator[](index_type i) const {
+    constexpr static index_type stride = ipow(Profile::hypercube_side_length, 2);
+
+    index_type linear_index(index_type i) const {
         constexpr auto n = Profile::hypercube_side_length;
-        constexpr auto n2 = n * n;
         index_type b = i / n;
         // TODO mapping b -> start in LUT
         index_type start = b / n + b % n * n;
-        return hc[start + i % n * n * n];
+        return start + i % n * n * n;
+    }
+
+    typename Profile::bits_type &operator[](index_type i) const {
+        return hc[linear_index(i)];
     }
 };
 
@@ -633,14 +647,18 @@ void forward_transform_step(hypercube_group grp, Accessor acc) {
     constexpr auto n = Profile::hypercube_side_length;
     constexpr index_type hc_size = ipow(n, Profile::dimensions);
 
+    sycl::private_memory<bits_type[div_ceil(hc_size, hypercube_group_size)]> linear{grp};
     sycl::private_memory<bits_type[div_ceil(hc_size, hypercube_group_size)]> a{grp};
     grp.distribute_for<hc_size>(
             [&](index_type item, index_type iteration, sycl::logical_item<1> idx) {
-                a(idx)[iteration] = acc[item];
+                linear(idx)[iteration] = acc.linear_index(item);
+                a(idx)[iteration] = acc.hc[linear(idx)[iteration]];
             });
     grp.distribute_for<hc_size>(
             [&](index_type item, index_type iteration, sycl::logical_item<1> idx) {
-                if (item % n != n - 1) { acc[item + 1] -= a(idx)[iteration]; }
+                if (item % n != n - 1) {
+                    acc.hc[linear(idx)[iteration] + Accessor::stride] -= a(idx)[iteration];
+                }
             });
 }
 
