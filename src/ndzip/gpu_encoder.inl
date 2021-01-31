@@ -511,9 +511,9 @@ template<typename Profile>
 struct hypercube {
     constexpr static unsigned dimensions = Profile::dimensions;
     constexpr static unsigned side_length = Profile::hypercube_side_length;
-    constexpr static index_type allocation_size
-            = dimensions == 1 ? side_length
-            : dimensions == 2 ? side_length * (side_length + 1)
+    constexpr static index_type allocation_size = dimensions == 1 ? side_length
+            : dimensions == 2
+            ? side_length * (side_length + 1)
             : ipow(side_length, 3) + ipow(side_length, 3) / warp_size + side_length;
 
     using bits_type = typename Profile::bits_type;
@@ -523,9 +523,7 @@ struct hypercube {
 
     bits_type &operator[](index_type linear_idx) const {
         index_type pads = 0;
-        if constexpr (dimensions == 2) {
-            pads = linear_idx / side_length;
-        }
+        if constexpr (dimensions == 2) { pads = linear_idx / side_length; }
         if constexpr (dimensions == 3) {
             pads = linear_idx / warp_size + linear_idx / ipow(side_length, 2);
         }
@@ -559,20 +557,37 @@ struct directional_hypercube_accessor<Profile, 2> {
         constexpr auto n = Profile::hypercube_side_length;
         constexpr auto n2 = n * n;
         if constexpr (Profile::dimensions == 2) {
-            return i % n * n + i % n2 / n + i / n2 * n2; // TODO simplify for 2d
+            return i % n * n + i / n;
         } else /* Profile::dimensions == 3 */ {
+            // TODO include padding in LUT, do not calculate repeatedly from hc::operator[]
+            static const uint16_t start_lut[] = {0, 8, 1, 9, 2, 10, 3, 11, 4, 12, 5, 13, 6, 14, 7,
+                    15, 256, 264, 257, 265, 258, 266, 259, 267, 260, 268, 261, 269, 262, 270, 263,
+                    271, 512, 520, 513, 521, 514, 522, 515, 523, 516, 524, 517, 525, 518, 526, 519,
+                    527, 768, 776, 769, 777, 770, 778, 771, 779, 772, 780, 773, 781, 774, 782, 775,
+                    783, 1024, 1032, 1025, 1033, 1026, 1034, 1027, 1035, 1028, 1036, 1029, 1037,
+                    1030, 1038, 1031, 1039, 1280, 1288, 1281, 1289, 1282, 1290, 1283, 1291, 1284,
+                    1292, 1285, 1293, 1286, 1294, 1287, 1295, 1536, 1544, 1537, 1545, 1538, 1546,
+                    1539, 1547, 1540, 1548, 1541, 1549, 1542, 1550, 1543, 1551, 1792, 1800, 1793,
+                    1801, 1794, 1802, 1795, 1803, 1796, 1804, 1797, 1805, 1798, 1806, 1799, 1807,
+                    2048, 2056, 2049, 2057, 2050, 2058, 2051, 2059, 2052, 2060, 2053, 2061, 2054,
+                    2062, 2055, 2063, 2304, 2312, 2305, 2313, 2306, 2314, 2307, 2315, 2308, 2316,
+                    2309, 2317, 2310, 2318, 2311, 2319, 2560, 2568, 2561, 2569, 2562, 2570, 2563,
+                    2571, 2564, 2572, 2565, 2573, 2566, 2574, 2567, 2575, 2816, 2824, 2817, 2825,
+                    2818, 2826, 2819, 2827, 2820, 2828, 2821, 2829, 2822, 2830, 2823, 2831, 3072,
+                    3080, 3073, 3081, 3074, 3082, 3075, 3083, 3076, 3084, 3077, 3085, 3078, 3086,
+                    3079, 3087, 3328, 3336, 3329, 3337, 3330, 3338, 3331, 3339, 3332, 3340, 3333,
+                    3341, 3334, 3342, 3335, 3343, 3584, 3592, 3585, 3593, 3586, 3594, 3587, 3595,
+                    3588, 3596, 3589, 3597, 3590, 3598, 3591, 3599, 3840, 3848, 3841, 3849, 3842,
+                    3850, 3843, 3851, 3844, 3852, 3845, 3853, 3846, 3854, 3847, 3855};
+
             constexpr auto q = warp_size / n;
             index_type b = i / n;
-            // TODO mapping b -> start in LUT
-            index_type col = b % q * (n / q) + b / (q) + (b / n) * (n / q);
-            index_type start = col % n + col/n * n*n;
+            index_type start = start_lut[b];
             return start + i % n * n;
         }
     }
 
-    typename Profile::bits_type &operator[](index_type i) const {
-        return hc[linear_index(i)];
-    }
+    typename Profile::bits_type &operator[](index_type i) const { return hc[linear_index(i)]; }
 };
 
 template<typename Profile>
@@ -580,19 +595,34 @@ struct directional_hypercube_accessor<Profile, 3> {
     hypercube<Profile> hc;
     index_type offset = 0;
 
+    constexpr static index_type hc_size = ipow(Profile::hypercube_side_length, 3);
     constexpr static index_type stride = ipow(Profile::hypercube_side_length, 2);
 
     index_type linear_index(index_type i) const {
         constexpr auto n = Profile::hypercube_side_length;
+        // TODO include padding in LUT, do not calculate repeatedly from hc::operator[]
+        static const uint16_t start_lut[] = {0, 16, 32, 48, 64, 80, 96, 112, 128, 144, 160, 176,
+                192, 208, 224, 240, 1, 17, 33, 49, 65, 81, 97, 113, 129, 145, 161, 177, 193, 209,
+                225, 241, 2, 18, 34, 50, 66, 82, 98, 114, 130, 146, 162, 178, 194, 210, 226, 242, 3,
+                19, 35, 51, 67, 83, 99, 115, 131, 147, 163, 179, 195, 211, 227, 243, 4, 20, 36, 52,
+                68, 84, 100, 116, 132, 148, 164, 180, 196, 212, 228, 244, 5, 21, 37, 53, 69, 85,
+                101, 117, 133, 149, 165, 181, 197, 213, 229, 245, 6, 22, 38, 54, 70, 86, 102, 118,
+                134, 150, 166, 182, 198, 214, 230, 246, 7, 23, 39, 55, 71, 87, 103, 119, 135, 151,
+                167, 183, 199, 215, 231, 247, 8, 24, 40, 56, 72, 88, 104, 120, 136, 152, 168, 184,
+                200, 216, 232, 248, 9, 25, 41, 57, 73, 89, 105, 121, 137, 153, 169, 185, 201, 217,
+                233, 249, 10, 26, 42, 58, 74, 90, 106, 122, 138, 154, 170, 186, 202, 218, 234, 250,
+                11, 27, 43, 59, 75, 91, 107, 123, 139, 155, 171, 187, 203, 219, 235, 251, 12, 28,
+                44, 60, 76, 92, 108, 124, 140, 156, 172, 188, 204, 220, 236, 252, 13, 29, 45, 61,
+                77, 93, 109, 125, 141, 157, 173, 189, 205, 221, 237, 253, 14, 30, 46, 62, 78, 94,
+                110, 126, 142, 158, 174, 190, 206, 222, 238, 254, 15, 31, 47, 63, 79, 95, 111, 127,
+                143, 159, 175, 191, 207, 223, 239, 255};
+
         index_type b = i / n;
-        // TODO mapping b -> start in LUT
-        index_type start = b / n + b % n * n;
+        index_type start = start_lut[b];
         return start + i % n * n * n;
     }
 
-    typename Profile::bits_type &operator[](index_type i) const {
-        return hc[linear_index(i)];
-    }
+    typename Profile::bits_type &operator[](index_type i) const { return hc[linear_index(i)]; }
 };
 
 // Fine tuning block size. For block transform:
