@@ -245,9 +245,9 @@ TEMPLATE_TEST_CASE("encoder produces the expected bit stream", "[encoder]",
 */
 
 
-TEMPLATE_TEST_CASE("decode(encode(input)) reproduces the input", "[encoder]", (profile<float, 1>),
-        (profile<float, 2>), (profile<float, 3>), (profile<double, 1>), (profile<double, 2>),
-        (profile<double, 3>) ) {
+TEMPLATE_TEST_CASE("decode(encode(input)) reproduces the input", "[encoder][de]", (profile<float, 1>),
+(profile<float, 2>), (profile<float, 3>), (profile<double, 1>), (profile<double, 2>),
+(profile<double, 3>)) {
     using profile = TestType;
     using data_type = typename profile::data_type;
 
@@ -296,16 +296,16 @@ TEMPLATE_TEST_CASE("decode(encode(input)) reproduces the input", "[encoder]", (p
     //     dims>{});
     // }
 
-    // SECTION("gpu_encoder::encode() => cpu_encoder::decode()") {
-    //     test_encoder_decoder_pair(gpu_encoder<data_type, dims>{}, cpu_encoder<data_type,
-    //     dims>{});
-    // }
+    SECTION("gpu_encoder::encode() => cpu_encoder::decode()") {
+        test_encoder_decoder_pair(gpu_encoder<data_type, dims>{}, cpu_encoder<data_type,
+        dims>{});
+    }
 #endif
 }
 
 
 #if NDZIP_OPENMP_SUPPORT || NDZIP_GPU_SUPPORT
-TEMPLATE_TEST_CASE("file headers from different encoders are identical", "[encoder]",
+TEMPLATE_TEST_CASE("file headers from different encoders are identical", "[encoder][header]",
 #if NDZIP_OPENMP_SUPPORT
         (mt_cpu_encoder<float, 1>), (mt_cpu_encoder<float, 2>), (mt_cpu_encoder<float, 3>),
         (mt_cpu_encoder<double, 1>), (mt_cpu_encoder<double, 2>), (mt_cpu_encoder<double, 3>)
@@ -654,8 +654,9 @@ class gpu_hypercube_transpose_test_kernel;
 template<typename>
 class gpu_hypercube_compact_test_kernel;
 
-TEMPLATE_TEST_CASE("CPU and GPU hypercube encodings are equivalent", "[gpu]", (profile<float, 1>),
-        (profile<double, 1>) ) {
+TEMPLATE_TEST_CASE("CPU and GPU hypercube encodings are equivalent", "[gpu]",
+        (profile<float, 1>), (profile<float, 2>), (profile<float, 3>),
+        (profile<double, 1>), (profile<double, 2>), (profile<double, 3>)) {
     using bits_type = typename TestType::bits_type;
     const auto hc_size = ipow(TestType::hypercube_side_length, TestType::dimensions);
 
@@ -729,7 +730,7 @@ TEMPLATE_TEST_CASE("CPU and GPU hypercube encodings are equivalent", "[gpu]", (p
         auto stream_acc = stream_buf.template get_access<sam::discard_write>(cgh);
         auto length_acc = length_buf.template get_access<sam::discard_write>(cgh);
         constexpr size_t group_size = 1024;
-        cgh.parallel<gpu_hypercube_compact_test_kernel<bits_type>>(
+        cgh.parallel<gpu_hypercube_compact_test_kernel<TestType>>(
                 sycl::range<1>{hc_size / group_size}, sycl::range<1>{group_size},
                 [=](sycl::group<1> grp, sycl::physical_item<1> phys_idx) {
                     gpu::compact_chunks(grp,
