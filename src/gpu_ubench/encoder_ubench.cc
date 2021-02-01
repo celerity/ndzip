@@ -96,85 +96,8 @@ TEMPLATE_TEST_CASE("Block transform", "[transform]", ALL_PROFILES) {
 }
 
 
-template<typename Profile>
-void write_transposed_chunks(hypercube_group grp, hypercube<Profile> hc,
-        typename Profile::bits_type *out_heads,
-        typename Profile::bits_type *out_columns, index_type *out_lengths) {
-    using bits_type = typename Profile::bits_type;
-    constexpr index_type hc_size = ipow(Profile::hypercube_side_length, Profile::dimensions);
-    static_assert(hc_size % warp_size == 0);
-
-    // One group per warp (for subgroup reductions)
-    constexpr index_type chunk_size = bitsof<bits_type>;
-
-    // TODO even if there is a use case for index_type > 32 bits, this should always be 32 bits
-    grp.distribute_for(hc_size, [&](index_type item, index_type iteration,
-                                        sycl::logical_item<1> idx, sycl::sub_group sg) {
-        auto warp_index = item / warp_size;
-        auto head = sycl::group_reduce(sg, hc[item], sycl::bit_or<bits_type>{});
-        index_type this_warp_size = 0;
-        bits_type column = 0;
-        if (head != 0) {
-            const auto chunk_base = floor(item, chunk_size);
-            const auto cell = item - chunk_base;
-            for (index_type i = 0; i < chunk_size; ++i) {
-                column |= (hc[chunk_base + i] >> (chunk_size - 1 - cell) & bits_type{1})
-                        << (chunk_size - 1 - i);
-            }
-            if constexpr (sizeof(bits_type) == 4) {
-                this_warp_size = __builtin_popcount(head);
-            } else {
-                this_warp_size = __builtin_popcountl(head);
-            }
-        }
-        if (warp_index % (chunk_size / warp_size) == 0) {
-            this_warp_size += 1;
-        }
-        out_columns[item] = column;
-        if (sg.leader()) {
-            out_heads[warp_index] = head;
-            out_lengths[warp_index] = this_warp_size;
-        }
-    });
-}
-
-
-template<typename Profile>
-void compact_chunks(hypercube_group grp, const typename Profile::bits_type *heads,
-        const typename Profile::bits_type *columns, const index_type *offsets,
-        typename Profile::bits_type *stream) {
-    using bits_type = typename Profile::bits_type;
-    constexpr index_type hc_size = ipow(Profile::hypercube_side_length, Profile::dimensions);
-    static_assert(hc_size % warp_size == 0);
-
-    // One group per warp (for subgroup reductions)
-    constexpr index_type chunk_size = bitsof<bits_type>;
-
-    grp.distribute_for(hc_size, [&](index_type item, index_type iteration,
-                                        sycl::logical_item<1> idx, sycl::sub_group sg) {
-        auto warp_index = item / warp_size;
-
-        auto offset = offsets[warp_index];
-        if (warp_index % (chunk_size / warp_size) == 0) {
-            bits_type head = 0;
-            for (index_type i = 0; i < (chunk_size / warp_size); ++i) {
-                head |= heads[warp_index + i];
-            }
-            if (grp.leader()) {
-                stream[offset] = head;
-            }
-            offset += 1;
-        }
-        index_type tid = sg.get_local_id()[0];
-        if (offset + tid < offsets[warp_index + 1]) {
-            stream[offset + tid] = columns[item];
-        }
-    });
-}
-
-
 // Impact of dimensionality should not be that large, but the hc padding could hold surprises
-TEMPLATE_TEST_CASE("Chunk encoding", "[encode]", (profile<float, 1>), (profile<double, 1>)) {
+TEMPLATE_TEST_CASE("Chunk encoding", "[encode]", (profile<float, 1>), (profile<double, 1>) ) {
     constexpr index_type n_blocks = 16384;
     using bits_type = typename TestType::bits_type;
     constexpr auto hc_size = ipow(TestType::hypercube_side_length, TestType::dimensions);
@@ -212,7 +135,8 @@ TEMPLATE_TEST_CASE("Chunk encoding", "[encode]", (profile<float, 1>), (profile<d
                         hypercube<TestType> hc{&lm[0]};
                         grp.distribute_for(hc_size, [&](index_type i) { hc[i] = i * 199; });
                         const auto hc_index = grp.get_id(0);
-                        write_transposed_chunks(grp, hc, &h[hc_index], &c[hc_index * hc_size], &l[hc_index]);
+                        write_transposed_chunks(
+                                grp, hc, &h[hc_index], &c[hc_index * hc_size], &l[hc_index]);
                     });
         });
     };
@@ -225,16 +149,18 @@ TEMPLATE_TEST_CASE("Chunk encoding", "[encode]", (profile<float, 1>), (profile<d
 
     SYCL_BENCHMARK("Compact transposed")(sycl::queue & q) {
         return q.submit([&](sycl::handler &cgh) {
-            auto c = columns.template get_access<sam::read_write>(cgh);
-            auto h = heads.template get_access<sam::read_write>(cgh);
-            auto l = lengths.template get_access<sam::read_write>(cgh);
+            auto c = columns.template get_access<sam::read>(cgh);
+            auto h = heads.template get_access<sam::read>(cgh);
+            auto l = lengths.template get_access<sam::read>(cgh);
             auto s = stream.template get_access<sam::discard_write>(cgh);
-            cgh.parallel<chunk_compact_kernel<TestType>>(sycl::range<1>{n_blocks},
-                    sycl::range<1>{hypercube_group_size},
-                    [=](hypercube_group grp, sycl::physical_item<1>) {
-                        const auto hc_index = grp.get_id(0);
-                        compact_chunks<TestType>(grp, &h[hc_index], &c[hc_index * hc_size], &l[hc_index],
-                                static_cast<bits_type*>(s.get_pointer()));
+            constexpr size_t group_size = 1024;
+            cgh.parallel<chunk_compact_kernel<TestType>>(
+                    sycl::range<1>{hc_size / group_size * n_blocks}, sycl::range<1>{group_size},
+                    [=](sycl::group<1> grp, sycl::physical_item<1>) {
+                        compact_chunks(grp, static_cast<const bits_type *>(h.get_pointer()),
+                                static_cast<const bits_type *>(c.get_pointer()),
+                                static_cast<const index_type *>(l.get_pointer()),
+                                static_cast<bits_type *>(s.get_pointer()));
                     });
         });
     };

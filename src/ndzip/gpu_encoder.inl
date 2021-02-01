@@ -842,6 +842,88 @@ void encode_chunks(hypercube_group grp, hypercube<Profile> hc, typename Profile:
 }
 
 
+template<typename Profile>
+void write_transposed_chunks(hypercube_group grp, hypercube<Profile> hc,
+        typename Profile::bits_type *out_heads, typename Profile::bits_type *out_columns,
+        index_type *out_lengths) {
+    using bits_type = typename Profile::bits_type;
+    constexpr index_type hc_size = ipow(Profile::hypercube_side_length, Profile::dimensions);
+    static_assert(hc_size % warp_size == 0);
+
+    // One group per warp (for subgroup reductions)
+    constexpr index_type chunk_size = bitsof<bits_type>;
+
+    grp.distribute_for(hc_size,
+            [&](index_type item, index_type iteration, sycl::logical_item<1> idx,
+                    sycl::sub_group sg) {
+                auto warp_index = item / warp_size;
+                // TODO 32 bit for double!
+                auto mask = ~bits_type{};
+                if constexpr (sizeof(bits_type) == 8) {
+                    if (warp_index % 2 == 0) {
+                        mask <<= 32;
+                    } else {
+                        mask >>= 32;
+                    }
+                }
+                auto head = sycl::group_reduce(sg, hc[item] & mask, sycl::bit_or<bits_type>{});
+                index_type this_warp_size = 0;
+                bits_type column = 0;
+                if (head != 0) {
+                    const auto chunk_base = floor(item, chunk_size);
+                    const auto cell = item - chunk_base;
+                    for (index_type i = 0; i < chunk_size; ++i) {
+                        // TODO for double, can we still operate on 32 bit words? e.g split into
+                        //  low / high loop
+                        column |= (hc[chunk_base + i] >> (chunk_size - 1 - cell) & bits_type{1})
+                                << (chunk_size - 1 - i);
+                    }
+                    if constexpr (sizeof(bits_type) == 4) {
+                        this_warp_size = __builtin_popcount(head);
+                    } else {
+                        this_warp_size = __builtin_popcountl(head);
+                    }
+                    auto base = floor(item, warp_size);
+                    auto relative_pos = sycl::group_exclusive_scan(
+                            sg, index_type{column != 0}, sycl::plus<index_type>{});
+                    if (column != 0) {
+                        out_columns[base + relative_pos] = column;
+                    }
+                }
+                if (warp_index % (chunk_size / warp_size) == 0) { this_warp_size += 1; }
+                if (sg.leader()) {
+                    out_heads[warp_index] = head;
+                    out_lengths[warp_index] = this_warp_size;
+                }
+            });
+}
+
+
+template<typename Bits>
+void compact_chunks(sycl::group<1> grp, const Bits *heads, const Bits *columns,
+        const index_type *offsets, Bits *stream) {
+    // One group per warp (for subgroup reductions)
+    constexpr index_type chunk_size = bitsof<Bits>;
+
+    grp.distribute_for([&](sycl::sub_group sg, sycl::logical_item<1> idx) {
+        auto item = idx.get_global_id(0);
+        auto warp_index = item / warp_size;
+
+        auto offset = offsets[warp_index];
+        if (warp_index % (chunk_size / warp_size) == 0) {
+            Bits head = 0;
+            for (index_type i = 0; i < (chunk_size / warp_size); ++i) {
+                head |= heads[warp_index + i];
+            }
+            if (sg.leader()) { stream[offset] = head; }
+            offset += 1;
+        }
+        index_type tid = sg.get_local_id()[0];
+        if (offset + tid < offsets[warp_index + 1]) { stream[offset + tid] = columns[item]; }
+    });
+}
+
+
 // TODO we might be able to avoid this kernel altogether by writing the reduction results directly
 //  to the stream header. Requires the stream format to be fixed first.
 template<typename Profile>
