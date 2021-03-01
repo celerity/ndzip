@@ -865,7 +865,15 @@ void write_transposed_chunks(hypercube_group grp, hypercube<Profile> hc,
                         mask >>= 32;
                     }
                 }
-                auto head = sycl::group_reduce(sg, hc[item] & mask, sycl::bit_or<bits_type>{});
+
+                // TODO this is weird. Can we not "transpose" this for the 64-bit case so we don't
+                //  have to mask and only need a single iteration?
+                bits_type head = 0;
+                for (index_type j = 0; j < chunk_size / warp_size; ++j) {
+                    auto col = floor(item, chunk_size) + item % warp_size + j * warp_size;
+                    head |= sycl::group_reduce(sg, hc[col] & mask, sycl::bit_or<bits_type>{});
+                }
+
                 index_type this_warp_size = 0;
                 bits_type column = 0;
                 if (head != 0) {
@@ -1089,10 +1097,10 @@ size_t ndzip::gpu_encoder<T, Dims>::compress(
                     detail::gpu::write_transposed_chunks(grp, hc,
                             &heads_acc[hc_index * warps_per_hc], &columns_acc[hc_index * hc_size],
                             &chunk_lengths_acc[1 + hc_index * warps_per_hc]);
-                  // hack
-                  if (phys_idx.get_global_linear_id() == 0) {
-                      grp.single_item([&] { chunk_lengths_acc[0] = 0; });
-                  }
+                    // hack
+                    if (phys_idx.get_global_linear_id() == 0) {
+                        grp.single_item([&] { chunk_lengths_acc[0] = 0; });
+                    }
                 });
     });
 

@@ -25,7 +25,9 @@ constexpr Integer floor(Integer x, Integer multiple) {
 
 using index_type = uint64_t;
 
-// TODO must be a template parameter with selection based on queue (/device?) properties
+// TODO _should_ be a template parameter with selection based on queue (/device?) properties.
+//  However a lot of code currently assumes that bitsof<uint32_t> == warp_size (e.g. we want to
+//  use subgroup reductions for length-32 chunks of residuals)
 inline constexpr index_type warp_size = 32;
 
 template<typename T>
