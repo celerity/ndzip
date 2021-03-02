@@ -67,3 +67,7 @@ void check_for_vector_equality(const std::vector<T> &lhs, const std::vector<T> &
 }
 
 
+template<class T>
+void black_hole(T *datum) {
+    __asm__ __volatile__("" :: "m"(datum));
+}

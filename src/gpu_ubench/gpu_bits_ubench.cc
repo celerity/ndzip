@@ -1,6 +1,7 @@
 #include "ubench.hh"
 
 #include <ndzip/gpu_bits.hh>
+#include <test/test_utils.hh>
 
 using namespace ndzip::detail::gpu;
 using sam = sycl::access::mode;
@@ -77,6 +78,30 @@ TEMPLATE_TEST_CASE("Register to global memory inclusive scan", "[scan]", uint32_
                                 [&](index_type item, index_type, sycl::logical_item<1> idx) {
                                     g[idx.get_global_linear_id()] = lm[item];
                                 });
+                    });
+        });
+    };
+}
+
+template<typename>
+class local_memory_scan_spillage_kernel;
+
+// Verify in Nsight Compute that this does not spill to device memory
+TEMPLATE_TEST_CASE("Local-memory scan spillage", "[scan][memory]", uint32_t, uint64_t) {
+    SYCL_BENCHMARK("4096-element inclusive scan")(sycl::queue & q) {
+        constexpr index_type block_size = 4096;
+        constexpr index_type group_size = 256;
+        return q.submit([&](sycl::handler &cgh) {
+            cgh.parallel<local_memory_scan_spillage_kernel<TestType>>(sycl::range<1>{1},
+                    sycl::range<1>{group_size},
+                    [=](known_size_group<group_size> grp, sycl::physical_item<1>) {
+                        sycl::local_memory<TestType[block_size]> lm{grp};
+                        grp.distribute_for(block_size,
+                                [&](index_type item, index_type, sycl::logical_item<1> idx) {
+                                    lm[item] = idx.get_global_linear_id();
+                                });
+                        inclusive_scan<block_size>(grp, lm(), sycl::plus<TestType>{});
+                        black_hole(lm());
                     });
         });
     };

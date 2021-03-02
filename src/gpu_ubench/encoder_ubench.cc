@@ -32,12 +32,6 @@ template<typename>
 class chunk_encode_kernel;
 
 
-template<class T>
-void black_hole(T *datum) {
-    __asm__ __volatile__("" :: "m"(datum));
-}
-
-
 TEMPLATE_TEST_CASE("Loading", "[load]", ALL_PROFILES) {
     using data_type = typename TestType::data_type;
     using bits_type = typename TestType::bits_type;

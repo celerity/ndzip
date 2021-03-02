@@ -11,10 +11,10 @@ struct SyclBenchmark {
 
 template<typename Lambda>
 void operator<<=(SyclBenchmark &&bench, Lambda &&lambda) {
-    const size_t warmup_runs = 1;
     sycl::queue q{sycl::property::queue::enable_profiling{}};
 
     Catch::IConfigPtr cfg = Catch::getCurrentContext().getConfig();
+    size_t warmup_runs = cfg->benchmarkWarmupTime() < std::chrono::milliseconds(1) ? 0 : 1;
 
     using duration = std::chrono::duration<double, std::nano>;
     Catch::Benchmark::Environment<duration> env{{duration{100}, {}}, {duration{0.0}, {}}};

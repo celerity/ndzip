@@ -6,7 +6,7 @@ using namespace ndzip::detail::gpu;
 using sam = sycl::access::mode;
 
 
-TEMPLATE_TEST_CASE("Subgroup hierarchical inclusive scan works", "[gpu_bits]", uint32_t, uint64_t) {
+TEMPLATE_TEST_CASE("Subgroup hierarchical inclusive scan works", "[scan]", uint32_t, uint64_t) {
     constexpr index_type group_size = 1024;
     constexpr index_type n_groups = 9;
     constexpr index_type range = group_size * n_groups;
