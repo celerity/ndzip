@@ -46,6 +46,9 @@ set(NDZIP_COMPILE_FLAGS
     # Rationale in https://github.com/ninja-build/ninja/issues/814
     $<$<STREQUAL:${CMAKE_GENERATOR},Ninja>:-fdiagnostics-color=always>)
 
+# Aggressive inlining avoids GPU call stack allocation == global memory access bottleneck
+set(NDZIP_GPU_COMPILE_FLAGS -mllvm -inline-threshold=2000)
+
 add_library(ndzip SHARED
     include/ndzip/ndzip.hh
     include/ndzip/array.hh
@@ -76,7 +79,7 @@ if (NDZIP_USE_HIPSYCL)
         src/ndzip/gpu_encoder.cc
     )
     target_include_directories(ndzip-gpu PUBLIC include)
-    target_compile_options(ndzip-gpu PRIVATE ${NDZIP_COMPILE_FLAGS})
+    target_compile_options(ndzip-gpu PRIVATE ${NDZIP_COMPILE_FLAGS} ${NDZIP_GPU_COMPILE_FLAGS})
     add_sycl_to_target(TARGET ndzip-gpu)
     target_link_libraries(ndzip-gpu PUBLIC ndzip)
 endif ()
@@ -104,7 +107,7 @@ if (NDZIP_BUILD_TEST AND Catch2_FOUND)
             src/test/test_utils.hh
             src/test/encoder_test.cc)
     target_include_directories(encoder_test PRIVATE src)
-    target_compile_options(encoder_test PRIVATE ${NDZIP_COMPILE_FLAGS})
+    target_compile_options(encoder_test PRIVATE ${NDZIP_COMPILE_FLAGS} ${NDZIP_GPU_COMPILE_FLAGS})
     target_link_libraries(encoder_test PRIVATE ndzip Catch2::Catch2)
     if (NDZIP_USE_HIPSYCL)
         add_sycl_to_target(TARGET encoder_test)
@@ -117,7 +120,7 @@ if (NDZIP_BUILD_TEST AND Catch2_FOUND AND NDZIP_USE_HIPSYCL)
             src/test/test_utils.hh
             src/test/gpu_bits_test.cc)
     target_include_directories(gpu_bits_test PRIVATE src include)
-    target_compile_options(gpu_bits_test PRIVATE ${NDZIP_COMPILE_FLAGS} -Werror=pass-failed)
+    target_compile_options(gpu_bits_test PRIVATE ${NDZIP_COMPILE_FLAGS} -Werror=pass-failed ${NDZIP_GPU_COMPILE_FLAGS})
     target_link_libraries(gpu_bits_test PRIVATE Catch2::Catch2)
     add_sycl_to_target(TARGET gpu_bits_test)
 
@@ -127,7 +130,7 @@ if (NDZIP_BUILD_TEST AND Catch2_FOUND AND NDZIP_USE_HIPSYCL)
             src/gpu_ubench/gpu_bits_ubench.cc
             src/gpu_ubench/ubench_main.cc)
     target_include_directories(gpu_ubench PRIVATE src include)
-    target_compile_options(gpu_ubench PRIVATE ${NDZIP_COMPILE_FLAGS})
+    target_compile_options(gpu_ubench PRIVATE ${NDZIP_COMPILE_FLAGS} ${NDZIP_GPU_COMPILE_FLAGS})
     target_link_libraries(gpu_ubench PRIVATE Catch2::Catch2)
     add_sycl_to_target(TARGET gpu_ubench)
 endif ()
