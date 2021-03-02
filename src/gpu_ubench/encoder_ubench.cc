@@ -97,10 +97,11 @@ TEMPLATE_TEST_CASE("Block transform", "[transform]", ALL_PROFILES) {
 
 
 // Impact of dimensionality should not be that large, but the hc padding could hold surprises
-TEMPLATE_TEST_CASE("Chunk encoding", "[encode]", (profile<float, 1>), (profile<double, 1>) ) {
+TEMPLATE_TEST_CASE("Chunk encoding", "[encode]", (profile<float, 1>), (profile<double, 1>)) {
     constexpr index_type n_blocks = 16384;
     using bits_type = typename TestType::bits_type;
     constexpr auto hc_size = ipow(TestType::hypercube_side_length, TestType::dimensions);
+    constexpr auto warps_per_hc = hc_size / warp_size;
 
     SYCL_BENCHMARK("Reference: serialize")(sycl::queue & q) {
         sycl::buffer<bits_type> out(n_blocks * hc_size);
@@ -120,8 +121,8 @@ TEMPLATE_TEST_CASE("Chunk encoding", "[encode]", (profile<float, 1>), (profile<d
     };
 
     sycl::buffer<bits_type> columns(n_blocks * hc_size);
-    sycl::buffer<bits_type> heads(n_blocks * hc_size / warp_size);
-    sycl::buffer<index_type> lengths(n_blocks * hc_size / warp_size);
+    sycl::buffer<bits_type> heads(n_blocks * warps_per_hc);
+    sycl::buffer<index_type> lengths(1 + n_blocks * warps_per_hc);
 
     SYCL_BENCHMARK("Transpose only")(sycl::queue & q) {
         return q.submit([&](sycl::handler &cgh) {
@@ -130,21 +131,28 @@ TEMPLATE_TEST_CASE("Chunk encoding", "[encode]", (profile<float, 1>), (profile<d
             auto l = lengths.template get_access<sam::discard_write>(cgh);
             cgh.parallel<chunk_transpose_kernel<TestType>>(sycl::range<1>{n_blocks},
                     sycl::range<1>{hypercube_group_size},
-                    [=](hypercube_group grp, sycl::physical_item<1>) {
+                    [=](hypercube_group grp, sycl::physical_item<1> phys_idx) {
                         sycl::local_memory<bits_type[hypercube<TestType>::allocation_size]> lm{grp};
                         hypercube<TestType> hc{&lm[0]};
                         grp.distribute_for(hc_size, [&](index_type i) { hc[i] = i * 199; });
                         const auto hc_index = grp.get_id(0);
-                        write_transposed_chunks(
-                                grp, hc, &h[hc_index], &c[hc_index * hc_size], &l[hc_index]);
+                        write_transposed_chunks(grp, hc, &h[hc_index * warps_per_hc],
+                                &c[hc_index * hc_size], &l[1 + hc_index * warps_per_hc]);
+                        // hack
+                        if (phys_idx.get_global_linear_id() == 0) {
+                            grp.single_item([&] { l[0] = 0; });
+                        }
                     });
         });
     };
 
-    hierarchical_inclusive_prefix_sum<index_type> prefix_sum(
-            n_blocks * hc_size / warp_size, 256 /* local size */);
-    sycl::queue q;
-    prefix_sum(q, lengths);
+    {
+        hierarchical_inclusive_prefix_sum<index_type> prefix_sum(
+                1 + n_blocks * hc_size / warp_size, 256 /* local size */);
+        sycl::queue q;
+        prefix_sum(q, lengths);
+    }
+
     sycl::buffer<bits_type> stream(n_blocks * (hc_size + hc_size / warp_size));
 
     SYCL_BENCHMARK("Compact transposed")(sycl::queue & q) {
@@ -161,26 +169,6 @@ TEMPLATE_TEST_CASE("Chunk encoding", "[encode]", (profile<float, 1>), (profile<d
                                 static_cast<const bits_type *>(c.get_pointer()),
                                 static_cast<const index_type *>(l.get_pointer()),
                                 static_cast<bits_type *>(s.get_pointer()));
-                    });
-        });
-    };
-
-    SYCL_BENCHMARK("Encode")(sycl::queue & q) {
-        const auto max_chunk_size = (TestType::compressed_block_size_bound + sizeof(bits_type) - 1)
-                / sizeof(bits_type);
-        sycl::buffer<bits_type> out(n_blocks * max_chunk_size);
-        sycl::buffer<file_offset_type> lengths(n_blocks);
-        return q.submit([&](sycl::handler &cgh) {
-            auto g = out.template get_access<sam::discard_write>(cgh);
-            auto l = lengths.template get_access<sam::discard_write>(cgh);
-            cgh.parallel<chunk_encode_kernel<TestType>>(sycl::range<1>{n_blocks},
-                    sycl::range<1>{hypercube_group_size},
-                    [=](hypercube_group grp, sycl::physical_item<1>) {
-                        sycl::local_memory<bits_type[hypercube<TestType>::allocation_size]> lm{grp};
-                        hypercube<TestType> hc{&lm[0]};
-                        grp.distribute_for(hc_size, [&](index_type i) { hc[i] = i * 199; });
-                        const auto hc_index = grp.get_id(0);
-                        encode_chunks(grp, hc, &g[hc_index * max_chunk_size], &l[hc_index]);
                     });
         });
     };
