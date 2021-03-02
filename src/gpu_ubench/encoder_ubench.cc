@@ -1,7 +1,9 @@
 #include "ubench.hh"
 
 #include <ndzip/gpu_encoder.inl>
+#include <test/test_utils.hh>
 
+using namespace ndzip;
 using namespace ndzip::detail;
 using namespace ndzip::detail::gpu;
 using sam = sycl::access::mode;
@@ -12,6 +14,8 @@ using sam = sycl::access::mode;
             (profile<double, 2>), (profile<double, 3>)
 
 // Kernel names (for profiler)
+template<typename>
+class load_hypercube_kernel;
 template<typename>
 class block_transform_reference_kernel;
 template<typename>
@@ -28,6 +32,58 @@ template<typename>
 class chunk_encode_kernel;
 
 
+template<class T>
+void black_hole(T *datum) {
+    __asm__ __volatile__("" :: "m"(datum));
+}
+
+
+TEMPLATE_TEST_CASE("Loading", "[load]", ALL_PROFILES) {
+    using data_type = typename TestType::data_type;
+    using bits_type = typename TestType::bits_type;
+    constexpr unsigned dimensions = TestType::dimensions;
+    constexpr index_type n_blocks = 16384;
+
+    const auto grid_extent = [] {
+        extent<TestType::dimensions> grid_extent;
+        const auto n_blocks_regular = static_cast<index_type>(pow(n_blocks, 1.f / dimensions));
+        auto n_blocks_to_distribute = n_blocks;
+        for (unsigned d = 0; d < dimensions; ++d) {
+            auto n_blocks_this_dim = std::min(n_blocks_regular, n_blocks_to_distribute);
+            grid_extent[d] = n_blocks_this_dim * TestType::hypercube_side_length + 3 /* border */;
+            n_blocks_to_distribute /= n_blocks_this_dim;
+        }
+        assert(n_blocks_to_distribute == 0);
+        return grid_extent;
+    }();
+
+    const auto data = make_random_vector<data_type>(num_elements(grid_extent));
+    sycl::buffer<data_type> data_buffer(data.data(), data.size());
+
+    SYCL_BENCHMARK("Load hypercube")(sycl::queue & q) {
+        constexpr auto hc_size = ipow(TestType::hypercube_side_length, TestType::dimensions);
+
+        sycl::buffer<bits_type> out(n_blocks * hc_size);
+        return q.submit([&](sycl::handler &cgh) {
+            auto data_acc = data_buffer.template get_access<sam::read>(cgh);
+            cgh.parallel<load_hypercube_kernel<TestType>>(sycl::range<1>{n_blocks},
+                    sycl::range<1>{hypercube_group_size},
+                    [=](hypercube_group grp, sycl::physical_item<1>) {
+                        detail::gpu::index_type hc_index = grp.get_id(0);
+                        slice<const data_type, dimensions> data{
+                                data_acc.get_pointer(), grid_extent};
+                        sycl::local_memory<bits_type[hypercube<TestType>::allocation_size]> lm{grp};
+                        hypercube<TestType> hc{&lm[0]};
+
+                        load_hypercube(grp, hc_index, {data}, hc);
+
+                        black_hole(hc.bits);
+                    });
+        });
+    };
+}
+
+
 TEMPLATE_TEST_CASE("Block transform", "[transform]", ALL_PROFILES) {
     constexpr index_type n_blocks = 16384;
 
@@ -35,19 +91,14 @@ TEMPLATE_TEST_CASE("Block transform", "[transform]", ALL_PROFILES) {
         using bits_type = typename TestType::bits_type;
         constexpr auto hc_size = ipow(TestType::hypercube_side_length, TestType::dimensions);
 
-        sycl::buffer<bits_type> out(n_blocks * hc_size);
         return q.submit([&](sycl::handler &cgh) {
-            auto g = out.template get_access<sam::discard_write>(cgh);
             cgh.parallel<block_transform_reference_kernel<TestType>>(sycl::range<1>{n_blocks},
                     sycl::range<1>{hypercube_group_size},
                     [=](hypercube_group grp, sycl::physical_item<1>) {
                         sycl::local_memory<bits_type[hypercube<TestType>::allocation_size]> lm{grp};
                         hypercube<TestType> hc{&lm[0]};
                         grp.distribute_for(hc_size, [&](index_type i) { hc[i] = i; });
-                        const auto hc_index = grp.get_id(0);
-                        grp.distribute_for(hc_size, [&](index_type i) {
-                            g[hc_index * hc_size + i] = rotate_left_1(hc[i]);
-                        });
+                        black_hole(hc.bits);
                     });
         });
     };
@@ -56,9 +107,7 @@ TEMPLATE_TEST_CASE("Block transform", "[transform]", ALL_PROFILES) {
         using bits_type = typename TestType::bits_type;
         constexpr auto hc_size = ipow(TestType::hypercube_side_length, TestType::dimensions);
 
-        sycl::buffer<bits_type> out(n_blocks * hc_size);
         return q.submit([&](sycl::handler &cgh) {
-            auto g = out.template get_access<sam::discard_write>(cgh);
             cgh.parallel<block_forward_transform_kernel<TestType>>(sycl::range<1>{n_blocks},
                     sycl::range<1>{hypercube_group_size},
                     [=](hypercube_group grp, sycl::physical_item<1>) {
@@ -66,9 +115,7 @@ TEMPLATE_TEST_CASE("Block transform", "[transform]", ALL_PROFILES) {
                         hypercube<TestType> hc{&lm[0]};
                         grp.distribute_for(hc_size, [&](index_type i) { hc[i] = i; });
                         block_transform(grp, hc);
-                        const auto hc_index = grp.get_id(0);
-                        grp.distribute_for(
-                                hc_size, [&](index_type i) { g[hc_index * hc_size + i] = hc[i]; });
+                        black_hole(hc.bits);
                     });
         });
     };
@@ -77,9 +124,7 @@ TEMPLATE_TEST_CASE("Block transform", "[transform]", ALL_PROFILES) {
         using bits_type = typename TestType::bits_type;
         constexpr auto hc_size = ipow(TestType::hypercube_side_length, TestType::dimensions);
 
-        sycl::buffer<bits_type> out(n_blocks * hc_size);
         return q.submit([&](sycl::handler &cgh) {
-            auto g = out.template get_access<sam::discard_write>(cgh);
             cgh.parallel<block_inverse_transform_kernel<TestType>>(sycl::range<1>{n_blocks},
                     sycl::range<1>{hypercube_group_size},
                     [=](hypercube_group grp, sycl::physical_item<1>) {
@@ -87,9 +132,7 @@ TEMPLATE_TEST_CASE("Block transform", "[transform]", ALL_PROFILES) {
                         hypercube<TestType> hc{&lm[0]};
                         grp.distribute_for(hc_size, [&](index_type i) { hc[i] = i; });
                         inverse_block_transform(grp, hc);
-                        const auto hc_index = grp.get_id(0);
-                        grp.distribute_for(
-                                hc_size, [&](index_type i) { g[hc_index * hc_size + i] = hc[i]; });
+                      black_hole(hc.bits);
                     });
         });
     };
@@ -97,25 +140,21 @@ TEMPLATE_TEST_CASE("Block transform", "[transform]", ALL_PROFILES) {
 
 
 // Impact of dimensionality should not be that large, but the hc padding could hold surprises
-TEMPLATE_TEST_CASE("Chunk encoding", "[encode]", (profile<float, 1>), (profile<double, 1>)) {
+TEMPLATE_TEST_CASE("Chunk encoding", "[encode]", (profile<float, 1>), (profile<double, 1>) ) {
     constexpr index_type n_blocks = 16384;
     using bits_type = typename TestType::bits_type;
     constexpr auto hc_size = ipow(TestType::hypercube_side_length, TestType::dimensions);
     constexpr auto warps_per_hc = hc_size / warp_size;
 
     SYCL_BENCHMARK("Reference: serialize")(sycl::queue & q) {
-        sycl::buffer<bits_type> out(n_blocks * hc_size);
         return q.submit([&](sycl::handler &cgh) {
-            auto g = out.template get_access<sam::discard_write>(cgh);
             cgh.parallel<encode_reference_kernel<TestType>>(sycl::range<1>{n_blocks},
                     sycl::range<1>{hypercube_group_size},
                     [=](hypercube_group grp, sycl::physical_item<1>) {
                         sycl::local_memory<bits_type[hypercube<TestType>::allocation_size]> lm{grp};
                         hypercube<TestType> hc{&lm[0]};
                         grp.distribute_for(hc_size, [&](index_type i) { hc[i] = i; });
-                        const auto hc_index = grp.get_id(0);
-                        grp.distribute_for(
-                                hc_size, [&](index_type i) { g[hc_index * hc_size + i] = hc[i]; });
+                        black_hole(hc.bits);
                     });
         });
     };
