@@ -178,7 +178,7 @@ TEMPLATE_TEST_CASE("encoder produces the expected bit stream", "[encoder]",
     (mt_cpu_encoder<float, 2>), (mt_cpu_encoder<float, 3>)
 ) {
     using profile = detail::profile<typename TestType::data_type, TestType::dimensions>;
-    using bits_type = typename profile::bits_type;
+    using value_type = typename profile::value_type;
     using hc_offset_type = typename profile::hypercube_offset_type;
 
     const size_t n = 199;
@@ -221,7 +221,7 @@ TEMPLATE_TEST_CASE("encoder produces the expected bit stream", "[encoder]",
         for (size_t i = 0; i < ipow(profile::hypercube_side_length, dims); ++i) {
             float value;
             const void *value_offset_address = file_header + hc_offset + i * sizeof value;
-            detail::store_value<profile>(&value, load_unaligned<bits_type>(value_offset_address));
+            detail::store_value<profile>(&value, load_unaligned<value_type>(value_offset_address));
             CHECK(memcmp(&value, &cell, sizeof value) == 0);
         }
     });
@@ -235,7 +235,7 @@ TEMPLATE_TEST_CASE("encoder produces the expected bit stream", "[encoder]",
             float value;
             const void *value_offset_address = stream.data() + border_offset
                 + (n_border_elems + i) * sizeof value;
-            detail::store_value<profile>(&value, load_unaligned<bits_type>(value_offset_address));
+            detail::store_value<profile>(&value, load_unaligned<value_type>(value_offset_address));
             CHECK(memcmp(&value, &border, sizeof value) == 0);
         }
         n_border_elems += count;
@@ -245,9 +245,9 @@ TEMPLATE_TEST_CASE("encoder produces the expected bit stream", "[encoder]",
 */
 
 
-TEMPLATE_TEST_CASE("decode(encode(input)) reproduces the input", "[encoder][de]", (profile<float, 1>),
-(profile<float, 2>), (profile<float, 3>), (profile<double, 1>), (profile<double, 2>),
-(profile<double, 3>)) {
+TEMPLATE_TEST_CASE("decode(encode(input)) reproduces the input", "[encoder][de]",
+        (profile<float, 1>), (profile<float, 2>), (profile<float, 3>), (profile<double, 1>),
+        (profile<double, 2>), (profile<double, 3>) ) {
     using profile = TestType;
     using data_type = typename profile::data_type;
 
@@ -297,8 +297,7 @@ TEMPLATE_TEST_CASE("decode(encode(input)) reproduces the input", "[encoder][de]"
     // }
 
     SECTION("gpu_encoder::encode() => cpu_encoder::decode()") {
-        test_encoder_decoder_pair(gpu_encoder<data_type, dims>{}, cpu_encoder<data_type,
-        dims>{});
+        test_encoder_decoder_pair(gpu_encoder<data_type, dims>{}, cpu_encoder<data_type, dims>{});
     }
 #endif
 }
@@ -375,6 +374,7 @@ load_and_dump_hypercube(const slice<const typename Profile::data_type, Profile::
         size_t hc_index, sycl::queue &q) {
     using data_type = typename Profile::data_type;
     using bits_type = typename Profile::bits_type;
+    using hc_layout = gpu::hypercube_layout<Profile::dimensions, gpu::forward_transform_tag>;
 
     auto hc_size = ipow(Profile::hypercube_side_length, Profile::dimensions);
     buffer<data_type> load_buf{in.data(), range<1>{num_elements(in.size())}};
@@ -387,22 +387,20 @@ load_and_dump_hypercube(const slice<const typename Profile::data_type, Profile::
     });
     q.submit([&](handler &cgh) {
         auto data_acc = load_buf.template get_access<sam::read>(cgh);
-        auto result_acc = store_buf.template get_access<sam ::discard_write>(cgh);
+        auto result_acc = store_buf.template get_access<sam::discard_write>(cgh);
         const auto data_size = in.size();
         cgh.parallel(range<1>{1}, range<1>{gpu::hypercube_group_size},
-                [=](group<1> grp, physical_item<1>) {
-                    auto grid_in
-                            = gpu::grid<const Profile>{slice<const data_type, Profile::dimensions>{
-                                    data_acc.get_pointer(), data_size}};
-                    auto grid_out = gpu::grid<Profile>{
-                            slice<data_type, Profile::dimensions>{result_acc.get_pointer(),
-                                    extent<Profile::dimensions>::broadcast(
-                                            Profile::hypercube_side_length)}};
-                    auto hc_mem = local_memory<bits_type[gpu::hypercube<Profile>::allocation_size]>{
-                            grp};
-                    auto hc = gpu::hypercube<Profile>{hc_mem()};
-                    gpu::load_hypercube<Profile>(grp, hc_index, grid_in, hc);
-                    gpu::store_hypercube<Profile>(grp, hc_index, grid_out, hc);
+                [=](gpu::hypercube_group grp, physical_item<1>) {
+                    slice<const data_type, Profile::dimensions> data_in{
+                            data_acc.get_pointer(), data_size};
+                    local_memory<bits_type[hc_layout::pad(hc_layout::hc_size)]> lm{grp};
+                    gpu::hypercube_ptr<Profile, gpu::forward_transform_tag> hc{lm()};
+                    gpu::load_hypercube(grp, hc_index, data_in, hc);
+                    // TODO rotate should probaly happen during CPU load_hypercube as well to hide
+                    //  memory access latencies
+                    grp.distribute_for(hc_layout::hc_size, [&](gpu::index_type item) {
+                        result_acc[item] = gpu::bit_cast<data_type>(rotate_right_1(hc[item]));
+                    });
                 });
     });
     q.submit([&](handler &cgh) {
@@ -414,6 +412,7 @@ load_and_dump_hypercube(const slice<const typename Profile::data_type, Profile::
 }
 
 
+#if 0  // gpu::hypercube_ptr assumes 4096 elements per hc
 TEMPLATE_TEST_CASE(
         "correctly load small hypercubes into local memory", "[gpu]", uint32_t, uint64_t) {
     sycl::queue q{sycl::gpu_selector{}};
@@ -486,6 +485,7 @@ TEMPLATE_TEST_CASE(
         // clang-format on
     }
 }
+#endif
 
 
 TEMPLATE_TEST_CASE("flattening of larger hypercubes is identical between CPU and GPU", "[gpu]",
@@ -517,10 +517,14 @@ TEMPLATE_TEST_CASE("flattening of larger hypercubes is identical between CPU and
 }
 
 
-template<typename TransformName, typename Profile, typename CPUTransform, typename GPUTransform>
+template<typename, typename>
+class gpu_transform_test_kernel;
+
+template<typename Profile, typename Tag, typename CPUTransform, typename GPUTransform>
 static void test_cpu_gpu_transform_equality(
         const CPUTransform &cpu_transform, const GPUTransform &gpu_transform) {
     using bits_type = typename Profile::bits_type;
+    using hc_layout = gpu::hypercube_layout<Profile::dimensions, Tag>;
     constexpr auto hc_size = static_cast<gpu::index_type>(
             ipow(Profile::hypercube_side_length, Profile::dimensions));
 
@@ -537,12 +541,12 @@ static void test_cpu_gpu_transform_equality(
     });
     q.submit([&](handler &cgh) {
         auto global_acc = io_buf.template get_access<sam::read_write>(cgh);
-        cgh.parallel<TransformName>(range<1>{1}, range<1>{gpu::hypercube_group_size},
+        cgh.parallel<gpu_transform_test_kernel<Profile, Tag>>(range<1>{1},
+                range<1>{gpu::hypercube_group_size},
                 [global_acc, hc_size = hc_size, gpu_transform](
                         gpu::hypercube_group grp, physical_item<1>) {
-                    auto hc_mem = local_memory<bits_type[gpu::hypercube<Profile>::allocation_size]>{
-                            grp};
-                    auto hc = gpu::hypercube<Profile>{hc_mem()};
+                    local_memory<bits_type[hc_layout::pad(hc_layout::hc_size)]> lm{grp};
+                    gpu::hypercube_ptr<Profile, Tag> hc{lm()};
                     grp.distribute_for(hc_size, [&](gpu::index_type i) { hc[i] = global_acc[i]; });
                     gpu_transform(grp, hc);
                     grp.distribute_for(hc_size, [&](gpu::index_type i) { global_acc[i] = hc[i]; });
@@ -558,43 +562,39 @@ static void test_cpu_gpu_transform_equality(
     check_for_vector_equality(gpu_transformed, cpu_transformed);
 }
 
-template<typename>
-class gpu_forward_transform_test_kernel;
-
 TEMPLATE_TEST_CASE("CPU and GPU forward block transforms are identical", "[gpu]",
         (profile<float, 1>), (profile<float, 2>), (profile<float, 3>), (profile<double, 1>),
         (profile<double, 2>), (profile<double, 3>) ) {
     using bits_type = typename TestType::bits_type;
-    test_cpu_gpu_transform_equality<gpu_forward_transform_test_kernel<TestType>, TestType>(
+    test_cpu_gpu_transform_equality<TestType, gpu::forward_transform_tag>(
             [](bits_type *block) {
                 detail::block_transform(
                         block, TestType::dimensions, TestType::hypercube_side_length);
             },
             // Use lambda instead of the function name, otherwise a host function pointer will
             // be passed into the device kernel
-            [](gpu::hypercube_group grp, gpu::hypercube<TestType> hc) {
+            [](gpu::hypercube_group grp,
+                    gpu::hypercube_ptr<TestType, gpu::forward_transform_tag> hc) {
                 const auto hc_size = ipow(TestType::hypercube_side_length, TestType::dimensions);
                 grp.distribute_for(
                         hc_size, [&](gpu::index_type i) { hc[i] = rotate_left_1(hc[i]); });
-                gpu::block_transform<TestType>(grp, hc);
+                gpu::forward_block_transform(grp, hc);
             });
 }
-
-template<typename>
-class gpu_inverse_transform_test_kernel;
 
 TEMPLATE_TEST_CASE("CPU and GPU inverse block transforms are identical", "[gpu]",
         (profile<float, 1>), (profile<float, 2>), (profile<float, 3>), (profile<double, 1>),
         (profile<double, 2>), (profile<double, 3>) ) {
     using bits_type = typename TestType::bits_type;
-    test_cpu_gpu_transform_equality<gpu_inverse_transform_test_kernel<TestType>, TestType>(
+    test_cpu_gpu_transform_equality<TestType, gpu::inverse_transform_tag>(
             [](bits_type *block) {
                 detail::inverse_block_transform(
                         block, TestType::dimensions, TestType::hypercube_side_length);
             },
             // Use lambda instead of the function name, otherwise a host function pointer will
             // be passed into the device kernel
-            [](gpu::hypercube_group grp, gpu::hypercube<TestType> hc) {
+            [](gpu::hypercube_group grp,
+                    gpu::hypercube_ptr<TestType, gpu::inverse_transform_tag> hc) {
                 gpu::inverse_block_transform<TestType>(grp, hc);
                 const auto hc_size = ipow(TestType::hypercube_side_length, TestType::dimensions);
                 grp.distribute_for(
@@ -654,11 +654,12 @@ class gpu_hypercube_transpose_test_kernel;
 template<typename>
 class gpu_hypercube_compact_test_kernel;
 
-TEMPLATE_TEST_CASE("CPU and GPU hypercube encodings are equivalent", "[gpu]",
-        (profile<float, 1>), (profile<float, 2>), (profile<float, 3>),
-        (profile<double, 1>), (profile<double, 2>), (profile<double, 3>)) {
+TEMPLATE_TEST_CASE("CPU and GPU hypercube encodings are equivalent", "[gpu]", (profile<float, 1>),
+        (profile<float, 2>), (profile<float, 3>), (profile<double, 1>), (profile<double, 2>),
+        (profile<double, 3>) ) {
     using bits_type = typename TestType::bits_type;
     const auto hc_size = ipow(TestType::hypercube_side_length, TestType::dimensions);
+    using hc_layout = gpu::hypercube_layout<TestType::dimensions, gpu::forward_transform_tag>;
 
     auto input = make_random_vector<bits_type>(hc_size);
     for (size_t i = 0; i < hc_size; ++i) {
@@ -694,10 +695,8 @@ TEMPLATE_TEST_CASE("CPU and GPU hypercube encodings are equivalent", "[gpu]",
         cgh.parallel<gpu_hypercube_transpose_test_kernel<TestType>>(sycl::range<1>{1},
                 sycl::range<1>{gpu::hypercube_group_size},
                 [=](gpu::hypercube_group grp, sycl::physical_item<1> phys_idx) {
-                    auto hc_mem
-                            = local_memory<bits_type[gpu::hypercube<TestType>::allocation_size]>{
-                                    grp};
-                    auto hc = gpu::hypercube<TestType>{hc_mem()};
+                    local_memory<bits_type[hc_layout::pad(hc_layout::hc_size)]> lm{grp};
+                    gpu::hypercube_ptr<TestType, gpu::forward_transform_tag> hc{lm()};
                     grp.distribute_for(hc_size, [&](gpu::index_type i) { hc[i] = input_acc[i]; });
                     gpu::write_transposed_chunks(
                             grp, hc, &heads_acc[0], &columns_acc[0], &chunk_lengths_acc[1]);
@@ -719,8 +718,8 @@ TEMPLATE_TEST_CASE("CPU and GPU hypercube encodings are equivalent", "[gpu]",
 
     std::vector<gpu::index_type> chunk_lengths(chunk_lengths_buf.get_range()[0]);
     q.submit([&](handler &cgh) {
-      cgh.copy(chunk_lengths_buf.template get_access<sam::read>(cgh), chunk_lengths.data());
-    }).wait();
+         cgh.copy(chunk_lengths_buf.template get_access<sam::read>(cgh), chunk_lengths.data());
+     }).wait();
 
     buffer<file_offset_type> length_buf{range<1>{1}};
     q.submit([&](sycl::handler &cgh) {
@@ -741,7 +740,8 @@ TEMPLATE_TEST_CASE("CPU and GPU hypercube encodings are equivalent", "[gpu]",
                     // hack
                     if (phys_idx.get_global_linear_id() == 0) {
                         grp.single_item([&] {
-                            length_acc[0] = sizeof(bits_type) * chunk_lengths_acc[hc_size / gpu::warp_size];
+                            length_acc[0] = sizeof(bits_type)
+                                    * chunk_lengths_acc[hc_size / gpu::warp_size];
                         });
                     }
                 });

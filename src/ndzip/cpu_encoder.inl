@@ -196,7 +196,7 @@ template<unsigned SideLength, typename Bits>
 }
 
 template<typename Profile>
-void block_transform_avx2(typename Profile::bits_type *x) {
+void block_transform_avx2(typename Profile::value_type *x) {
     constexpr size_t dims = Profile::dimensions;
     constexpr size_t side_length = Profile::hypercube_side_length;
 
@@ -292,7 +292,7 @@ template<unsigned SideLength, typename Bits>
 }
 
 template<typename Profile>
-void inverse_block_transform_avx2(typename Profile::bits_type *x) {
+void inverse_block_transform_avx2(typename Profile::value_type *x) {
     constexpr size_t dims = Profile::dimensions;
     constexpr size_t side_length = Profile::hypercube_side_length;
 

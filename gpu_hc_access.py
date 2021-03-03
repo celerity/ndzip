@@ -9,12 +9,12 @@ LAYOUTS = [
     Layout(
         dimensions=1,
         num_lanes=256,  # Only for forward transform - 256 lanes in series
-        pad=lambda i: i,
+        pad=lambda i: i + i // 32,
         accessors=[
             Accessor(
                 direction='H',
-                offset=lambda tid: tid,
-                stride=256,
+                offset=lambda tid: tid * HC_SIZE // 256,
+                stride=1,
             ),
         ]
     ),

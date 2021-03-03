@@ -35,6 +35,8 @@ class chunk_encode_kernel;
 TEMPLATE_TEST_CASE("Loading", "[load]", ALL_PROFILES) {
     using data_type = typename TestType::data_type;
     using bits_type = typename TestType::bits_type;
+    using hc_layout = gpu::hypercube_layout<TestType::dimensions, gpu::forward_transform_tag>;
+
     constexpr unsigned dimensions = TestType::dimensions;
     constexpr index_type n_blocks = 16384;
 
@@ -63,13 +65,13 @@ TEMPLATE_TEST_CASE("Loading", "[load]", ALL_PROFILES) {
             cgh.parallel<load_hypercube_kernel<TestType>>(sycl::range<1>{n_blocks},
                     sycl::range<1>{hypercube_group_size},
                     [=](hypercube_group grp, sycl::physical_item<1>) {
+                        sycl::local_memory<bits_type[hc_layout::pad(hc_layout::hc_size)]> lm{grp};
+                        gpu::hypercube_ptr<TestType, gpu::forward_transform_tag> hc{lm()};
                         detail::gpu::index_type hc_index = grp.get_id(0);
                         slice<const data_type, dimensions> data{
                                 data_acc.get_pointer(), grid_extent};
-                        sycl::local_memory<bits_type[hypercube<TestType>::allocation_size]> lm{grp};
-                        hypercube<TestType> hc{&lm[0]};
 
-                        load_hypercube(grp, hc_index, {data}, hc);
+                        load_hypercube(grp, hc_index, data, hc);
 
                         black_hole(hc.bits);
                     });
@@ -79,18 +81,19 @@ TEMPLATE_TEST_CASE("Loading", "[load]", ALL_PROFILES) {
 
 
 TEMPLATE_TEST_CASE("Block transform", "[transform]", ALL_PROFILES) {
+    using bits_type = typename TestType::bits_type;
     constexpr index_type n_blocks = 16384;
 
     SYCL_BENCHMARK("Reference: rotate only")(sycl::queue & q) {
-        using bits_type = typename TestType::bits_type;
+        using hc_layout = gpu::hypercube_layout<TestType::dimensions, gpu::forward_transform_tag>;
         constexpr auto hc_size = ipow(TestType::hypercube_side_length, TestType::dimensions);
 
         return q.submit([&](sycl::handler &cgh) {
             cgh.parallel<block_transform_reference_kernel<TestType>>(sycl::range<1>{n_blocks},
                     sycl::range<1>{hypercube_group_size},
                     [=](hypercube_group grp, sycl::physical_item<1>) {
-                        sycl::local_memory<bits_type[hypercube<TestType>::allocation_size]> lm{grp};
-                        hypercube<TestType> hc{&lm[0]};
+                        sycl::local_memory<bits_type[hc_layout::pad(hc_layout::hc_size)]> lm{grp};
+                        gpu::hypercube_ptr<TestType, gpu::forward_transform_tag> hc{lm()};
                         grp.distribute_for(hc_size, [&](index_type i) { hc[i] = i; });
                         black_hole(hc.bits);
                     });
@@ -98,35 +101,35 @@ TEMPLATE_TEST_CASE("Block transform", "[transform]", ALL_PROFILES) {
     };
 
     SYCL_BENCHMARK("Forward transform")(sycl::queue & q) {
-        using bits_type = typename TestType::bits_type;
+        using hc_layout = gpu::hypercube_layout<TestType::dimensions, gpu::forward_transform_tag>;
         constexpr auto hc_size = ipow(TestType::hypercube_side_length, TestType::dimensions);
 
         return q.submit([&](sycl::handler &cgh) {
             cgh.parallel<block_forward_transform_kernel<TestType>>(sycl::range<1>{n_blocks},
                     sycl::range<1>{hypercube_group_size},
                     [=](hypercube_group grp, sycl::physical_item<1>) {
-                        sycl::local_memory<bits_type[hypercube<TestType>::allocation_size]> lm{grp};
-                        hypercube<TestType> hc{&lm[0]};
+                        sycl::local_memory<bits_type[hc_layout::pad(hc_layout::hc_size)]> lm{grp};
+                        gpu::hypercube_ptr<TestType, gpu::forward_transform_tag> hc{lm()};
                         grp.distribute_for(hc_size, [&](index_type i) { hc[i] = i; });
-                        block_transform(grp, hc);
+                        forward_block_transform(grp, hc);
                         black_hole(hc.bits);
                     });
         });
     };
 
     SYCL_BENCHMARK("Inverse transform")(sycl::queue & q) {
-        using bits_type = typename TestType::bits_type;
+        using hc_layout = gpu::hypercube_layout<TestType::dimensions, gpu::inverse_transform_tag>;
         constexpr auto hc_size = ipow(TestType::hypercube_side_length, TestType::dimensions);
 
         return q.submit([&](sycl::handler &cgh) {
             cgh.parallel<block_inverse_transform_kernel<TestType>>(sycl::range<1>{n_blocks},
                     sycl::range<1>{hypercube_group_size},
                     [=](hypercube_group grp, sycl::physical_item<1>) {
-                        sycl::local_memory<bits_type[hypercube<TestType>::allocation_size]> lm{grp};
-                        hypercube<TestType> hc{&lm[0]};
+                        sycl::local_memory<bits_type[hc_layout::pad(hc_layout::hc_size)]> lm{grp};
+                        gpu::hypercube_ptr<TestType, gpu::inverse_transform_tag> hc{lm()};
                         grp.distribute_for(hc_size, [&](index_type i) { hc[i] = i; });
                         inverse_block_transform(grp, hc);
-                      black_hole(hc.bits);
+                        black_hole(hc.bits);
                     });
         });
     };
@@ -137,6 +140,7 @@ TEMPLATE_TEST_CASE("Block transform", "[transform]", ALL_PROFILES) {
 TEMPLATE_TEST_CASE("Chunk encoding", "[encode]", (profile<float, 1>), (profile<double, 1>) ) {
     constexpr index_type n_blocks = 16384;
     using bits_type = typename TestType::bits_type;
+    using hc_layout = gpu::hypercube_layout<TestType::dimensions, gpu::inverse_transform_tag>;
     constexpr auto hc_size = ipow(TestType::hypercube_side_length, TestType::dimensions);
     constexpr auto warps_per_hc = hc_size / warp_size;
 
@@ -145,8 +149,8 @@ TEMPLATE_TEST_CASE("Chunk encoding", "[encode]", (profile<float, 1>), (profile<d
             cgh.parallel<encode_reference_kernel<TestType>>(sycl::range<1>{n_blocks},
                     sycl::range<1>{hypercube_group_size},
                     [=](hypercube_group grp, sycl::physical_item<1>) {
-                        sycl::local_memory<bits_type[hypercube<TestType>::allocation_size]> lm{grp};
-                        hypercube<TestType> hc{&lm[0]};
+                        sycl::local_memory<bits_type[hc_layout::pad(hc_layout::hc_size)]> lm{grp};
+                        gpu::hypercube_ptr<TestType, gpu::forward_transform_tag> hc{lm()};
                         grp.distribute_for(hc_size, [&](index_type i) { hc[i] = i; });
                         black_hole(hc.bits);
                     });
@@ -165,8 +169,8 @@ TEMPLATE_TEST_CASE("Chunk encoding", "[encode]", (profile<float, 1>), (profile<d
             cgh.parallel<chunk_transpose_kernel<TestType>>(sycl::range<1>{n_blocks},
                     sycl::range<1>{hypercube_group_size},
                     [=](hypercube_group grp, sycl::physical_item<1> phys_idx) {
-                        sycl::local_memory<bits_type[hypercube<TestType>::allocation_size]> lm{grp};
-                        hypercube<TestType> hc{&lm[0]};
+                        sycl::local_memory<bits_type[hc_layout::pad(hc_layout::hc_size)]> lm{grp};
+                        gpu::hypercube_ptr<TestType, gpu::forward_transform_tag> hc{lm()};
                         grp.distribute_for(hc_size, [&](index_type i) { hc[i] = i * 199; });
                         const auto hc_index = grp.get_id(0);
                         write_transposed_chunks(grp, hc, &h[hc_index * warps_per_hc],
