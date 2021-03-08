@@ -652,8 +652,9 @@ struct directional_accessor<1, 2, inverse_transform_tag> {
 template<typename Transform>
 struct hypercube_layout<3, Transform> {
     constexpr static index_type side_length = 16;
-    constexpr static index_type hc_size = 16 * 16 * 16;
-    constexpr static index_type num_lanes = hypercube_group_size;
+    constexpr static index_type hc_size = ipow(side_length, 3);
+    // TODO implement support for forward_transform with > 256 lanes
+    constexpr static index_type num_lanes = ipow(side_length, 2);
     constexpr static index_type lane_length = hc_size / num_lanes;
 
     constexpr static index_type pad(index_type i, index_type width) {
@@ -755,13 +756,9 @@ struct hypercube_ptr<profile<Data, 1>, inverse_transform_tag> {
 
     bits_type *memory;
 
-    bits_type load(index_type i) const {
-        return memory[i];
-    }
+    bits_type load(index_type i) const { return memory[i]; }
 
-    void store(index_type i, bits_type bits) {
-        memory[i] = bits;
-    }
+    void store(index_type i, bits_type bits) { memory[i] = bits; }
 };
 
 template<typename Profile>
@@ -800,7 +797,10 @@ void forward_transform_lanes(
     // 1D and 2D transforms have multiple lanes per row, so a barrier is required to synchronize
     // the read of the last element from (lane-1) with the write to the last element of (lane)
     constexpr bool needs_carry = layout::side_length > layout::lane_length;
-    sycl::private_memory<bits_type[layout::num_lanes / hypercube_group_size]> carry{grp};
+    // std::max: size might be zero if !needs_carry, but that is not a valid type
+    sycl::private_memory<
+            bits_type[std::max(index_type{1}, layout::num_lanes / hypercube_group_size)]>
+            carry{grp};
 
     if constexpr (needs_carry) {
         grp.distribute_for<layout::num_lanes>([&](index_type lane, index_type iteration,
@@ -932,6 +932,9 @@ void write_transposed_chunks(hypercube_group grp, hypercube_ptr<Profile, forward
 
                 index_type this_warp_size = 0;
                 bits_type column = 0;
+                // TODO this shortcut does not improve performance - but why? Shortcut' warps are
+                // stalled on the final barrier, but given a large enough group_size, this should
+                // still result in much fewer wasted cycles
                 if (head != 0) {
                     const auto chunk_base = floor(item, chunk_size);
                     const auto cell = item - chunk_base;

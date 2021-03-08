@@ -137,7 +137,7 @@ TEMPLATE_TEST_CASE("Block transform", "[transform]", ALL_PROFILES) {
 
 
 // Impact of dimensionality should not be that large, but the hc padding could hold surprises
-TEMPLATE_TEST_CASE("Chunk encoding", "[encode]", (profile<float, 1>), (profile<double, 1>) ) {
+TEMPLATE_TEST_CASE("Chunk encoding", "[encode]", ALL_PROFILES) {
     constexpr index_type n_blocks = 16384;
     using bits_type = typename TestType::bits_type;
     using hc_layout = gpu::hypercube_layout<TestType::dimensions, gpu::forward_transform_tag>;
