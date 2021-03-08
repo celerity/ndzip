@@ -30,6 +30,10 @@ using index_type = uint64_t;
 //  use subgroup reductions for length-32 chunks of residuals)
 inline constexpr index_type warp_size = 32;
 
+// A memory bank on CUDA is 32-bit. This used to be configurable but is not any more.
+// Hypercube layouts for 64-bit values need to introduce misalignment to pad shared memory accesses.
+using uint_bank_t = uint32_t;
+
 template<typename T>
 using global_read = sycl::accessor<T, 1, sycl::access::mode::read>;
 template<typename T>
@@ -113,7 +117,7 @@ std::enable_if_t<(Range <= warp_size)>
 inclusive_scan(known_size_group<LocalSize> grp, Accessor acc, BinaryOp op) {
     static_assert(LocalSize % warp_size == 0);
     grp.template distribute_for<ceil(Range, warp_size)>(
-            [&](index_type item, index_type, sycl::logical_item<1>, sycl::sub_group sg) __attribute__((always_inline)){
+            [&](index_type item, index_type, sycl::logical_item<1>, sycl::sub_group sg) {
                 auto a = item < Range ? acc[item] : 0;
                 auto b = sycl::group_inclusive_scan(sg, a, op);
                 if (item < Range) { acc[item] = b; }
@@ -131,13 +135,13 @@ inclusive_scan(known_size_group<LocalSize> grp, Accessor acc, BinaryOp op) {
     sycl::local_memory<value_type[div_ceil(Range, warp_size)]> coarse{grp};
     grp.template distribute_for<ceil(Range, warp_size)>([&](index_type item, index_type iteration,
                                                                 sycl::logical_item<1> idx,
-                                                                sycl::sub_group sg) __attribute__((always_inline)) {
+                                                                sycl::sub_group sg)  {
         fine(idx)[iteration] = sycl::group_inclusive_scan(sg, item < Range ? acc[item] : 0, op);
         if (item % warp_size == warp_size - 1) { coarse[item / warp_size] = fine(idx)[iteration]; }
     });
     inclusive_scan<div_ceil(Range, warp_size)>(grp, coarse(), op);
     grp.template distribute_for<Range>(
-            [&](index_type item, index_type iteration, sycl::logical_item<1> idx) __attribute__((always_inline)) {
+            [&](index_type item, index_type iteration, sycl::logical_item<1> idx)  {
                 auto value = fine(idx)[iteration];
                 if (item >= warp_size) { value = op(value, coarse[item / warp_size - 1]); }
                 acc[item] = value;

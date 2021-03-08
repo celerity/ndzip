@@ -47,7 +47,7 @@ set(NDZIP_COMPILE_FLAGS
     $<$<STREQUAL:${CMAKE_GENERATOR},Ninja>:-fdiagnostics-color=always>)
 
 # Aggressive inlining avoids GPU call stack allocation == global memory access bottleneck
-set(NDZIP_GPU_COMPILE_FLAGS -mllvm -inline-threshold=2000)
+set(NDZIP_GPU_COMPILE_FLAGS -mllvm -inline-threshold=2000 -Xarch_device -DNDEBUG=1)
 
 add_library(ndzip SHARED
     include/ndzip/ndzip.hh

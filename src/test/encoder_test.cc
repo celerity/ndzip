@@ -393,13 +393,13 @@ load_and_dump_hypercube(const slice<const typename Profile::data_type, Profile::
                 [=](gpu::hypercube_group grp, physical_item<1>) {
                     slice<const data_type, Profile::dimensions> data_in{
                             data_acc.get_pointer(), data_size};
-                    local_memory<bits_type[hc_layout::pad(hc_layout::hc_size)]> lm{grp};
+                    gpu::hypercube_memory<bits_type, hc_layout> lm{grp};
                     gpu::hypercube_ptr<Profile, gpu::forward_transform_tag> hc{lm()};
                     gpu::load_hypercube(grp, hc_index, data_in, hc);
                     // TODO rotate should probaly happen during CPU load_hypercube as well to hide
                     //  memory access latencies
                     grp.distribute_for(hc_layout::hc_size, [&](gpu::index_type item) {
-                        result_acc[item] = gpu::bit_cast<data_type>(rotate_right_1(hc[item]));
+                        result_acc[item] = gpu::bit_cast<data_type>(rotate_right_1(hc.load(item)));
                     });
                 });
     });
@@ -545,11 +545,13 @@ static void test_cpu_gpu_transform_equality(
                 range<1>{gpu::hypercube_group_size},
                 [global_acc, hc_size = hc_size, gpu_transform](
                         gpu::hypercube_group grp, physical_item<1>) {
-                    local_memory<bits_type[hc_layout::pad(hc_layout::hc_size)]> lm{grp};
+                    gpu::hypercube_memory<bits_type, hc_layout> lm{grp};
                     gpu::hypercube_ptr<Profile, Tag> hc{lm()};
-                    grp.distribute_for(hc_size, [&](gpu::index_type i) { hc[i] = global_acc[i]; });
+                    grp.distribute_for(
+                            hc_size, [&](gpu::index_type i) { hc.store(i, global_acc[i]); });
                     gpu_transform(grp, hc);
-                    grp.distribute_for(hc_size, [&](gpu::index_type i) { global_acc[i] = hc[i]; });
+                    grp.distribute_for(
+                            hc_size, [&](gpu::index_type i) { global_acc[i] = hc.load(i); });
                 });
     });
 
@@ -576,8 +578,8 @@ TEMPLATE_TEST_CASE("CPU and GPU forward block transforms are identical", "[gpu]"
             [](gpu::hypercube_group grp,
                     gpu::hypercube_ptr<TestType, gpu::forward_transform_tag> hc) {
                 const auto hc_size = ipow(TestType::hypercube_side_length, TestType::dimensions);
-                grp.distribute_for(
-                        hc_size, [&](gpu::index_type i) { hc[i] = rotate_left_1(hc[i]); });
+                grp.distribute_for(hc_size,
+                        [&](gpu::index_type i) { hc.store(i, rotate_left_1(hc.load(i))); });
                 gpu::forward_block_transform(grp, hc);
             });
 }
@@ -597,8 +599,8 @@ TEMPLATE_TEST_CASE("CPU and GPU inverse block transforms are identical", "[gpu]"
                     gpu::hypercube_ptr<TestType, gpu::inverse_transform_tag> hc) {
                 gpu::inverse_block_transform<TestType>(grp, hc);
                 const auto hc_size = ipow(TestType::hypercube_side_length, TestType::dimensions);
-                grp.distribute_for(
-                        hc_size, [&](gpu::index_type i) { hc[i] = rotate_right_1(hc[i]); });
+                grp.distribute_for(hc_size,
+                        [&](gpu::index_type i) { hc.store(i, rotate_right_1(hc.load(i))); });
             });
 }
 
@@ -695,9 +697,10 @@ TEMPLATE_TEST_CASE("CPU and GPU hypercube encodings are equivalent", "[gpu]", (p
         cgh.parallel<gpu_hypercube_transpose_test_kernel<TestType>>(sycl::range<1>{1},
                 sycl::range<1>{gpu::hypercube_group_size},
                 [=](gpu::hypercube_group grp, sycl::physical_item<1> phys_idx) {
-                    local_memory<bits_type[hc_layout::pad(hc_layout::hc_size)]> lm{grp};
+                    gpu::hypercube_memory<bits_type, hc_layout> lm{grp};
                     gpu::hypercube_ptr<TestType, gpu::forward_transform_tag> hc{lm()};
-                    grp.distribute_for(hc_size, [&](gpu::index_type i) { hc[i] = input_acc[i]; });
+                    grp.distribute_for(
+                            hc_size, [&](gpu::index_type i) { hc.store(i, input_acc[i]); });
                     gpu::write_transposed_chunks(
                             grp, hc, &heads_acc[0], &columns_acc[0], &chunk_lengths_acc[1]);
                     // hack

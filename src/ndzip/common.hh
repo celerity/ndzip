@@ -88,6 +88,7 @@ Integer endian_transform(Integer value) {
 
 
 template<typename POD>
+[[gnu::always_inline]]
 POD load_unaligned(const void *src) {
     static_assert(std::is_trivially_copyable_v<POD>);
     POD a;
@@ -95,31 +96,44 @@ POD load_unaligned(const void *src) {
     return a;
 }
 
-template<size_t Align, typename POD>
-POD load_aligned(const void *src) {
+template<size_t Align, typename POD, typename Memory>
+[[gnu::always_inline]]
+POD load_aligned(const Memory *src) {
     assert(reinterpret_cast<uintptr_t>(src) % Align == 0);
-    return load_unaligned<POD>(__builtin_assume_aligned(src, Align));
+    if constexpr (std::is_same_v<Memory, POD> && Align >= alignof(POD)) {
+        return *src;
+    } else {
+        return load_unaligned<POD>(__builtin_assume_aligned(src, Align));
+    }
 }
 
-template<typename POD>
-POD load_aligned(const void *src) {
+template<typename POD, typename Memory>
+[[gnu::always_inline]]
+POD load_aligned(const Memory *src) {
     return load_aligned<alignof(POD), POD>(src);
 }
 
 template<typename POD>
+[[gnu::always_inline]]
 void store_unaligned(void *dest, POD a) {
     static_assert(std::is_trivially_copyable_v<POD>);
     memcpy(dest, &a, sizeof(POD));
 }
 
-template<size_t Align, typename POD>
-void store_aligned(void *dest, POD a) {
+template<size_t Align, typename POD, typename Memory>
+[[gnu::always_inline]]
+void store_aligned(Memory *dest, POD a) {
     assert(reinterpret_cast<uintptr_t>(dest) % Align == 0);
-    store_unaligned(__builtin_assume_aligned(dest, Align), a);
+    if constexpr (std::is_same_v<Memory, POD> && Align >= alignof(POD)) {
+        *dest = a;
+    } else {
+        store_unaligned(__builtin_assume_aligned(dest, Align), a);
+    }
 }
 
-template<typename POD>
-void store_aligned(void *dest, POD a) {
+template<typename POD, typename Memory>
+[[gnu::always_inline]]
+void store_aligned(Memory *dest, POD a) {
     store_aligned<alignof(POD), POD>(dest, a);
 }
 
