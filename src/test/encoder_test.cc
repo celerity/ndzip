@@ -287,10 +287,9 @@ TEMPLATE_TEST_CASE("decode(encode(input)) reproduces the input", "[encoder][de]"
 #endif
 
 #if NDZIP_GPU_SUPPORT
-    // SECTION("cpu_encoder::encode() => gpu_encoder::decode()") {
-    //     test_encoder_decoder_pair(cpu_encoder<data_type, dims>{}, gpu_encoder<data_type,
-    //     dims>{});
-    // }
+    SECTION("cpu_encoder::encode() => gpu_encoder::decode()") {
+        test_encoder_decoder_pair(cpu_encoder<data_type, dims>{}, gpu_encoder<data_type, dims>{});
+    }
 
     SECTION("gpu_encoder::encode() => cpu_encoder::decode()") {
         test_encoder_decoder_pair(gpu_encoder<data_type, dims>{}, cpu_encoder<data_type, dims>{});

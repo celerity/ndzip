@@ -1299,40 +1299,54 @@ size_t ndzip::gpu_encoder<T, Dims>::compress(
 template<typename T, unsigned Dims>
 size_t ndzip::gpu_encoder<T, Dims>::decompress(
         const void *stream, size_t bytes, const slice<data_type, dimensions> &data) const {
+    using namespace detail;
+    using namespace detail::gpu;
+
     using profile = detail::profile<T, Dims>;
     using bits_type = typename profile::bits_type;
     using sam = sycl::access::mode;
+    using hc_layout = hypercube_layout<profile::dimensions, inverse_transform_tag>;
 
     detail::file<profile> file(data.size());
 
-    auto local_memory_words_per_hc = detail::gpu::local_memory_words_per_hypercube<profile>;
-    auto max_hcs_per_work_group = detail::gpu::max_work_group_size(
-            local_memory_words_per_hc * sizeof(bits_type), _pimpl->q.get_device());
-
     // TODO the range computation here is questionable at best
-    sycl::buffer<bits_type, 1> stream_buffer{sycl::range<1>{bytes / sizeof(bits_type)}};
+    sycl::buffer<stream_align_t> stream_buffer{
+            sycl::range<1>{div_ceil(bytes, sizeof(stream_align_t))}};
     sycl::buffer<data_type, dimensions> data_buffer{
             detail::gpu::extent_cast<sycl::range<dimensions>>(data.size())};
 
-    detail::gpu::submit_and_profile(_pimpl->q, "copy stream to device", [&](sycl::handler &cgh) {
-        cgh.copy(static_cast<const bits_type *>(stream),
+    submit_and_profile(_pimpl->q, "copy stream to device", [&](sycl::handler &cgh) {
+        cgh.copy(static_cast<const stream_align_t *>(stream),
                 stream_buffer.template get_access<sam::discard_write>(cgh));
     });
 
-    detail::gpu::submit_and_profile(_pimpl->q, "decompress blocks", [&](sycl::handler &cgh) {
+    submit_and_profile(_pimpl->q, "decompress blocks", [&](sycl::handler &cgh) {
         auto stream_acc = stream_buffer.template get_access<sam::read>(cgh);
         auto data_acc = data_buffer.template get_access<sam::discard_write>(cgh);
-        auto local_memory_acc = detail::gpu::local_accessor<bits_type>{
-                local_memory_words_per_hc * max_hcs_per_work_group, cgh};
         auto data_size = data.size();
-        auto hc_range = detail::gpu::hypercube_range{file.num_hypercubes(), max_hcs_per_work_group};
-        cgh.parallel_for<detail::gpu::stream_decompression_kernel<T, Dims>>(
-                hc_range.item_space(), [=](detail::gpu::hypercube_item item) {
-                    if (hc_range.contains(item)) {
-                        detail::gpu::decompress_hypercubes<profile>(stream_acc.get_pointer(),
-                                data_acc.get_pointer(), local_memory_acc.get_pointer(), data_size,
-                                hc_range, item);
+        auto num_hypercubes = file.num_hypercubes();
+        cgh.parallel<stream_decompression_kernel<T, Dims>>(sycl::range<1>{file.num_hypercubes()},
+                sycl::range<1>{hypercube_group_size},
+                [=](hypercube_group grp, sycl::physical_item<1>) {
+                    slice<data_type, dimensions> data{data_acc.get_pointer(), data_size};
+                    hypercube_memory<bits_type, hc_layout> lm{grp};
+                    hypercube_ptr<profile, inverse_transform_tag> hc{lm()};
+
+                    detail::gpu::stream<profile> stream{num_hypercubes, stream_acc.get_pointer()};
+                    index_type hc_index = grp.get_id(0);
+                    index_type hc_offset;
+                    if (hc_index == 0) {
+                        hc_offset = num_hypercubes * sizeof(file_offset_type) / sizeof(bits_type);
+                    } else {
+                        hc_offset = stream.offset_after(hc_index - 1);
                     }
+
+                    read_transposed_chunks<profile>(grp, hc,
+                            reinterpret_cast<const bits_type *>(
+                                    static_cast<const stream_align_t *>(stream_acc.get_pointer()))
+                                    + hc_offset);
+                    inverse_block_transform<profile>(grp, hc);
+                    store_hypercube(grp, hc_index, {data}, hc);
                 });
     });
 
@@ -1347,6 +1361,7 @@ size_t ndzip::gpu_encoder<T, Dims>::decompress(
 
     data_copy_event.wait();
 
+    // TODO GPU border handling!
     stream_pos += detail::unpack_border(data, static_cast<const std::byte *>(stream) + stream_pos,
             profile::hypercube_side_length);
 
