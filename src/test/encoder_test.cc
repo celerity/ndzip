@@ -60,16 +60,12 @@ TEMPLATE_TEST_CASE("CPU zero-word compaction is reversible", "[cpu]", uint32_t, 
     }
 
     std::vector<std::byte> compact((bitsof<TestType> + 1) * sizeof(TestType));
-    auto zero_map = zero_map_from_transposed(input.data());
-    auto compact_stream = compact.data();
-    store_aligned(compact_stream, zero_map);
-    compact_stream += sizeof(TestType);
-    compact_stream += cpu::compact_zero_words(input.data(), compact_stream);
-    auto bytes_written = static_cast<size_t>(compact_stream - compact.data());
-    CHECK(bytes_written == (bitsof<TestType> + 1 - zeroes) * sizeof(TestType));
+    auto head = zero_map_from_transposed(input.data());
+    auto bytes_written = cpu::compact_zero_words(input.data(), compact.data());
+    CHECK(bytes_written == (bitsof<TestType> - zeroes) * sizeof(TestType));
 
     std::vector<TestType> output(bitsof<TestType>);
-    auto bytes_read = cpu::expand_zero_words(compact.data(), output.data());
+    auto bytes_read = cpu::expand_zero_words(compact.data(), output.data(), head);
     CHECK(bytes_read == bytes_written);
     CHECK(output == std::vector<TestType>(input.data(), input.data() + bitsof<TestType>));
 }
@@ -735,7 +731,7 @@ TEMPLATE_TEST_CASE("CPU and GPU hypercube encodings are equivalent", "[gpu]", (p
         cgh.parallel<gpu_hypercube_compact_test_kernel<TestType>>(
                 sycl::range<1>{hc_size / group_size}, sycl::range<1>{group_size},
                 [=](sycl::group<1> grp, sycl::physical_item<1> phys_idx) {
-                    gpu::compact_chunks(grp,
+                    gpu::compact_chunks<TestType>(grp,
                             static_cast<const bits_type *>(heads_acc.get_pointer()),
                             static_cast<const bits_type *>(columns_acc.get_pointer()),
                             static_cast<const gpu::index_type *>(chunk_lengths_acc.get_pointer()),

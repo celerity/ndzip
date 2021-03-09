@@ -196,7 +196,7 @@ template<unsigned SideLength, typename Bits>
 }
 
 template<typename Profile>
-void block_transform_avx2(typename Profile::value_type *x) {
+void block_transform_avx2(typename Profile::bits_type *x) {
     constexpr size_t dims = Profile::dimensions;
     constexpr size_t side_length = Profile::hypercube_side_length;
 
@@ -292,7 +292,7 @@ template<unsigned SideLength, typename Bits>
 }
 
 template<typename Profile>
-void inverse_block_transform_avx2(typename Profile::value_type *x) {
+void inverse_block_transform_avx2(typename Profile::bits_type *x) {
     constexpr size_t dims = Profile::dimensions;
     constexpr size_t side_length = Profile::hypercube_side_length;
 
@@ -528,9 +528,8 @@ template<typename T>
 }
 
 template<typename T>
-[[gnu::always_inline]] size_t expand_zero_words(const std::byte *in0, T *shifted) {
-    auto in = in0 + sizeof(T);
-    auto head = load_aligned<T>(in0);
+[[gnu::always_inline]] size_t expand_zero_words(const std::byte *in0, T *shifted, T head) {
+    auto in = in0;
     for (unsigned i = 0; i < bitsof<T>; ++i) {
         if ((head >> (bitsof<T> - 1 - i)) & T{1}) {
             shifted[i] = load_aligned<T>(in);
@@ -545,38 +544,41 @@ template<typename T>
 
 template<typename Bits>
 [[gnu::noinline]] size_t zero_bit_encode(const Bits *cube, std::byte *stream, size_t hc_size) {
-    size_t pos = 0;
+    size_t head_pos = 0;
+    size_t body_pos = hc_size / detail::bitsof<Bits> * sizeof(Bits);
     for (size_t offset = 0; offset < hc_size; offset += detail::bitsof<Bits>) {
         auto in = cube + offset;
         auto zero_map = generate_zero_map(in);
-        store_aligned(stream + pos, zero_map);
-        pos += sizeof(Bits);
+        store_aligned(stream + head_pos, zero_map);
+        head_pos += sizeof(Bits);
         // all-zero is relatively common, transpose+compact is expensive
         if (zero_map != 0) {
             alignas(simd_width_bytes) Bits transposed[detail::bitsof<Bits>];
             detail::cpu::transpose_bits(in, transposed);
-            pos += detail::cpu::compact_zero_words(transposed, stream + pos);
+            body_pos += detail::cpu::compact_zero_words(transposed, stream + body_pos);
         }
     }
 
-    return pos;
+    return body_pos;
 }
 
 template<typename Bits>
 [[gnu::noinline]] size_t zero_bit_decode(const std::byte *stream, Bits *cube, size_t hc_size) {
-    size_t pos = 0;
+    size_t head_pos = 0;
+    size_t body_pos = hc_size / detail::bitsof<Bits> * sizeof(Bits);
     for (size_t i = 0; i < hc_size; i += detail::bitsof<Bits>) {
         alignas(simd_width_bytes) Bits transposed[detail::bitsof<Bits>];
-        if (load_aligned<Bits>(stream + pos) == 0) {
+        auto head = load_aligned<Bits>(stream + head_pos);
+        head_pos += sizeof(Bits);
+        if (head == 0) {
             // fast path (all_zero is relatively common, transpose+compact is expensive)
-            memset(cube + i, 0, sizeof transposed);
-            pos += sizeof(Bits);
+            memset(__builtin_assume_aligned(cube + i, alignof(Bits)), 0, sizeof transposed);
         } else {
-            pos += detail::cpu::expand_zero_words(stream + pos, transposed);
+            body_pos += detail::cpu::expand_zero_words(stream + body_pos, transposed, head);
             detail::cpu::transpose_bits(transposed, cube + i);
         }
     }
-    return pos;
+    return body_pos;
 }
 
 }  // namespace ndzip::detail::cpu

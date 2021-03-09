@@ -955,7 +955,9 @@ void write_transposed_chunks(hypercube_group grp, hypercube_ptr<Profile, forward
                             sg, index_type{column != 0}, sycl::plus<index_type>{});
                     if (column != 0) { out_columns[base + relative_pos] = column; }
                 }
-                if (warp_index % (chunk_size / warp_size) == 0) { this_warp_size += 1; }
+                if (warp_index == 0) {
+                    this_warp_size += hc_size / chunk_size;  // heads
+                }
                 if (sg.leader()) {
                     // TODO collect in local memory, write coalesced - otherwise 3 full GM
                     //  transaction per HC instead of 1!
@@ -966,27 +968,39 @@ void write_transposed_chunks(hypercube_group grp, hypercube_ptr<Profile, forward
 }
 
 
-template<typename Bits>
-void compact_chunks(sycl::group<1> grp, const Bits *heads, const Bits *columns,
-        const index_type *offsets, Bits *stream) {
+template<typename Profile>
+void compact_chunks(sycl::group<1> grp, const typename Profile::bits_type *heads,
+        const typename Profile::bits_type *columns, const index_type *offsets,
+        typename Profile::bits_type *stream) {
     // One group per warp (for subgroup reductions)
-    constexpr index_type chunk_size = bitsof<Bits>;
+    using bits_type = typename Profile::bits_type;
+    constexpr index_type hc_size = ipow(Profile::hypercube_side_length, Profile::dimensions);
+    constexpr index_type chunk_size = bitsof<bits_type>;
+    constexpr index_type warps_per_hc = hc_size / warp_size;
+    constexpr index_type warps_per_chunk = chunk_size / warp_size;
 
     grp.distribute_for([&](sycl::sub_group sg, sycl::logical_item<1> idx) {
         auto item = idx.get_global_id(0);
         auto warp_index = item / warp_size;
 
-        auto offset = offsets[warp_index];
-        if (warp_index % (chunk_size / warp_size) == 0) {
-            Bits head = 0;
+        auto body_offset = offsets[warp_index];
+        if (warp_index % warps_per_chunk == 0) {
+            bits_type head = 0;
             for (index_type i = 0; i < (chunk_size / warp_size); ++i) {
                 head |= heads[warp_index + i];
             }
-            if (sg.leader()) { stream[offset] = head; }
-            offset += 1;
+            if (sg.leader()) {
+                auto hc_first_warp_index = floor(warp_index, warps_per_hc);
+                auto head_offset = offsets[hc_first_warp_index]
+                        + (warp_index - hc_first_warp_index) / warps_per_chunk;
+                stream[head_offset] = head;
+            }
         }
+        if (warp_index % warps_per_hc == 0) { body_offset += hc_size / chunk_size; }
         index_type tid = sg.get_local_id()[0];
-        if (offset + tid < offsets[warp_index + 1]) { stream[offset + tid] = columns[item]; }
+        if (body_offset + tid < offsets[warp_index + 1]) {
+            stream[body_offset + tid] = columns[item];
+        }
     });
 }
 
@@ -1202,7 +1216,8 @@ size_t ndzip::gpu_encoder<T, Dims>::compress(
         cgh.parallel<stream_compaction_kernel<T, Dims>>(
                 sycl::range<1>{hc_size / group_size * num_hypercubes}, sycl::range<1>{group_size},
                 [=](sycl::group<1> grp, sycl::physical_item<1>) {
-                    compact_chunks(grp, static_cast<const bits_type *>(heads_acc.get_pointer()),
+                    compact_chunks<profile>(grp,
+                            static_cast<const bits_type *>(heads_acc.get_pointer()),
                             static_cast<const bits_type *>(columns_acc.get_pointer()),
                             static_cast<const index_type *>(offsets_acc.get_pointer()),
                             reinterpret_cast<bits_type *>(
