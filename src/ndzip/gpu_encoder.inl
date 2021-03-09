@@ -864,6 +864,19 @@ void inverse_transform_lanes(
 }
 
 
+unsigned popcount(unsigned int x) {
+    return __builtin_popcount(x);
+}
+
+unsigned popcount(unsigned long x) {
+    return __builtin_popcountl(x);
+}
+
+unsigned popcount(unsigned long long x) {
+    return __builtin_popcountll(x);
+}
+
+
 template<typename Profile>
 void inverse_block_transform(
         hypercube_group grp, hypercube_ptr<Profile, inverse_transform_tag> hc) {
@@ -945,11 +958,7 @@ void write_transposed_chunks(hypercube_group grp, hypercube_ptr<Profile, forward
                                           & bits_type{1})
                                 << (chunk_size - 1 - i);
                     }
-                    if constexpr (sizeof(bits_type) == 4) {
-                        this_warp_size = __builtin_popcount(head);
-                    } else {
-                        this_warp_size = __builtin_popcountl(head);
-                    }
+                    this_warp_size = popcount(head);
                     auto base = floor(item, warp_size);
                     auto relative_pos = sycl::group_exclusive_scan(
                             sg, index_type{column != 0}, sycl::plus<index_type>{});
@@ -964,6 +973,45 @@ void write_transposed_chunks(hypercube_group grp, hypercube_ptr<Profile, forward
                     out_heads[warp_index] = head;
                     out_lengths[warp_index] = this_warp_size;
                 }
+            });
+}
+
+
+template<typename Profile>
+void read_transposed_chunks(hypercube_group grp, hypercube_ptr<Profile, inverse_transform_tag> hc,
+        const typename Profile::bits_type *stream) {
+    using bits_type = typename Profile::bits_type;
+    constexpr index_type hc_size = ipow(Profile::hypercube_side_length, Profile::dimensions);
+    constexpr index_type chunk_size = bitsof<bits_type>;
+    constexpr index_type num_chunks = hc_size / chunk_size;
+
+    sycl::local_memory<index_type[1 + num_chunks]> chunk_offsets{grp};
+    grp.distribute_for(
+            num_chunks, [&](index_type item) { chunk_offsets[1 + item] = popcount(stream[item]); });
+    grp.single_item([&] { chunk_offsets[0] = num_chunks; });
+    inclusive_scan<num_chunks>(grp, chunk_offsets(), sycl::plus<index_type>());
+
+    grp.distribute_for(
+            hc_size, [&](index_type item, index_type, sycl::logical_item<1>, sycl::sub_group sg) {
+                auto chunk_index = item / chunk_size;
+                auto head = stream[chunk_index];
+
+                bits_type row = 0;
+                if (head != 0) {
+                    auto offset = chunk_offsets[chunk_index];
+                    const auto chunk_base = floor(item, chunk_size);
+                    const auto cell = item - chunk_base;
+                    for (index_type i = 0; i < chunk_size; ++i) {
+                        // TODO for double, can we still operate on 32 bit words? e.g split into
+                        //  low / high loop
+                        if ((head >> (chunk_size - 1 - i)) & bits_type{1}) {
+                            row |= (stream[offset] >> (chunk_size - 1 - cell) & bits_type{1})
+                                    << (chunk_size - 1 - i);
+                            offset += 1;
+                        }
+                    }
+                }
+                hc.store(item, row);
             });
 }
 

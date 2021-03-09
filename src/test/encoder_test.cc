@@ -648,6 +648,62 @@ TEMPLATE_TEST_CASE("GPU zero-word expansion works", "[gpu]", uint32_t, uint64_t)
 
 
 template<typename>
+class gpu_hypercube_decode_test_kernel;
+
+TEMPLATE_TEST_CASE(
+        "GPU hypercube decoding works", "[gpu]", (profile<float, 1>), (profile<double, 1>) ) {
+    using bits_type = typename TestType::bits_type;
+    const auto hc_size = ipow(TestType::hypercube_side_length, TestType::dimensions);
+    using hc_layout = gpu::hypercube_layout<TestType::dimensions, gpu::inverse_transform_tag>;
+
+    auto input = make_random_vector<bits_type>(hc_size);
+    for (size_t i = 0; i < hc_size; ++i) {
+        for (auto idx : {0, 12, 13, 29, static_cast<int>(bitsof<bits_type> - 2)}) {
+            input[i] &= ~(bits_type{1} << ((static_cast<unsigned>(idx) * (i / bitsof<bits_type>) )
+                                  % bitsof<bits_type>) );
+            input[gpu::floor(i, bitsof<bits_type>) + idx] = 0;
+        }
+    }
+
+    cpu::simd_aligned_buffer<bits_type> cpu_cube(input.size());
+    memcpy(cpu_cube.data(), input.data(), input.size() * sizeof(bits_type));
+    std::vector<bits_type> stream(hc_size * 2);
+    auto cpu_length = cpu::zero_bit_encode(
+            cpu_cube.data(), reinterpret_cast<std::byte *>(stream.data()), hc_size);
+
+    sycl::queue q{sycl::gpu_selector{}};
+
+    buffer<bits_type> stream_buf{range<1>{cpu_length}};
+    q.submit([&](handler &cgh) {
+        cgh.copy(stream.data(), stream_buf.template get_access<sam::discard_write>());
+    });
+
+    buffer<bits_type> output_buf{range<1>{hc_size}};
+    q.submit([&](handler &cgh) {
+        auto stream_acc = stream_buf.template get_access<sam::read>(cgh);
+        auto output_acc = output_buf.template get_access<sam::discard_write>(cgh);
+        cgh.parallel<gpu_hypercube_decode_test_kernel<TestType>>(sycl::range{1},
+                sycl::range<1>{gpu::hypercube_group_size},
+                [stream_acc, output_acc](gpu::hypercube_group grp, sycl::physical_item<1>) {
+                    gpu::hypercube_memory<bits_type, hc_layout> lm{grp};
+                    gpu::hypercube_ptr<TestType, gpu::inverse_transform_tag> hc{lm()};
+                    gpu::read_transposed_chunks<TestType>(grp, hc, stream_acc.get_pointer());
+                    grp.distribute_for(
+                            hc_size, [&](gpu::index_type i) { output_acc[i] = hc.load(i); });
+                });
+    });
+
+    std::vector<bits_type> output(hc_size);
+    q.submit([&](handler &cgh) {
+        cgh.copy(output_buf.template get_access<sam::read>(cgh), output.data());
+    });
+    q.wait();
+
+    check_for_vector_equality(output, input);
+}
+
+
+template<typename>
 class gpu_hypercube_transpose_test_kernel;
 template<typename>
 class gpu_hypercube_compact_test_kernel;
