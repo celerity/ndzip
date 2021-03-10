@@ -664,52 +664,6 @@ TEMPLATE_TEST_CASE("CPU and GPU inverse block transforms are identical", "[gpu]"
             });
 }
 
-template<typename>
-class gpu_expand_zero_words_test_kernel;
-
-TEMPLATE_TEST_CASE("GPU zero-word expansion works", "[gpu]", uint32_t, uint64_t) {
-    auto input = make_random_vector<TestType>(bitsof<TestType>);
-    for (auto idx : {0, 12, 13, 29, static_cast<int>(bitsof<TestType> - 2)}) {
-        input[idx] = 0;
-    }
-
-    std::vector<TestType> cpu_compacted(bitsof<TestType>);
-    cpu_compacted[0] = zero_map_from_transposed(input.data());
-    cpu::compact_zero_words(input.data(), reinterpret_cast<std::byte *>(cpu_compacted.data() + 1));
-
-    sycl::queue q{sycl::gpu_selector{}};
-
-    buffer<TestType> compacted_buf{range<1>{cpu_compacted.size()}};
-    q.submit([&](handler &cgh) {
-        cgh.copy(cpu_compacted.data(), compacted_buf.template get_access<sam::discard_write>());
-    });
-
-    std::vector<TestType> gpu_expanded(bitsof<TestType>);
-    buffer<TestType> expanded_buf{range<1>{gpu_expanded.size()}};
-    const auto scratch_size = 2 * bitsof<TestType>;
-    q.submit([&](handler &cgh) {
-        auto input_acc = compacted_buf.template get_access<sam::read>(cgh);
-        auto output_acc = expanded_buf.template get_access<sam::write>(cgh);
-        auto local_out_acc
-                = accessor<TestType, 1, sam::read_write, sat::local>(bitsof<TestType>, cgh);
-        auto scratch_acc = accessor<TestType, 1, sam::read_write, sat::local>(scratch_size, cgh);
-        cgh.parallel_for<gpu_expand_zero_words_test_kernel<TestType>>(gpu::work_range{1},
-                [input_acc, output_acc, local_out_acc, scratch_acc](gpu::work_item item) {
-                    gpu::expand_zero_words<TestType>(local_out_acc.get_pointer(),
-                            input_acc.get_pointer(), scratch_acc.get_pointer(), item);
-                    item.local_memory_barrier();
-                    gpu::nd_memcpy(output_acc, local_out_acc, output_acc.get_range()[0], item);
-                });
-    });
-
-    q.submit([&](handler &cgh) {
-        cgh.copy(expanded_buf.template get_access<sam::read>(cgh), gpu_expanded.data());
-    });
-    q.wait();
-
-    check_for_vector_equality(gpu_expanded, input);
-}
-
 
 template<typename>
 class gpu_hypercube_decode_test_kernel;
@@ -800,7 +754,8 @@ TEMPLATE_TEST_CASE("CPU and GPU hypercube encodings are equivalent", "[gpu]", AL
 
     buffer<bits_type> heads_buf{range<1>{hc_size / gpu::warp_size}};
     buffer<bits_type> columns_buf{range<1>{hc_size}};
-    buffer<gpu::index_type> chunk_lengths_buf{1 + range<1>{hc_size / gpu::warp_size}};
+    buffer<gpu::index_type> chunk_lengths_buf{range<1>{gpu::ceil(
+            1 + hc_size / gpu::warp_size, gpu::hierarchical_inclusive_scan_granularity)}};
 
     q.submit([&](handler &cgh) {
         auto input_acc = input_buf.template get_access<sam::read>(cgh);
@@ -823,9 +778,7 @@ TEMPLATE_TEST_CASE("CPU and GPU hypercube encodings are equivalent", "[gpu]", AL
                 });
     });
 
-    gpu::hierarchical_inclusive_prefix_sum<gpu::index_type> prefix_sum(
-            hc_size / gpu::warp_size + 1, 256 /* local size */);
-    prefix_sum(q, chunk_lengths_buf);
+    gpu::hierarchical_inclusive_scan(q, chunk_lengths_buf, sycl::plus<gpu::index_type>{});
 
     buffer<bits_type> stream_buf(range<1>{hc_size * 2});
     q.submit([&](handler &cgh) {
@@ -875,63 +828,6 @@ TEMPLATE_TEST_CASE("CPU and GPU hypercube encodings are equivalent", "[gpu]", AL
 
     CHECK(gpu_length == cpu_length);
     check_for_vector_equality(gpu_stream, cpu_stream);
-}
-
-
-TEST_CASE("hierarchical_inclusive_prefix_sum produces the expected results", "[gpu]") {
-    std::vector<size_t> input(1'000'000);
-    std::iota(input.begin(), input.end(), size_t{});
-
-    std::vector<size_t> cpu_prefix_sum(input.size());
-    std::inclusive_scan(input.begin(), input.end(), cpu_prefix_sum.begin());
-
-    sycl::buffer<size_t> prefix_sum_buffer(sycl::range<1>(input.size()));
-    gpu::hierarchical_inclusive_prefix_sum<size_t> gpu_prefix_sum_operator(input.size(), 256);
-    sycl::queue q{sycl::gpu_selector{}};
-    q.submit([&](sycl::handler &cgh) {
-        cgh.copy(input.data(), prefix_sum_buffer.get_access<sam::discard_write>(cgh));
-    });
-
-    gpu_prefix_sum_operator(q, prefix_sum_buffer);
-
-    std::vector<size_t> gpu_prefix_sum(input.size());
-    q.submit([&](sycl::handler &cgh) {
-        cgh.copy(prefix_sum_buffer.get_access<sam::read>(cgh), gpu_prefix_sum.data());
-    });
-    q.wait();
-
-    check_for_vector_equality(gpu_prefix_sum, cpu_prefix_sum);
-}
-
-
-TEST_CASE("hypercube_range can index past the CUDA index space limit", "[gpu]") {
-    sycl::queue q{sycl::gpu_selector{}};
-    auto num = size_t{100000};
-    auto offset = size_t{10};
-    auto write_buffer = sycl::buffer<size_t>{sycl::range<1>{num}};
-    q.submit([&](sycl::handler &cgh) {
-        cgh.fill(write_buffer.get_access<sam::discard_write>(cgh), size_t{0});
-    });
-    q.submit([&](sycl::handler &cgh) {
-        auto write_acc = write_buffer.get_access<sam::write>(cgh);
-        auto hc_range = gpu::hypercube_range{num - offset, 1, offset};
-        cgh.parallel_for(hc_range.item_space(), [=](gpu::hypercube_item item) {
-            if (hc_range.contains(item) && item.thread_id() == 0) {
-                auto index = hc_range.global_index_of(item);
-                write_acc[index] = index;
-            }
-        });
-    });
-    auto gpu_iota = std::vector<size_t>(num);
-    q.submit([&](sycl::handler &cgh) {
-        cgh.copy(write_buffer.get_access<sam::read>(cgh), gpu_iota.data());
-    });
-
-    auto cpu_iota = std::vector<size_t>(num);
-    std::iota(cpu_iota.begin() + offset, cpu_iota.end(), offset);
-
-    q.wait();
-    check_for_vector_equality(cpu_iota, gpu_iota);
 }
 
 #endif

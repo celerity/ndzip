@@ -159,7 +159,8 @@ TEMPLATE_TEST_CASE("Chunk encoding", "[encode]", ALL_PROFILES) {
 
     sycl::buffer<bits_type> columns(n_blocks * hc_size);
     sycl::buffer<bits_type> heads(n_blocks * warps_per_hc);
-    sycl::buffer<index_type> lengths(1 + n_blocks * warps_per_hc);
+    sycl::buffer<index_type> lengths(ceil(1 + n_blocks * warps_per_hc,
+            gpu::hierarchical_inclusive_scan_granularity));
 
     SYCL_BENCHMARK("Transpose only")(sycl::queue & q) {
         return q.submit([&](sycl::handler &cgh) {
@@ -184,10 +185,8 @@ TEMPLATE_TEST_CASE("Chunk encoding", "[encode]", ALL_PROFILES) {
     };
 
     {
-        hierarchical_inclusive_prefix_sum<index_type> prefix_sum(
-                1 + n_blocks * hc_size / warp_size, 256 /* local size */);
         sycl::queue q;
-        prefix_sum(q, lengths);
+        gpu::hierarchical_inclusive_scan(q, lengths, sycl::plus<gpu::index_type>{});
     }
 
     sycl::buffer<bits_type> stream(n_blocks * (hc_size + hc_size / warp_size));
@@ -202,7 +201,8 @@ TEMPLATE_TEST_CASE("Chunk encoding", "[encode]", ALL_PROFILES) {
             cgh.parallel<chunk_compact_kernel<TestType>>(
                     sycl::range<1>{hc_size / group_size * n_blocks}, sycl::range<1>{group_size},
                     [=](sycl::group<1> grp, sycl::physical_item<1>) {
-                        compact_chunks(grp, static_cast<const bits_type *>(h.get_pointer()),
+                        compact_chunks<TestType>(
+                                grp, static_cast<const bits_type *>(h.get_pointer()),
                                 static_cast<const bits_type *>(c.get_pointer()),
                                 static_cast<const index_type *>(l.get_pointer()),
                                 static_cast<bits_type *>(s.get_pointer()));
