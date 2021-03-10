@@ -23,6 +23,24 @@ constexpr Integer floor(Integer x, Integer multiple) {
 }
 
 
+template<typename CGF>
+auto submit_and_profile(sycl::queue &q, const char *label, CGF &&cgf) {
+    if (auto env = getenv("NDZIP_VERBOSE"); env && *env) {
+        // no kernel profiling in hipSYCL yet!
+        q.wait_and_throw();
+        auto before = std::chrono::system_clock::now();
+        auto evt = q.submit(std::forward<CGF>(cgf));
+        q.wait_and_throw();
+        auto after = std::chrono::system_clock::now();
+        auto seconds = std::chrono::duration_cast<std::chrono::duration<double>>(after - before);
+        printf("[profile] %s: %.3fms\n", label, seconds.count() * 1e3);
+        return evt;
+    } else {
+        return q.submit(std::forward<CGF>(cgf));
+    }
+}
+
+
 using index_type = uint64_t;
 
 // TODO _should_ be a template parameter with selection based on queue (/device?) properties.
@@ -112,7 +130,6 @@ class known_size_group : public sycl::group<1> {
 };
 
 template<index_type Range, index_type LocalSize, typename Accessor, typename BinaryOp>
-[[gnu::always_inline]]
 std::enable_if_t<(Range <= warp_size)>
 inclusive_scan(known_size_group<LocalSize> grp, Accessor acc, BinaryOp op) {
     static_assert(LocalSize % warp_size == 0);
@@ -125,7 +142,6 @@ inclusive_scan(known_size_group<LocalSize> grp, Accessor acc, BinaryOp op) {
 }
 
 template<index_type Range, index_type LocalSize, typename Accessor, typename BinaryOp>
-[[gnu::always_inline]]
 std::enable_if_t<(Range > warp_size)>
 inclusive_scan(known_size_group<LocalSize> grp, Accessor acc, BinaryOp op) {
     static_assert(LocalSize % warp_size == 0);
@@ -135,17 +151,96 @@ inclusive_scan(known_size_group<LocalSize> grp, Accessor acc, BinaryOp op) {
     sycl::local_memory<value_type[div_ceil(Range, warp_size)]> coarse{grp};
     grp.template distribute_for<ceil(Range, warp_size)>([&](index_type item, index_type iteration,
                                                                 sycl::logical_item<1> idx,
-                                                                sycl::sub_group sg)  {
+                                                                sycl::sub_group sg) {
         fine(idx)[iteration] = sycl::group_inclusive_scan(sg, item < Range ? acc[item] : 0, op);
         if (item % warp_size == warp_size - 1) { coarse[item / warp_size] = fine(idx)[iteration]; }
     });
     inclusive_scan<div_ceil(Range, warp_size)>(grp, coarse(), op);
     grp.template distribute_for<Range>(
-            [&](index_type item, index_type iteration, sycl::logical_item<1> idx)  {
+            [&](index_type item, index_type iteration, sycl::logical_item<1> idx) {
                 auto value = fine(idx)[iteration];
                 if (item >= warp_size) { value = op(value, coarse[item / warp_size - 1]); }
                 acc[item] = value;
             });
+}
+
+template<typename, typename>
+class hierarchical_inclusive_scan_reduction_kernel;
+
+template<typename, typename>
+class hierarchical_inclusive_scan_expansion_kernel;
+
+inline constexpr index_type hierarchical_inclusive_scan_granularity = 512;
+
+template<typename Scalar, typename BinaryOp>
+void hierarchical_inclusive_scan(
+        sycl::queue &queue, sycl::buffer<Scalar> &in_out_buffer, BinaryOp op = {}) {
+    using sam = sycl::access::mode;
+
+    constexpr index_type granularity = hierarchical_inclusive_scan_granularity;
+    constexpr index_type local_size = 256;
+
+    std::vector<sycl::buffer<Scalar>> intermediate_bufs;
+    {
+        size_t n_elems = in_out_buffer.get_count();
+        assert(n_elems % granularity == 0);  // otherwise we will overrun the in_out buffer bounds
+
+        while (n_elems > 1) {
+            n_elems = div_ceil(n_elems, granularity);
+            intermediate_bufs.emplace_back(n_elems);
+        }
+    }
+
+    for (size_t i = 0; i < intermediate_bufs.size(); ++i) {
+        auto &big_buffer = i > 0 ? intermediate_bufs[i - 1] : in_out_buffer;
+        auto &small_buffer = intermediate_bufs[i];
+        const auto group_range = sycl::range<1>{div_ceil(big_buffer.get_count(), granularity)};
+        const auto local_range = sycl::range<1>{local_size};
+
+        char label[50];
+        sprintf(label, "hierarchical_inclusive_scanner reduce %zu", i);
+        submit_and_profile(queue, label, [&](sycl::handler &cgh) {
+            auto big_acc = big_buffer.template get_access<sam::read_write>(cgh);
+            auto small_acc = small_buffer.template get_access<sam::discard_write>(cgh);
+            cgh.parallel<hierarchical_inclusive_scan_reduction_kernel<Scalar, BinaryOp>>(
+                    group_range, local_range,
+                    [big_acc, small_acc, op](
+                            known_size_group<local_size> grp, sycl::physical_item<1>) {
+                        auto group_index = grp.get_id(0);
+                        Scalar *big = &big_acc[group_index * granularity];
+                        Scalar &small = small_acc[group_index];
+                        inclusive_scan<granularity>(grp, big, op);
+                        // TODO unnecessary GM read from big -- maybe return final sum
+                        //  in the last item? Or allow additional accessor in inclusive_scan?
+                        grp.single_item([&] { small = big[granularity - 1]; });
+                    });
+        });
+    }
+
+    for (size_t i = 1; i < intermediate_bufs.size(); ++i) {
+        auto ii = intermediate_bufs.size() - 1 - i;
+        auto &small_buffer = intermediate_bufs[ii];
+        auto &big_buffer = ii > 0 ? intermediate_bufs[ii - 1] : in_out_buffer;
+        const auto group_range = sycl::range<1>{div_ceil(big_buffer.get_count(), granularity) - 1};
+        const auto local_range = sycl::range<1>{local_size};
+
+        char label[50];
+        sprintf(label, "hierarchical_inclusive_scanner expand %zu", ii);
+        submit_and_profile(queue, label, [&](sycl::handler &cgh) {
+            auto small_acc = small_buffer.template get_access<sam::read>(cgh);
+            auto big_acc = big_buffer.template get_access<sam::read_write>(cgh);
+            cgh.parallel<hierarchical_inclusive_scan_expansion_kernel<Scalar, BinaryOp>>(
+                    group_range, local_range,
+                    [small_acc, big_acc, op](
+                            known_size_group<local_size> grp, sycl::physical_item<1>) {
+                        auto group_index = grp.get_id(0);
+                        Scalar *big = &big_acc[(group_index + 1) * granularity];
+                        Scalar small = small_acc[group_index];
+                        grp.distribute_for(
+                                granularity, [&](index_type i) { big[i] = op(big[i], small); });
+                    });
+        });
+    }
 }
 
 }  // namespace ndzip::detail::gpu

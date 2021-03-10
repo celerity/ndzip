@@ -103,25 +103,6 @@ class hypercube_range {
     size_t _first_hc_index;
 };
 
-
-template<typename CGF>
-auto submit_and_profile(sycl::queue &q, const char *label, CGF &&cgf) {
-    if (auto env = getenv("NDZIP_VERBOSE"); env && *env) {
-        // no kernel profiling in hipSYCL yet!
-        q.wait_and_throw();
-        auto before = std::chrono::system_clock::now();
-        auto evt = q.submit(std::forward<CGF>(cgf));
-        q.wait_and_throw();
-        auto after = std::chrono::system_clock::now();
-        auto seconds = std::chrono::duration_cast<std::chrono::duration<double>>(after - before);
-        printf("[profile] %s: %.3fms\n", label, seconds.count() * 1e3);
-        return evt;
-    } else {
-        return q.submit(std::forward<CGF>(cgf));
-    }
-}
-
-
 template<typename DestAccessor, typename SourceAccessor>
 void nd_memcpy(
         const DestAccessor &dest, const SourceAccessor &source, size_t count, work_item item) {
@@ -1193,7 +1174,8 @@ size_t ndzip::gpu_encoder<T, Dims>::compress(
 
     sycl::buffer<bits_type> columns_buf(num_hypercubes * hc_size);
     sycl::buffer<bits_type> heads_buf(num_hypercubes * warps_per_hc);
-    sycl::buffer<index_type> chunk_lengths_buf(1 + num_hypercubes * warps_per_hc);
+    sycl::buffer<index_type> chunk_lengths_buf(ceil(1 + num_hypercubes * warps_per_hc,
+            hierarchical_inclusive_scan_granularity));
 
     submit_and_profile(_pimpl->q, "transform + chunk encode", [&](sycl::handler &cgh) {
         auto data_acc = data_buffer.template get_access<sam::read>(cgh);
@@ -1227,9 +1209,7 @@ size_t ndzip::gpu_encoder<T, Dims>::compress(
                 cgh.copy(chunk_lengths_buf.get_access<sam::read>(cgh), dbg_lengths.data());
             })
             .wait();
-    hierarchical_inclusive_prefix_sum<index_type> prefix_sum(
-            1 + num_hypercubes * warps_per_hc, 256 /* local size */);
-    prefix_sum(_pimpl->q, chunk_lengths_buf);
+    hierarchical_inclusive_scan(_pimpl->q, chunk_lengths_buf, sycl::plus<index_type>{});
     std::vector<index_type> dbg_offsets(chunk_lengths_buf.get_range()[0]);
     _pimpl->q
             .submit([&](sycl::handler &cgh) {
