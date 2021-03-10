@@ -1325,26 +1325,16 @@ size_t ndzip::gpu_encoder<T, Dims>::decompress(
         auto data_acc = data_buffer.template get_access<sam::discard_write>(cgh);
         auto data_size = data.size();
         auto num_hypercubes = file.num_hypercubes();
-        cgh.parallel<stream_decompression_kernel<T, Dims>>(sycl::range<1>{file.num_hypercubes()},
+        cgh.parallel<stream_decompression_kernel<T, Dims>>(sycl::range<1>{num_hypercubes},
                 sycl::range<1>{hypercube_group_size},
                 [=](hypercube_group grp, sycl::physical_item<1>) {
                     slice<data_type, dimensions> data{data_acc.get_pointer(), data_size};
                     hypercube_memory<bits_type, hc_layout> lm{grp};
                     hypercube_ptr<profile, inverse_transform_tag> hc{lm()};
 
-                    detail::gpu::stream<profile> stream{num_hypercubes, stream_acc.get_pointer()};
                     index_type hc_index = grp.get_id(0);
-                    index_type hc_offset;
-                    if (hc_index == 0) {
-                        hc_offset = num_hypercubes * sizeof(file_offset_type) / sizeof(bits_type);
-                    } else {
-                        hc_offset = stream.offset_after(hc_index - 1);
-                    }
-
-                    read_transposed_chunks<profile>(grp, hc,
-                            reinterpret_cast<const bits_type *>(
-                                    static_cast<const stream_align_t *>(stream_acc.get_pointer()))
-                                    + hc_offset);
+                    detail::gpu::stream<profile> stream{num_hypercubes, stream_acc.get_pointer()};
+                    read_transposed_chunks<profile>(grp, hc, stream.hypercube(hc_index));
                     inverse_block_transform<profile>(grp, hc);
                     store_hypercube(grp, hc_index, {data}, hc);
                 });

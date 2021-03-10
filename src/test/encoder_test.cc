@@ -483,7 +483,7 @@ TEMPLATE_TEST_CASE(
 #endif
 
 
-TEMPLATE_TEST_CASE("Flattening of hypercubes is identical between CPU and GPU", "[gpu]",
+TEMPLATE_TEST_CASE("Flattening of hypercubes is identical between CPU and GPU", "[gpu][load]",
         (gpu_encoder<float, 1>), (gpu_encoder<float, 2>), (gpu_encoder<float, 3>),
         (gpu_encoder<double, 1>), (gpu_encoder<double, 2>), (gpu_encoder<double, 3>) ) {
     using data_type = typename TestType::data_type;
