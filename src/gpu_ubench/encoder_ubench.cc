@@ -142,7 +142,8 @@ TEMPLATE_TEST_CASE("Chunk encoding", "[encode]", ALL_PROFILES) {
     using bits_type = typename TestType::bits_type;
     using hc_layout = gpu::hypercube_layout<TestType::dimensions, gpu::forward_transform_tag>;
     constexpr auto hc_size = ipow(TestType::hypercube_side_length, TestType::dimensions);
-    constexpr auto warps_per_hc = hc_size / warp_size;
+    constexpr index_type chunk_size = bitsof<bits_type>;
+    constexpr auto chunks_per_hc = hc_size / chunk_size;
 
     SYCL_BENCHMARK("Reference: serialize")(sycl::queue & q) {
       return q.submit([&](sycl::handler &cgh) {
@@ -158,8 +159,8 @@ TEMPLATE_TEST_CASE("Chunk encoding", "[encode]", ALL_PROFILES) {
     };
 
     sycl::buffer<bits_type> columns(n_blocks * hc_size);
-    sycl::buffer<bits_type> heads(n_blocks * warps_per_hc);
-    sycl::buffer<index_type> lengths(ceil(1 + n_blocks * warps_per_hc,
+    sycl::buffer<bits_type> heads(n_blocks * chunks_per_hc);
+    sycl::buffer<index_type> lengths(ceil(1 + n_blocks * chunks_per_hc,
             gpu::hierarchical_inclusive_scan_granularity));
 
     SYCL_BENCHMARK("Transpose chunks")(sycl::queue & q) {
@@ -174,8 +175,8 @@ TEMPLATE_TEST_CASE("Chunk encoding", "[encode]", ALL_PROFILES) {
                   gpu::hypercube_ptr<TestType, gpu::forward_transform_tag> hc{lm()};
                   grp.distribute_for(hc_size, [&](index_type i) { hc.store(i, i * 199); });
                   const auto hc_index = grp.get_id(0);
-                  write_transposed_chunks(grp, hc, &h[hc_index * warps_per_hc],
-                          &c[hc_index * hc_size], &l[1 + hc_index * warps_per_hc]);
+                  write_transposed_chunks(grp, hc, &h[hc_index * chunks_per_hc],
+                          &c[hc_index * hc_size], &l[1 + hc_index * chunks_per_hc]);
                   // hack
                   if (phys_idx.get_global_linear_id() == 0) {
                       grp.single_item([&] { l[0] = 0; });
