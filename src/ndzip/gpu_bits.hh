@@ -41,6 +41,7 @@ auto submit_and_profile(sycl::queue &q, const char *label, CGF &&cgf) {
 }
 
 
+// TODO uint32_t is not universally the fastest option, for double it's uint64_t ?!
 using index_type = uint64_t;
 
 // TODO _should_ be a template parameter with selection based on queue (/device?) properties.
@@ -182,7 +183,7 @@ void hierarchical_inclusive_scan(
 
     std::vector<sycl::buffer<Scalar>> intermediate_bufs;
     {
-        size_t n_elems = in_out_buffer.get_count();
+        auto n_elems = static_cast<index_type>(in_out_buffer.get_count());
         assert(n_elems % granularity == 0);  // otherwise we will overrun the in_out buffer bounds
 
         while (n_elems > 1) {
@@ -194,7 +195,8 @@ void hierarchical_inclusive_scan(
     for (size_t i = 0; i < intermediate_bufs.size(); ++i) {
         auto &big_buffer = i > 0 ? intermediate_bufs[i - 1] : in_out_buffer;
         auto &small_buffer = intermediate_bufs[i];
-        const auto group_range = sycl::range<1>{div_ceil(big_buffer.get_count(), granularity)};
+        const auto group_range = sycl::range<1>{
+                div_ceil(static_cast<index_type>(big_buffer.get_count()), granularity)};
         const auto local_range = sycl::range<1>{local_size};
 
         char label[50];
@@ -206,7 +208,7 @@ void hierarchical_inclusive_scan(
                     group_range, local_range,
                     [big_acc, small_acc, op](
                             known_size_group<local_size> grp, sycl::physical_item<1>) {
-                        auto group_index = grp.get_id(0);
+                        auto group_index = static_cast<index_type>(grp.get_id(0));
                         Scalar *big = &big_acc[group_index * granularity];
                         Scalar &small = small_acc[group_index];
                         inclusive_scan<granularity>(grp, big, op);
@@ -221,7 +223,8 @@ void hierarchical_inclusive_scan(
         auto ii = intermediate_bufs.size() - 1 - i;
         auto &small_buffer = intermediate_bufs[ii];
         auto &big_buffer = ii > 0 ? intermediate_bufs[ii - 1] : in_out_buffer;
-        const auto group_range = sycl::range<1>{div_ceil(big_buffer.get_count(), granularity) - 1};
+        const auto group_range = sycl::range<1>{
+                div_ceil(static_cast<index_type>(big_buffer.get_count()), granularity) - 1};
         const auto local_range = sycl::range<1>{local_size};
 
         char label[50];
@@ -233,7 +236,7 @@ void hierarchical_inclusive_scan(
                     group_range, local_range,
                     [small_acc, big_acc, op](
                             known_size_group<local_size> grp, sycl::physical_item<1>) {
-                        auto group_index = grp.get_id(0);
+                        auto group_index = static_cast<index_type>(grp.get_id(0));
                         Scalar *big = &big_acc[(group_index + 1) * granularity];
                         Scalar small = small_acc[group_index];
                         grp.distribute_for(

@@ -298,7 +298,7 @@ struct hypercube_allocation {
     using backing_type = uint_bank_t;
     constexpr static index_type size
             = ceil(Layout::pad(Layout::hc_size, sizeof(Bits) / sizeof(uint_bank_t)),
-                    sizeof(Bits) / sizeof(uint_bank_t));
+                    static_cast<index_type>(sizeof(Bits) / sizeof(uint_bank_t)));
 };
 
 template<typename Bits>
@@ -626,7 +626,7 @@ void compact_chunks(sycl::group<1> grp, const typename Profile::bits_type *heads
     constexpr index_type warps_per_chunk = chunk_size / warp_size;
 
     grp.distribute_for([&](sycl::sub_group sg, sycl::logical_item<1> idx) {
-        auto item = idx.get_global_id(0);
+        auto item = static_cast<index_type>(idx.get_global_id(0));
         auto warp_index = item / warp_size;
 
         auto body_offset = offsets[warp_index];
@@ -643,7 +643,7 @@ void compact_chunks(sycl::group<1> grp, const typename Profile::bits_type *heads
             }
         }
         if (warp_index % warps_per_hc == 0) { body_offset += hc_size / chunk_size; }
-        index_type tid = sg.get_local_id()[0];
+        auto tid = static_cast<index_type>(sg.get_local_id()[0]);
         if (body_offset + tid < offsets[warp_index + 1]) {
             stream[body_offset + tid] = columns[item];
         }
@@ -745,8 +745,8 @@ size_t ndzip::gpu_encoder<T, Dims>::compress(
 
     sycl::buffer<bits_type> columns_buf(num_hypercubes * hc_size);
     sycl::buffer<bits_type> heads_buf(num_hypercubes * warps_per_hc);
-    sycl::buffer<index_type> chunk_lengths_buf(ceil(1 + num_hypercubes * warps_per_hc,
-            hierarchical_inclusive_scan_granularity));
+    sycl::buffer<index_type> chunk_lengths_buf(
+            ceil(1 + num_hypercubes * warps_per_hc, hierarchical_inclusive_scan_granularity));
 
     submit_and_profile(_pimpl->q, "transform + chunk encode", [&](sycl::handler &cgh) {
         auto data_acc = data_buffer.template get_access<sam::read>(cgh);
@@ -761,7 +761,7 @@ size_t ndzip::gpu_encoder<T, Dims>::compress(
                     hypercube_memory<bits_type, hc_layout> lm{grp};
                     hypercube_ptr<profile, forward_transform_tag> hc{&lm[0]};
 
-                    index_type hc_index = grp.get_id(0);
+                    auto hc_index = static_cast<index_type>(grp.get_id(0));
                     load_hypercube(grp, hc_index, {data}, hc);
                     forward_block_transform(grp, hc);
                     write_transposed_chunks(grp, hc, &heads_acc[hc_index * warps_per_hc],
