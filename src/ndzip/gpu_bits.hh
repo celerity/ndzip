@@ -188,7 +188,7 @@ void hierarchical_inclusive_scan(
 
         while (n_elems > 1) {
             n_elems = div_ceil(n_elems, granularity);
-            intermediate_bufs.emplace_back(n_elems);
+            intermediate_bufs.emplace_back(ceil(n_elems, granularity));
         }
     }
 
