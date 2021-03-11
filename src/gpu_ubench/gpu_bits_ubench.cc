@@ -3,6 +3,7 @@
 #include <ndzip/gpu_bits.hh>
 #include <test/test_utils.hh>
 
+using namespace ndzip::detail;
 using namespace ndzip::detail::gpu;
 using sam = sycl::access::mode;
 

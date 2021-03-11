@@ -137,7 +137,7 @@ TEMPLATE_TEST_CASE("Block transform", "[transform]", ALL_PROFILES) {
 
 
 // Impact of dimensionality should not be that large, but the hc padding could hold surprises
-TEMPLATE_TEST_CASE("Chunk encoding", "[encode]", ALL_PROFILES ) {
+TEMPLATE_TEST_CASE("Chunk encoding", "[encode]", ALL_PROFILES) {
     constexpr index_type n_blocks = 16384;
     using bits_type = typename TestType::bits_type;
     using hc_layout = gpu::hypercube_layout<TestType::dimensions, gpu::forward_transform_tag>;
@@ -201,9 +201,11 @@ TEMPLATE_TEST_CASE("Chunk encoding", "[encode]", ALL_PROFILES ) {
                     sycl::range<1>{hypercube_group_size},
                     [=](hypercube_group grp, sycl::physical_item<1>) {
                         auto hc_index = static_cast<index_type>(grp.get_id(0));
+                        index_type offset_after;
                         compact_chunks<TestType>(grp,
                                 &c.get_pointer()[hc_index * hc_total_chunks_size],
-                                &l.get_pointer()[hc_index * chunks_per_hc], &s.get_pointer()[0]);
+                                &l.get_pointer()[hc_index * chunks_per_hc], &offset_after,
+                                &s.get_pointer()[0]);
                     });
         });
     };

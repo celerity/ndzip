@@ -324,8 +324,7 @@ TEMPLATE_TEST_CASE("file headers from different encoders are identical", "[encod
 
     const auto file = detail::file<profile>(input.size());
     const auto aligned_stream_size_bound
-            = compressed_size_bound<typename TestType::data_type>(input.size())
-                    / sizeof(index_type)
+            = compressed_size_bound<typename TestType::data_type>(input.size()) / sizeof(index_type)
             + 1;
 
     cpu_encoder<data_type, dims> reference_encoder;
@@ -787,14 +786,6 @@ TEMPLATE_TEST_CASE("CPU and GPU hypercube encodings are equivalent", "[gpu]", AL
         cgh.fill(stream_buf.template get_access<sam::discard_write>(cgh), bits_type{0});
     });
 
-    index_type gpu_num_words;
-    q.submit([&](handler &cgh) {
-         cgh.copy(chunk_lengths_buf.template get_access<sam::read>(
-                          cgh, sycl::range<1>{1}, sycl::id<1>{num_chunks}),
-                 &gpu_num_words);
-     }).wait();
-    auto gpu_length = gpu_num_words * sizeof(bits_type);
-
     buffer<index_type> length_buf{range<1>{1}};
     q.submit([&](sycl::handler &cgh) {
         auto chunks_acc = chunks_buf.template get_access<sam::read>(cgh);
@@ -808,16 +799,15 @@ TEMPLATE_TEST_CASE("CPU and GPU hypercube encodings are equivalent", "[gpu]", AL
                     gpu::compact_chunks<TestType>(grp,
                             &chunks_acc.get_pointer()[hc_index * hc_total_chunks_size],
                             &chunk_offsets_acc.get_pointer()[hc_index * chunks_per_hc],
-                            &stream_acc.get_pointer()[0]);
-                    // hack
-                    if (phys_idx.get_global_linear_id() == 0) {
-                        grp.single_item([&] {
-                            length_acc[0] = sizeof(bits_type)
-                                    * chunk_offsets_acc[chunk_offsets_acc.get_count() - 1];
-                        });
-                    }
+                            &length_acc[0], &stream_acc.get_pointer()[0]);
                 });
     });
+
+    index_type gpu_num_words;
+    q.submit([&](handler &cgh) {
+         cgh.copy(length_buf.template get_access<sam::read>(cgh), &gpu_num_words);
+     }).wait();
+    auto gpu_length = gpu_num_words * sizeof(bits_type);
 
     std::vector<bits_type> gpu_stream(stream_buf.get_range()[0]);
     q.submit([&](handler &cgh) {

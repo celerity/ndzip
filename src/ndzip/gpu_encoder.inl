@@ -579,7 +579,8 @@ void read_transposed_chunks(hypercube_group grp, hypercube_ptr<Profile, inverse_
 
 template<typename Profile>
 void compact_chunks(hypercube_group grp, const typename Profile::bits_type *chunks,
-        const index_type *offsets, typename Profile::bits_type *stream) {
+        const index_type *offsets, index_type *stream_header_entry,
+        typename Profile::bits_type *stream_hc) {
     using bits_type = typename Profile::bits_type;
     constexpr index_type hc_size = ipow(Profile::hypercube_side_length, Profile::dimensions);
     constexpr index_type col_chunk_size = bitsof<bits_type>;
@@ -590,6 +591,10 @@ void compact_chunks(hypercube_group grp, const typename Profile::bits_type *chun
     sycl::local_memory<index_type[chunks_per_hc + 1]> hc_offsets{grp};
     grp.distribute_for(chunks_per_hc + 1, [&](index_type i) { hc_offsets[i] = offsets[i]; });
 
+    grp.single_item([&] {
+        *stream_header_entry = hc_offsets[chunks_per_hc];  // header encodes offset *after*
+    });
+
     grp.distribute_for(hc_total_chunks_size, [&](index_type item) {
         index_type chunk_rel_item = item;
         index_type chunk_index = 0;
@@ -598,32 +603,10 @@ void compact_chunks(hypercube_group grp, const typename Profile::bits_type *chun
             chunk_rel_item = (item - header_chunk_size) % col_chunk_size;
         }
         auto stream_offset = hc_offsets[chunk_index] + chunk_rel_item;
-        if (stream_offset < hc_offsets[chunk_index + 1]) { stream[stream_offset] = chunks[item]; }
+        if (stream_offset < hc_offsets[chunk_index + 1]) {
+            stream_hc[stream_offset] = chunks[item];
+        }
     });
-}
-
-
-// TODO we might be able to avoid this kernel altogether by writing the reduction results directly
-//  to the stream header. Requires the stream format to be fixed first.
-// => Probably not after the fine-grained compaction refactor
-template<typename Profile>
-void fill_stream_header(index_type num_hypercubes, global_write<stream_align_t> stream_acc,
-        global_read<index_type> offset_acc, sycl::handler &cgh) {
-    using bits_type = typename Profile::bits_type;
-    constexpr index_type hc_size
-            = detail::ipow(Profile::hypercube_side_length, Profile::dimensions);
-    constexpr index_type chunks_per_hc = 1 + hc_size / bitsof<bits_type>;
-    constexpr index_type group_size = 256;
-    const index_type num_groups = div_ceil(num_hypercubes, group_size);
-    cgh.parallel(sycl::range<1>{num_groups}, sycl::range<1>{group_size},
-            [=](known_size_group<group_size> grp, sycl::physical_item<1>) {
-                stream<Profile> stream{num_hypercubes, stream_acc.get_pointer()};
-                const index_type base = static_cast<index_type>(grp.get_id(0)) * group_size;
-                const index_type num_elements = std::min(group_size, num_hypercubes - base);
-                grp.distribute_for(num_elements, [&](index_type i) {
-                    stream.set_offset_after(base + i, offset_acc[(base + i + 1) * chunks_per_hc]);
-                });
-            });
 }
 
 
@@ -754,12 +737,6 @@ size_t ndzip::gpu_encoder<T, Dims>::compress(
             (compressed_size_bound<data_type, dimensions>(data.size()) + sizeof(stream_align_t) - 1)
             / sizeof(stream_align_t));
 
-    submit_and_profile(_pimpl->q, "fill header", [&](sycl::handler &cgh) {
-        fill_stream_header<profile>(num_hypercubes,
-                stream_buf.get_access<sam::write>(cgh),  // TODO limit access range
-                chunk_lengths_buf.get_access<sam::read>(cgh), cgh);
-    });
-
     submit_and_profile(_pimpl->q, "compact chunks", [&](sycl::handler &cgh) {
         auto chunks_acc = chunks_buf.template get_access<sam::read>(cgh);
         auto offsets_acc = chunk_lengths_buf.template get_access<sam::read>(cgh);
@@ -772,6 +749,7 @@ size_t ndzip::gpu_encoder<T, Dims>::compress(
                     compact_chunks<profile>(grp,
                             &chunks_acc.get_pointer()[hc_index * hc_total_chunks_size],
                             &offsets_acc.get_pointer()[hc_index * chunks_per_hc],
+                            reinterpret_cast<index_type *>(&stream_acc.get_pointer()[0]) + hc_index,
                             reinterpret_cast<bits_type *>(
                                     &stream_acc.get_pointer()[0] + header_offset));
                 });
