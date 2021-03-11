@@ -61,50 +61,6 @@ size_t global_offset(size_t local_offset, extent<Profile::dimensions> global_siz
     return global_offset;
 }
 
-
-using stream_align_t = uint64_t;
-
-template<typename Profile>
-struct stream {
-    using bits_type = typename Profile::bits_type;
-
-    index_type num_hypercubes;
-    stream_align_t *buffer;
-
-    file_offset_type *header() { return static_cast<file_offset_type *>(buffer); }
-
-    index_type offset_after(index_type hc_index) {
-        return static_cast<index_type>(
-                (header()[hc_index] - num_hypercubes * sizeof(file_offset_type))
-                / sizeof(bits_type));
-    }
-
-    void set_offset_after(index_type hc_index, index_type position) {
-        header()[hc_index]
-                = num_hypercubes * sizeof(file_offset_type) + position * sizeof(bits_type);
-    }
-
-    // requires header() to be initialized
-    bits_type *hypercube(index_type hc_index) {
-        bits_type *base = reinterpret_cast<bits_type *>(
-                static_cast<file_offset_type *>(buffer) + num_hypercubes);
-        if (hc_index == 0) {
-            return base;
-        } else {
-            return base + offset_after(hc_index - 1);
-        }
-    }
-
-    index_type hypercube_size(index_type hc_index) {
-        return hc_index == 0 ? offset_after(0)
-                             : offset_after(hc_index) - offset_after(hc_index - 1);
-    }
-
-    // requires header() to be initialized
-    bits_type *border() { return offset_after(num_hypercubes); }
-};
-
-
 // Fine tuning block size. For block transform:
 //    -  double precision, 256 >> 128
 //    - single precision 1D, 512 >> 128 > 256.
@@ -642,9 +598,7 @@ void compact_chunks(hypercube_group grp, const typename Profile::bits_type *chun
             chunk_rel_item = (item - header_chunk_size) % col_chunk_size;
         }
         auto stream_offset = hc_offsets[chunk_index] + chunk_rel_item;
-        if (stream_offset < hc_offsets[chunk_index + 1]) {
-            stream[stream_offset] = chunks[item];
-        }
+        if (stream_offset < hc_offsets[chunk_index + 1]) { stream[stream_offset] = chunks[item]; }
     });
 }
 
@@ -656,9 +610,9 @@ template<typename Profile>
 void fill_stream_header(index_type num_hypercubes, global_write<stream_align_t> stream_acc,
         global_read<file_offset_type> offset_acc, sycl::handler &cgh) {
     using bits_type = typename Profile::bits_type;
-    constexpr detail::gpu::index_type hc_size
+    constexpr index_type hc_size
             = detail::ipow(Profile::hypercube_side_length, Profile::dimensions);
-    constexpr detail::gpu::index_type chunks_per_hc = 1 + hc_size / bitsof<bits_type>;
+    constexpr index_type chunks_per_hc = 1 + hc_size / bitsof<bits_type>;
     constexpr index_type group_size = 256;
     const index_type num_groups = div_ceil(num_hypercubes, group_size);
     cgh.parallel(sycl::range<1>{num_groups}, sycl::range<1>{group_size},
@@ -716,6 +670,7 @@ ndzip::gpu_encoder<T, Dims>::~gpu_encoder() = default;
 template<typename T, unsigned Dims>
 size_t ndzip::gpu_encoder<T, Dims>::compress(
         const slice<const data_type, dimensions> &data, void *stream) const {
+    using namespace detail;
     using namespace detail::gpu;
 
     using profile = detail::profile<T, Dims>;
@@ -817,8 +772,8 @@ size_t ndzip::gpu_encoder<T, Dims>::compress(
                     compact_chunks<profile>(grp,
                             &chunks_acc.get_pointer()[hc_index * hc_total_chunks_size],
                             &offsets_acc.get_pointer()[hc_index * chunks_per_hc],
-                            reinterpret_cast<bits_type *>(&stream_acc.get_pointer()[0]
-                                    + header_offset));
+                            reinterpret_cast<bits_type *>(
+                                    &stream_acc.get_pointer()[0] + header_offset));
                 });
     });
 
@@ -845,7 +800,7 @@ size_t ndzip::gpu_encoder<T, Dims>::compress(
 
 template<typename T, unsigned Dims>
 size_t ndzip::gpu_encoder<T, Dims>::decompress(
-        const void *stream, size_t bytes, const slice<data_type, dimensions> &data) const {
+        const void *raw_stream, size_t bytes, const slice<data_type, dimensions> &data) const {
     using namespace detail;
     using namespace detail::gpu;
 
@@ -863,7 +818,7 @@ size_t ndzip::gpu_encoder<T, Dims>::decompress(
             detail::gpu::extent_cast<sycl::range<dimensions>>(data.size())};
 
     submit_and_profile(_pimpl->q, "copy stream to device", [&](sycl::handler &cgh) {
-        cgh.copy(static_cast<const stream_align_t *>(stream),
+        cgh.copy(static_cast<const stream_align_t *>(raw_stream),
                 stream_buffer.template get_access<sam::discard_write>(cgh));
     });
 
@@ -880,7 +835,7 @@ size_t ndzip::gpu_encoder<T, Dims>::decompress(
                     hypercube_ptr<profile, inverse_transform_tag> hc{lm()};
 
                     index_type hc_index = grp.get_id(0);
-                    detail::gpu::stream<profile> stream{num_hypercubes, stream_acc.get_pointer()};
+                    detail::stream<const profile> stream{num_hypercubes, stream_acc.get_pointer()};
                     read_transposed_chunks<profile>(grp, hc, stream.hypercube(hc_index));
                     inverse_block_transform<profile>(grp, hc);
                     store_hypercube(grp, hc_index, {data}, hc);
@@ -892,15 +847,17 @@ size_t ndzip::gpu_encoder<T, Dims>::decompress(
                 cgh.copy(data_buffer.template get_access<sam::read>(cgh), data.data());
             });
 
-    auto stream_pos
-            = detail::load_aligned<detail::file_offset_type>(static_cast<const std::byte *>(stream)
-                    + ((file.num_hypercubes() - 1) * sizeof(detail::file_offset_type)));
+    detail::stream<const profile> stream{
+            file.num_hypercubes(), static_cast<const detail::stream_align_t *>(raw_stream)};
+    auto stream_pos = file.file_header_length();
+    stream_pos += (stream.border() - stream.hypercube(0)) * sizeof(bits_type);
 
     data_copy_event.wait();
 
     // TODO GPU border handling!
-    stream_pos += detail::unpack_border(data, static_cast<const std::byte *>(stream) + stream_pos,
-            profile::hypercube_side_length);
+    stream_pos
+            += detail::unpack_border(data, static_cast<const std::byte *>(raw_stream) + stream_pos,
+                    profile::hypercube_side_length);
 
     return stream_pos;
 }

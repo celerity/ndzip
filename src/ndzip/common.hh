@@ -50,11 +50,28 @@ using bits_type = std::conditional_t<sizeof(T) == 1, uint8_t,
                 std::conditional_t<sizeof(T) == 4, uint32_t,
                         std::conditional_t<sizeof(T) == 8, uint64_t, void>>>>;
 
+template<typename Integer>
+constexpr Integer div_ceil(Integer p, Integer q) {
+    return (p + q - 1) / q;
+}
+
+template<typename Integer>
+constexpr Integer ceil(Integer x, Integer multiple) {
+    return div_ceil(x, multiple) * multiple;
+}
+
+template<typename Integer>
+constexpr Integer floor(Integer x, Integer multiple) {
+    return x / multiple * multiple;
+}
+
 template<typename T>
 constexpr inline size_t bitsof = CHAR_BIT * sizeof(T);
 
 using file_offset_type = uint64_t;
 
+// TODO uint32_t is not universally the fastest option, for double it's uint64_t ?!
+using index_type = uint64_t;
 
 template<typename Fn, typename Index, typename T>
 [[gnu::always_inline]] void invoke_for_element(Fn &&fn, Index index, T &&value) {
@@ -88,8 +105,7 @@ Integer endian_transform(Integer value) {
 
 
 template<typename POD>
-[[gnu::always_inline]]
-POD load_unaligned(const void *src) {
+[[gnu::always_inline]] POD load_unaligned(const void *src) {
     static_assert(std::is_trivially_copyable_v<POD>);
     POD a;
     memcpy(&a, src, sizeof(POD));
@@ -97,8 +113,7 @@ POD load_unaligned(const void *src) {
 }
 
 template<size_t Align, typename POD, typename Memory>
-[[gnu::always_inline]]
-POD load_aligned(const Memory *src) {
+[[gnu::always_inline]] POD load_aligned(const Memory *src) {
     assert(reinterpret_cast<uintptr_t>(src) % Align == 0);
     if constexpr (std::is_same_v<Memory, POD> && Align >= alignof(POD)) {
         return *src;
@@ -108,21 +123,18 @@ POD load_aligned(const Memory *src) {
 }
 
 template<typename POD, typename Memory>
-[[gnu::always_inline]]
-POD load_aligned(const Memory *src) {
+[[gnu::always_inline]] POD load_aligned(const Memory *src) {
     return load_aligned<alignof(POD), POD>(src);
 }
 
 template<typename POD>
-[[gnu::always_inline]]
-void store_unaligned(void *dest, POD a) {
+[[gnu::always_inline]] void store_unaligned(void *dest, POD a) {
     static_assert(std::is_trivially_copyable_v<POD>);
     memcpy(dest, &a, sizeof(POD));
 }
 
 template<size_t Align, typename POD, typename Memory>
-[[gnu::always_inline]]
-void store_aligned(Memory *dest, POD a) {
+[[gnu::always_inline]] void store_aligned(Memory *dest, POD a) {
     assert(reinterpret_cast<uintptr_t>(dest) % Align == 0);
     if constexpr (std::is_same_v<Memory, POD> && Align >= alignof(POD)) {
         *dest = a;
@@ -132,8 +144,7 @@ void store_aligned(Memory *dest, POD a) {
 }
 
 template<typename POD, typename Memory>
-[[gnu::always_inline]]
-void store_aligned(Memory *dest, POD a) {
+[[gnu::always_inline]] void store_aligned(Memory *dest, POD a) {
     store_aligned<alignof(POD), POD>(dest, a);
 }
 
@@ -228,6 +239,55 @@ template<typename Profile, unsigned ThisDim, typename F>
         }
     }
 }
+
+
+// TODO this should be bits_type everywhere since sizeof(bits_type) >= sizeof(index_type) once
+//  index_type has been fixed to 32 bit
+using stream_align_t = uint64_t;
+
+template<typename Profile>
+struct stream {
+    using bits_type = std::conditional_t<std::is_const_v<Profile>,
+            const typename Profile::bits_type, typename Profile::bits_type>;
+    using atom_type
+            = std::conditional_t<std::is_const_v<Profile>, const stream_align_t, stream_align_t>;
+    using offset_type = std::conditional_t<std::is_const_v<Profile>, const file_offset_type,
+            file_offset_type>;
+
+    index_type num_hypercubes;
+    atom_type *buffer;
+
+    offset_type *header() { return static_cast<offset_type *>(buffer); }
+
+    index_type offset_after(index_type hc_index) {
+        return static_cast<index_type>(
+                (header()[hc_index] - num_hypercubes * sizeof(offset_type)) / sizeof(bits_type));
+    }
+
+    void set_offset_after(index_type hc_index, index_type position) {
+        // TODO memcpy this, else potential aliasing UB!
+        header()[hc_index] = num_hypercubes * sizeof(offset_type) + position * sizeof(bits_type);
+    }
+
+    // requires header() to be initialized
+    bits_type *hypercube(index_type hc_index) {
+        bits_type *base = reinterpret_cast<bits_type *>(
+                static_cast<offset_type *>(buffer) + num_hypercubes);
+        if (hc_index == 0) {
+            return base;
+        } else {
+            return base + offset_after(hc_index - 1);
+        }
+    }
+
+    index_type hypercube_size(index_type hc_index) {
+        return hc_index == 0 ? offset_after(0)
+                             : offset_after(hc_index) - offset_after(hc_index - 1);
+    }
+
+    // requires header() to be initialized
+    bits_type *border() { return hypercube(num_hypercubes); }
+};
 
 template<typename Profile>
 class file {

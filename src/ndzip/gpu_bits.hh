@@ -1,27 +1,13 @@
 #pragma once
 
+#include "common.hh"
+
 #include <type_traits>
 
 #include <SYCL/sycl.hpp>
 
 
 namespace ndzip::detail::gpu {
-
-template<typename Integer>
-constexpr Integer div_ceil(Integer p, Integer q) {
-    return (p + q - 1) / q;
-}
-
-template<typename Integer>
-constexpr Integer ceil(Integer x, Integer multiple) {
-    return div_ceil(x, multiple) * multiple;
-}
-
-template<typename Integer>
-constexpr Integer floor(Integer x, Integer multiple) {
-    return x / multiple * multiple;
-}
-
 
 template<typename CGF>
 auto submit_and_profile(sycl::queue &q, const char *label, CGF &&cgf) {
@@ -40,9 +26,6 @@ auto submit_and_profile(sycl::queue &q, const char *label, CGF &&cgf) {
     }
 }
 
-
-// TODO uint32_t is not universally the fastest option, for double it's uint64_t ?!
-using index_type = uint64_t;
 
 // TODO _should_ be a template parameter with selection based on queue (/device?) properties.
 //  However a lot of code currently assumes that bitsof<uint32_t> == warp_size (e.g. we want to

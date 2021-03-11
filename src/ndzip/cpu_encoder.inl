@@ -603,11 +603,11 @@ ndzip::cpu_encoder<T, Dims>::~cpu_encoder() = default;
 
 template<typename T, unsigned Dims>
 size_t ndzip::cpu_encoder<T, Dims>::compress(
-        const slice<const data_type, dimensions> &data, void *stream) const {
+        const slice<const data_type, dimensions> &data, void *raw_stream) const {
     using profile = detail::profile<T, Dims>;
     using bits_type = typename profile::bits_type;
 
-    if (reinterpret_cast<uintptr_t>(stream) % sizeof(bits_type) != 0) {
+    if (reinterpret_cast<uintptr_t>(raw_stream) % sizeof(detail::stream_align_t) != 0) {
         throw std::invalid_argument("stream is not properly aligned");
     }
 
@@ -615,29 +615,23 @@ size_t ndzip::cpu_encoder<T, Dims>::compress(
     size_t stream_pos = file.file_header_length();
     auto hc_size = detail::ipow(profile::hypercube_side_length, profile::dimensions);
 
+    detail::stream<profile> stream{
+            file.num_hypercubes(), static_cast<detail::stream_align_t *>(raw_stream)};
+
     auto &cube = _pimpl->cube;
+    detail::index_type offset = 0;
     file.for_each_hypercube([&](auto hc_offset, auto hc_index) {
-        auto header_pos = stream_pos;
         detail::cpu::load_hypercube<profile>(hc_offset, data, cube.data());
         detail::cpu::block_transform<profile>(cube.data());
-        stream_pos += detail::cpu::zero_bit_encode<bits_type>(
-                cube.data(), static_cast<std::byte *>(stream) + stream_pos, hc_size);
-
-        if (hc_index > 0) {
-            auto file_offset_address = static_cast<std::byte *>(stream)
-                    + (hc_index - 1) * sizeof(detail::file_offset_type);
-            auto file_offset = static_cast<detail::file_offset_type>(header_pos);
-            detail::store_aligned(file_offset_address, detail::endian_transform(file_offset));
-        }
+        offset += detail::cpu::zero_bit_encode<bits_type>(cube.data(),
+                          reinterpret_cast<std::byte *>(stream.hypercube(hc_index)) /* TODO */,
+                          hc_size)
+                / sizeof(bits_type);
+        stream.set_offset_after(hc_index, offset);
     });
 
-    if (file.num_hypercubes() > 0) {
-        auto file_offset_address = static_cast<char *>(stream)
-                + (file.num_hypercubes() - 1) * sizeof(detail::file_offset_type);
-        detail::store_aligned(file_offset_address, detail::endian_transform(stream_pos));
-    }
-    stream_pos += detail::pack_border(
-            static_cast<char *>(stream) + stream_pos, data, profile::hypercube_side_length);
+    stream_pos += sizeof(bits_type) * offset;
+    stream_pos += detail::pack_border(stream.border(), data, profile::hypercube_side_length);
     return stream_pos;
 }
 
@@ -648,7 +642,7 @@ size_t ndzip::cpu_encoder<T, Dims>::decompress(
     using profile = detail::profile<T, Dims>;
     using bits_type = typename profile::bits_type;
 
-    if (reinterpret_cast<uintptr_t>(stream) % sizeof(bits_type) != 0) {
+    if (reinterpret_cast<uintptr_t>(stream) % sizeof(detail::stream_align_t) != 0) {
         throw std::invalid_argument("stream is not properly aligned");
     }
 
@@ -750,7 +744,7 @@ ndzip::mt_cpu_encoder<T, Dims>::~mt_cpu_encoder() = default;
 
 template<typename T, unsigned Dims>
 size_t ndzip::mt_cpu_encoder<T, Dims>::compress(
-        const slice<const data_type, dimensions> &data, void *stream) const {
+        const slice<const data_type, dimensions> &data, void *raw_stream) const {
     using profile = detail::profile<T, Dims>;
     using bits_type = typename profile::bits_type;
     using write_buffer = typename impl::write_buffer;
@@ -759,7 +753,7 @@ size_t ndzip::mt_cpu_encoder<T, Dims>::compress(
     constexpr auto num_hcs_per_chunk = impl::num_hcs_per_chunk;
     const auto hc_size = detail::ipow(side_length, profile::dimensions);
 
-    if (reinterpret_cast<uintptr_t>(stream) % sizeof(bits_type) != 0) {
+    if (reinterpret_cast<uintptr_t>(raw_stream) % sizeof(detail::stream_align_t) != 0) {
         throw std::invalid_argument("stream is not properly aligned");
     }
 
@@ -770,10 +764,13 @@ size_t ndzip::mt_cpu_encoder<T, Dims>::compress(
     const detail::file<profile> file(data.size());
     const auto num_threads = _pimpl->num_threads;
 
+    detail::stream<profile> stream{
+            file.num_hypercubes(), static_cast<detail::stream_align_t *>(raw_stream)};
+
     std::atomic<size_t> next_hc_index_to_read = 0;
     std::atomic<size_t> next_hc_index_to_write = 0;
     std::atomic<size_t> next_available_write_task_hc_index = SIZE_MAX;
-    size_t stream_offset = file.file_header_length();
+    detail::index_type stream_offset = 0;
 
     const auto num_hypercubes = file.num_hypercubes();
 
@@ -814,23 +811,19 @@ size_t ndzip::mt_cpu_encoder<T, Dims>::compress(
             }
 
             if (write_task) {
-                memcpy(static_cast<std::byte *>(stream) + task_stream_offset,
-                        write_task->stream.data(), write_task->compressed_size());
                 auto task_file_offset = task_stream_offset;
                 for (size_t task_hc_index = 0; task_hc_index < write_task->num_hypercubes();
                         ++task_hc_index) {
                     auto hc_index = write_task->first_hc_index + task_hc_index;
-                    if (hc_index > 0) {
-                        auto file_offset_address = static_cast<std::byte *>(stream)
-                                + (hc_index - 1) * sizeof(detail::file_offset_type);
-                        detail::store_aligned<detail::file_offset_type>(
-                                file_offset_address, detail::endian_transform(task_file_offset));
-                    }
                     task_file_offset
                             = task_stream_offset + write_task->offsets_after_hcs[task_hc_index];
+                    stream.set_offset_after(hc_index, task_file_offset);
                 }
+                memcpy(stream.hypercube(write_task->first_hc_index), write_task->stream.data(),
+                        write_task->compressed_size() * sizeof(bits_type));
                 free_write_buffers.push(write_task);
-            } else  // compression task
+            }  //
+            else  // compression task
             {
                 if (free_write_buffers.pop(write_task)) {
                     // memory_order_relaxed: There is no synchronization involved, only atomicity is
@@ -853,9 +846,12 @@ size_t ndzip::mt_cpu_encoder<T, Dims>::compress(
                             detail::cpu::load_hypercube<profile>(hc_offset, data, cube.data());
                             detail::cpu::block_transform<profile>(cube.data());
 
-                            task_stream_offset += detail::cpu::zero_bit_encode<bits_type>(
-                                    cube.data(), write_task->stream.data() + task_stream_offset,
-                                    hc_size);
+                            task_stream_offset
+                                    += detail::cpu::zero_bit_encode<bits_type>(cube.data(),
+                                               write_task->stream.data()
+                                                       + task_stream_offset * sizeof(bits_type),
+                                               hc_size)
+                                    / sizeof(bits_type);
                             write_task->offsets_after_hcs.push_back(task_stream_offset);
                         }
 
@@ -874,33 +870,31 @@ size_t ndzip::mt_cpu_encoder<T, Dims>::compress(
         }
     }
 
-    if (file.num_hypercubes() > 0) {
-        auto file_offset_address = static_cast<char *>(stream)
-                + (file.num_hypercubes() - 1) * sizeof(detail::file_offset_type);
-        detail::store_aligned(file_offset_address, detail::endian_transform(stream_offset));
-    }
-    stream_offset
-            += detail::pack_border(static_cast<char *>(stream) + stream_offset, data, side_length);
-    return stream_offset;
+    auto stream_pos = file.file_header_length() + stream_offset * sizeof(bits_type);
+    stream_pos += detail::pack_border(stream.border(), data, side_length);
+    return stream_pos;
 }
 
 
 template<typename T, unsigned Dims>
 size_t ndzip::mt_cpu_encoder<T, Dims>::decompress(
-        const void *stream, size_t bytes, const slice<data_type, dimensions> &data) const {
+        const void *raw_stream, size_t bytes, const slice<data_type, dimensions> &data) const {
     using profile = detail::profile<T, Dims>;
     using bits_type = typename profile::bits_type;
 
     constexpr static auto side_length = profile::hypercube_side_length;
     const auto hc_size = detail::ipow(side_length, profile::dimensions);
 
-    if (reinterpret_cast<uintptr_t>(stream) % sizeof(bits_type) != 0) {
+    if (reinterpret_cast<uintptr_t>(raw_stream) % sizeof(detail::stream_align_t) != 0) {
         throw std::invalid_argument("stream is not properly aligned");
     }
 
     detail::file<profile> file(data.size());
     const auto num_hypercubes = file.num_hypercubes();
     const auto num_threads = _pimpl->num_threads;
+
+    detail::stream<const profile> stream{
+            file.num_hypercubes(), static_cast<const detail::stream_align_t *>(raw_stream)};
 
 #pragma omp parallel num_threads(num_threads)
     {
@@ -912,36 +906,17 @@ size_t ndzip::mt_cpu_encoder<T, Dims>::decompress(
             auto hc_offset = detail::extent_from_linear_id(hc_index, data.size() / side_length)
                     * side_length;
 
-            size_t stream_pos;
-            if (hc_index > 0) {
-                auto file_offset_address = static_cast<const std::byte *>(stream)
-                        + (hc_index - 1) * sizeof(detail::file_offset_type);
-                auto file_offset = detail::endian_transform(
-                        detail::load_aligned<detail::file_offset_type>(file_offset_address));
-                stream_pos = static_cast<size_t>(file_offset);
-            } else {
-                stream_pos = file.file_header_length();
-            }
-
             detail::cpu::zero_bit_decode<bits_type>(
-                    static_cast<const std::byte *>(stream) + stream_pos, cube.data(), hc_size);
+                    reinterpret_cast<const std::byte *>(stream.hypercube(hc_index)), cube.data(),
+                    hc_size);
             detail::cpu::inverse_block_transform<profile>(cube.data());
             detail::cpu::store_hypercube<profile>(hc_offset, cube.data(), data);
         }
     }
 
-    size_t stream_pos;
-    if (file.num_hypercubes() > 0) {
-        auto file_offset_address = static_cast<const std::byte *>(stream)
-                + (file.num_hypercubes() - 1) * sizeof(detail::file_offset_type);
-        auto file_offset = detail::endian_transform(
-                detail::load_aligned<detail::file_offset_type>(file_offset_address));
-        stream_pos = static_cast<size_t>(file_offset);
-    } else {
-        stream_pos = file.file_header_length();
-    }
-    stream_pos += detail::unpack_border(
-            data, static_cast<const std::byte *>(stream) + stream_pos, side_length);
+    auto stream_pos = file.file_header_length();
+    stream_pos += (stream.border() - stream.hypercube(0)) * sizeof(bits_type);
+    stream_pos += detail::unpack_border(data, stream.border(), side_length);
     return stream_pos;
 }
 
