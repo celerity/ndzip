@@ -730,7 +730,7 @@ TEMPLATE_TEST_CASE("CPU and GPU hypercube encodings are equivalent", "[gpu]", AL
     const auto hc_size = ipow(TestType::hypercube_side_length, TestType::dimensions);
     using hc_layout = gpu::hypercube_layout<TestType::dimensions, gpu::forward_transform_tag>;
 
-    constexpr gpu::index_type chunk_size = detail::bitsof<bits_type>;
+    constexpr gpu::index_type col_chunk_size = detail::bitsof<bits_type>;
 
     auto input = make_random_vector<bits_type>(hc_size);
     for (size_t i = 0; i < hc_size; ++i) {
@@ -754,15 +754,14 @@ TEMPLATE_TEST_CASE("CPU and GPU hypercube encodings are equivalent", "[gpu]", AL
         cgh.copy(input.data(), input_buf.template get_access<sam::discard_write>(cgh));
     });
 
-    buffer<bits_type> heads_buf{range<1>{hc_size / gpu::warp_size}};
-    buffer<bits_type> columns_buf{range<1>{hc_size}};
+    buffer<bits_type> chunks_buf{hc_size + hc_size / col_chunk_size};
+    const auto num_chunks = 1 + hc_size / col_chunk_size;
     buffer<gpu::index_type> chunk_lengths_buf{range<1>{gpu::ceil(
-            1 + hc_size / chunk_size, gpu::hierarchical_inclusive_scan_granularity)}};
+            1 + num_chunks, gpu::hierarchical_inclusive_scan_granularity)}};
 
     q.submit([&](handler &cgh) {
         auto input_acc = input_buf.template get_access<sam::read>(cgh);
-        auto heads_acc = heads_buf.template get_access<sam::discard_write>(cgh);
-        auto columns_acc = columns_buf.template get_access<sam::discard_write>(cgh);
+        auto columns_acc = chunks_buf.template get_access<sam::discard_write>(cgh);
         auto chunk_lengths_acc = chunk_lengths_buf.get_access<sam::discard_write>(cgh);
         cgh.parallel<gpu_hypercube_transpose_test_kernel<TestType>>(sycl::range<1>{1},
                 sycl::range<1>{gpu::hypercube_group_size},
@@ -772,7 +771,7 @@ TEMPLATE_TEST_CASE("CPU and GPU hypercube encodings are equivalent", "[gpu]", AL
                     grp.distribute_for(
                             hc_size, [&](gpu::index_type i) { hc.store(i, input_acc[i]); });
                     gpu::write_transposed_chunks(
-                            grp, hc, &heads_acc[0], &columns_acc[0], &chunk_lengths_acc[1]);
+                            grp, hc, &columns_acc[0], &chunk_lengths_acc[1]);
                     // hack
                     if (phys_idx.get_global_linear_id() == 0) {
                         grp.single_item([&] { chunk_lengths_acc[0] = 0; });
@@ -792,28 +791,34 @@ TEMPLATE_TEST_CASE("CPU and GPU hypercube encodings are equivalent", "[gpu]", AL
         cgh.fill(stream_buf.template get_access<sam::discard_write>(cgh), bits_type{0});
     });
 
+    gpu::index_type gpu_num_words;
+    q.submit([&](handler &cgh) {
+      cgh.copy(chunk_lengths_buf.template get_access<sam::read>(cgh, sycl::range<1>{1},
+                         sycl::id<1>{num_chunks}), &gpu_num_words);
+    }).wait();
+    auto gpu_length = gpu_num_words * sizeof(bits_type);
+
     buffer<file_offset_type> length_buf{range<1>{1}};
     q.submit([&](sycl::handler &cgh) {
-        auto columns_acc = columns_buf.template get_access<sam::read>(cgh);
-        auto heads_acc = heads_buf.template get_access<sam::read>(cgh);
-        auto chunk_lengths_acc = chunk_lengths_buf.template get_access<sam::read>(cgh);
+        auto chunks_acc = chunks_buf.template get_access<sam::read>(cgh);
+        auto chunk_offsets_acc = chunk_lengths_buf.template get_access<sam::read>(cgh);
         auto stream_acc = stream_buf.template get_access<sam::discard_write>(cgh);
         auto length_acc = length_buf.template get_access<sam::discard_write>(cgh);
         constexpr size_t group_size = 1024;
         static_assert(hc_size % group_size == 0);
         cgh.parallel<gpu_hypercube_compact_test_kernel<TestType>>(
-                sycl::range<1>{hc_size / group_size}, sycl::range<1>{group_size},
+                sycl::range<1>{detail::gpu::div_ceil(chunks_buf.get_count(), group_size)},
+                sycl::range<1>{group_size},
                 [=](sycl::group<1> grp, sycl::physical_item<1> phys_idx) {
-                    gpu::compact_chunks<TestType>(grp,
-                            static_cast<const bits_type *>(heads_acc.get_pointer()),
-                            static_cast<const bits_type *>(columns_acc.get_pointer()),
-                            static_cast<const gpu::index_type *>(chunk_lengths_acc.get_pointer()),
+                    gpu::compact_chunks<TestType>(grp, 1 /* num_hypercubes */,
+                            static_cast<const bits_type *>(chunks_acc.get_pointer()),
+                            static_cast<const gpu::index_type *>(chunk_offsets_acc.get_pointer()),
                             static_cast<bits_type *>(stream_acc.get_pointer()));
                     // hack
                     if (phys_idx.get_global_linear_id() == 0) {
                         grp.single_item([&] {
                             length_acc[0] = sizeof(bits_type)
-                                    * chunk_lengths_acc[hc_size / chunk_size];
+                                    * chunk_offsets_acc[chunk_offsets_acc.get_count() - 1];
                         });
                     }
                 });
@@ -822,12 +827,7 @@ TEMPLATE_TEST_CASE("CPU and GPU hypercube encodings are equivalent", "[gpu]", AL
     std::vector<bits_type> gpu_stream(stream_buf.get_range()[0]);
     q.submit([&](handler &cgh) {
         cgh.copy(stream_buf.template get_access<sam::read>(cgh), gpu_stream.data());
-    });
-    file_offset_type gpu_length;
-    q.submit([&](handler &cgh) {
-        cgh.copy(length_buf.template get_access<sam::read>(cgh), &gpu_length);
-    });
-    q.wait();
+    }).wait();
 
     CHECK(gpu_length == cpu_length);
     check_for_vector_equality(gpu_stream, cpu_stream);
