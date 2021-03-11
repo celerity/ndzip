@@ -137,7 +137,7 @@ TEMPLATE_TEST_CASE("Block transform", "[transform]", ALL_PROFILES) {
 
 
 // Impact of dimensionality should not be that large, but the hc padding could hold surprises
-TEMPLATE_TEST_CASE("Chunk encoding", "[encode]", ALL_PROFILES) {
+TEMPLATE_TEST_CASE("Chunk encoding", "[encode]", ALL_PROFILES ) {
     constexpr index_type n_blocks = 16384;
     using bits_type = typename TestType::bits_type;
     using hc_layout = gpu::hypercube_layout<TestType::dimensions, gpu::forward_transform_tag>;
@@ -148,42 +148,41 @@ TEMPLATE_TEST_CASE("Chunk encoding", "[encode]", ALL_PROFILES) {
     constexpr index_type chunks_per_hc = 1 /* header */ + hc_size / col_chunk_size;
 
     SYCL_BENCHMARK("Reference: serialize")(sycl::queue & q) {
-      return q.submit([&](sycl::handler &cgh) {
-        cgh.parallel<encode_reference_kernel<TestType>>(sycl::range<1>{n_blocks},
-                sycl::range<1>{hypercube_group_size},
-                [=](hypercube_group grp, sycl::physical_item<1>) {
-                  hypercube_memory<bits_type, hc_layout> lm{grp};
-                  gpu::hypercube_ptr<TestType, gpu::forward_transform_tag> hc{lm()};
-                  grp.distribute_for(hc_size, [&](index_type i) { hc.store(i, i); });
-                  black_hole(hc.memory);
-                });
-      });
+        return q.submit([&](sycl::handler &cgh) {
+            cgh.parallel<encode_reference_kernel<TestType>>(sycl::range<1>{n_blocks},
+                    sycl::range<1>{hypercube_group_size},
+                    [=](hypercube_group grp, sycl::physical_item<1>) {
+                        hypercube_memory<bits_type, hc_layout> lm{grp};
+                        gpu::hypercube_ptr<TestType, gpu::forward_transform_tag> hc{lm()};
+                        grp.distribute_for(hc_size, [&](index_type i) { hc.store(i, i); });
+                        black_hole(hc.memory);
+                    });
+        });
     };
 
     sycl::buffer<bits_type> chunks(n_blocks * hc_total_chunks_size);
-    sycl::buffer<index_type> lengths(ceil(1 + n_blocks * chunks_per_hc,
-            gpu::hierarchical_inclusive_scan_granularity));
+    sycl::buffer<index_type> lengths(
+            ceil(1 + n_blocks * chunks_per_hc, gpu::hierarchical_inclusive_scan_granularity));
 
     SYCL_BENCHMARK("Transpose chunks")(sycl::queue & q) {
-      return q.submit([&](sycl::handler &cgh) {
-        auto c = chunks.template get_access<sam::discard_write>(cgh);
-        auto l = lengths.template get_access<sam::discard_write>(cgh);
-        cgh.parallel<chunk_transpose_write_kernel<TestType>>(sycl::range<1>{n_blocks},
-                sycl::range<1>{hypercube_group_size},
-                [=](hypercube_group grp, sycl::physical_item<1> phys_idx) {
-                  hypercube_memory<bits_type, hc_layout> lm{grp};
-                  gpu::hypercube_ptr<TestType, gpu::forward_transform_tag> hc{lm()};
-                  grp.distribute_for(hc_size, [&](index_type i) { hc.store(i, i * 199); });
-                  const auto hc_index = grp.get_id(0);
-                  write_transposed_chunks(grp, hc,
-                          &c[hc_index * hc_total_chunks_size],
-                          &l[1 + hc_index * chunks_per_hc]);
-                  // hack
-                  if (phys_idx.get_global_linear_id() == 0) {
-                      grp.single_item([&] { l[0] = 0; });
-                  }
-                });
-      });
+        return q.submit([&](sycl::handler &cgh) {
+            auto c = chunks.template get_access<sam::discard_write>(cgh);
+            auto l = lengths.template get_access<sam::discard_write>(cgh);
+            cgh.parallel<chunk_transpose_write_kernel<TestType>>(sycl::range<1>{n_blocks},
+                    sycl::range<1>{hypercube_group_size},
+                    [=](hypercube_group grp, sycl::physical_item<1> phys_idx) {
+                        hypercube_memory<bits_type, hc_layout> lm{grp};
+                        gpu::hypercube_ptr<TestType, gpu::forward_transform_tag> hc{lm()};
+                        grp.distribute_for(hc_size, [&](index_type i) { hc.store(i, i * 199); });
+                        const auto hc_index = grp.get_id(0);
+                        write_transposed_chunks(grp, hc, &c[hc_index * hc_total_chunks_size],
+                                &l[1 + hc_index * chunks_per_hc]);
+                        // hack
+                        if (phys_idx.get_global_linear_id() == 0) {
+                            grp.single_item([&] { l[0] = 0; });
+                        }
+                    });
+        });
     };
 
     {
@@ -191,25 +190,22 @@ TEMPLATE_TEST_CASE("Chunk encoding", "[encode]", ALL_PROFILES) {
         gpu::hierarchical_inclusive_scan(q, lengths, sycl::plus<gpu::index_type>{});
     }
 
-    sycl::buffer<bits_type> stream(n_blocks * (hc_size + hc_size / warp_size));
+    sycl::buffer<bits_type> stream(n_blocks * hc_total_chunks_size);
 
     SYCL_BENCHMARK("Compact transposed")(sycl::queue & q) {
-      return q.submit([&](sycl::handler &cgh) {
-        auto c = chunks.template get_access<sam::read>(cgh);
-        auto l = lengths.template get_access<sam::read>(cgh);
-        auto s = stream.template get_access<sam::discard_write>(cgh);
-        constexpr size_t group_size = 1024;
-        cgh.parallel<chunk_compact_kernel<TestType>>(
-                sycl::range<1>{detail::gpu::div_ceil(chunks.get_count(), group_size)},
-                sycl::range<1>{group_size},
-                [=](sycl::group<1> grp, sycl::physical_item<1>) {
-                  compact_chunks<TestType>(
-                          grp, n_blocks,
-                          static_cast<const bits_type *>(c.get_pointer()),
-                          static_cast<const index_type *>(l.get_pointer()),
-                          static_cast<bits_type *>(s.get_pointer()));
-                });
-      });
+        return q.submit([&](sycl::handler &cgh) {
+            auto c = chunks.template get_access<sam::read>(cgh);
+            auto l = lengths.template get_access<sam::read>(cgh);
+            auto s = stream.template get_access<sam::discard_write>(cgh);
+            cgh.parallel<chunk_compact_kernel<TestType>>(sycl::range<1>{n_blocks},
+                    sycl::range<1>{hypercube_group_size},
+                    [=](hypercube_group grp, sycl::physical_item<1>) {
+                        auto hc_index = static_cast<index_type>(grp.get_id(0));
+                        compact_chunks<TestType>(grp,
+                                &c.get_pointer()[hc_index * hc_total_chunks_size],
+                                &l.get_pointer()[hc_index * chunks_per_hc], &s.get_pointer()[0]);
+                    });
+        });
     };
 }
 

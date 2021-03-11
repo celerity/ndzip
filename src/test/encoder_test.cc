@@ -731,6 +731,9 @@ TEMPLATE_TEST_CASE("CPU and GPU hypercube encodings are equivalent", "[gpu]", AL
     using hc_layout = gpu::hypercube_layout<TestType::dimensions, gpu::forward_transform_tag>;
 
     constexpr gpu::index_type col_chunk_size = detail::bitsof<bits_type>;
+    constexpr gpu::index_type header_chunk_size = hc_size / col_chunk_size;
+    constexpr gpu::index_type hc_total_chunks_size = hc_size + header_chunk_size;
+    constexpr gpu::index_type chunks_per_hc = 1 /* header */ + hc_size / col_chunk_size;
 
     auto input = make_random_vector<bits_type>(hc_size);
     for (size_t i = 0; i < hc_size; ++i) {
@@ -754,7 +757,7 @@ TEMPLATE_TEST_CASE("CPU and GPU hypercube encodings are equivalent", "[gpu]", AL
         cgh.copy(input.data(), input_buf.template get_access<sam::discard_write>(cgh));
     });
 
-    buffer<bits_type> chunks_buf{hc_size + hc_size / col_chunk_size};
+    buffer<bits_type> chunks_buf{hc_total_chunks_size};
     const auto num_chunks = 1 + hc_size / col_chunk_size;
     buffer<gpu::index_type> chunk_lengths_buf{range<1>{gpu::ceil(
             1 + num_chunks, gpu::hierarchical_inclusive_scan_granularity)}};
@@ -804,16 +807,15 @@ TEMPLATE_TEST_CASE("CPU and GPU hypercube encodings are equivalent", "[gpu]", AL
         auto chunk_offsets_acc = chunk_lengths_buf.template get_access<sam::read>(cgh);
         auto stream_acc = stream_buf.template get_access<sam::discard_write>(cgh);
         auto length_acc = length_buf.template get_access<sam::discard_write>(cgh);
-        constexpr size_t group_size = 1024;
-        static_assert(hc_size % group_size == 0);
         cgh.parallel<gpu_hypercube_compact_test_kernel<TestType>>(
-                sycl::range<1>{detail::gpu::div_ceil(chunks_buf.get_count(), group_size)},
-                sycl::range<1>{group_size},
-                [=](sycl::group<1> grp, sycl::physical_item<1> phys_idx) {
-                    gpu::compact_chunks<TestType>(grp, 1 /* num_hypercubes */,
-                            static_cast<const bits_type *>(chunks_acc.get_pointer()),
-                            static_cast<const gpu::index_type *>(chunk_offsets_acc.get_pointer()),
-                            static_cast<bits_type *>(stream_acc.get_pointer()));
+                sycl::range<1>{1 /* num_hypercubes */},
+                sycl::range<1>{gpu::hypercube_group_size},
+                [=](gpu::hypercube_group grp, sycl::physical_item<1> phys_idx) {
+                  const auto hc_index = grp.get_id(0);
+                    gpu::compact_chunks<TestType>(grp,
+                            &chunks_acc.get_pointer()[hc_index * hc_total_chunks_size],
+                            &chunk_offsets_acc.get_pointer()[hc_index * chunks_per_hc],
+                            &stream_acc.get_pointer()[0]);
                     // hack
                     if (phys_idx.get_global_linear_id() == 0) {
                         grp.single_item([&] {

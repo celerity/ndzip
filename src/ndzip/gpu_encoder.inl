@@ -622,10 +622,8 @@ void read_transposed_chunks(hypercube_group grp, hypercube_ptr<Profile, inverse_
 
 
 template<typename Profile>
-void compact_chunks(sycl::group<1> grp, index_type num_hypercubes,
-        const typename Profile::bits_type *chunks, const index_type *offsets,
-        typename Profile::bits_type *stream) {
-    // One group per warp (for subgroup reductions)
+void compact_chunks(hypercube_group grp, const typename Profile::bits_type *chunks,
+        const index_type *offsets, typename Profile::bits_type *stream) {
     using bits_type = typename Profile::bits_type;
     constexpr index_type hc_size = ipow(Profile::hypercube_side_length, Profile::dimensions);
     constexpr index_type col_chunk_size = bitsof<bits_type>;
@@ -633,22 +631,20 @@ void compact_chunks(sycl::group<1> grp, index_type num_hypercubes,
     constexpr index_type hc_total_chunks_size = hc_size + header_chunk_size;
     constexpr index_type chunks_per_hc = 1 /* header */ + hc_size / col_chunk_size;
 
-    grp.distribute_for([&](sycl::sub_group, sycl::logical_item<1> idx) {
-        auto item = static_cast<index_type>(idx.get_global_id(0));
-        // TODO integer division cost + branch cost below?
-        //  If this is not memory bound yet, we could maintain fixed chunk size by splitting the
-        //  header chunk
-        auto hc_index = item / hc_total_chunks_size;
-        if (hc_index >= num_hypercubes) return;
-        auto hc_rel_item = item - (hc_index * hc_total_chunks_size);
-        index_type chunk_index = hc_index * chunks_per_hc;
-        index_type chunk_rel_item = hc_rel_item;
-        if (hc_rel_item >= header_chunk_size) {
-            chunk_index += 1 + (hc_rel_item - header_chunk_size) / col_chunk_size;
-            chunk_rel_item = (hc_rel_item - header_chunk_size) % col_chunk_size;
+    sycl::local_memory<index_type[chunks_per_hc + 1]> hc_offsets{grp};
+    grp.distribute_for(chunks_per_hc + 1, [&](index_type i) { hc_offsets[i] = offsets[i]; });
+
+    grp.distribute_for(hc_total_chunks_size, [&](index_type item) {
+        index_type chunk_rel_item = item;
+        index_type chunk_index = 0;
+        if (item >= header_chunk_size) {
+            chunk_index += 1 + (item - header_chunk_size) / col_chunk_size;
+            chunk_rel_item = (item - header_chunk_size) % col_chunk_size;
         }
-        auto stream_offset = offsets[chunk_index] + chunk_rel_item;
-        if (stream_offset < offsets[chunk_index + 1]) { stream[stream_offset] = chunks[item]; }
+        auto stream_offset = hc_offsets[chunk_index] + chunk_rel_item;
+        if (stream_offset < hc_offsets[chunk_index + 1]) {
+            stream[stream_offset] = chunks[item];
+        }
     });
 }
 
@@ -810,20 +806,18 @@ size_t ndzip::gpu_encoder<T, Dims>::compress(
     });
 
     submit_and_profile(_pimpl->q, "compact chunks", [&](sycl::handler &cgh) {
-        auto columns_acc = chunks_buf.template get_access<sam::read>(cgh);
+        auto chunks_acc = chunks_buf.template get_access<sam::read>(cgh);
         auto offsets_acc = chunk_lengths_buf.template get_access<sam::read>(cgh);
         auto stream_acc = stream_buf.template get_access<sam::discard_write>(cgh);
-        constexpr size_t group_size = 1024;
         const size_t header_offset = file.file_header_length() / sizeof(stream_align_t);
-        cgh.parallel<stream_compaction_kernel<T, Dims>>(
-                sycl::range<1>{detail::gpu::div_ceil(chunks_buf.get_count(), group_size)},
-                sycl::range<1>{group_size},
-                [=](sycl::group<1> grp, sycl::physical_item<1>) {
-                    compact_chunks<profile>(grp, num_hypercubes,
-                            static_cast<const bits_type *>(columns_acc.get_pointer()),
-                            static_cast<const index_type *>(offsets_acc.get_pointer()),
-                            reinterpret_cast<bits_type *>(
-                                    static_cast<stream_align_t *>(stream_acc.get_pointer())
+        cgh.parallel<stream_compaction_kernel<T, Dims>>(sycl::range<1>{num_hypercubes},
+                sycl::range<1>{hypercube_group_size},
+                [=](hypercube_group grp, sycl::physical_item<1>) {
+                    auto hc_index = static_cast<index_type>(grp.get_id(0));
+                    compact_chunks<profile>(grp,
+                            &chunks_acc.get_pointer()[hc_index * hc_total_chunks_size],
+                            &offsets_acc.get_pointer()[hc_index * chunks_per_hc],
+                            reinterpret_cast<bits_type *>(&stream_acc.get_pointer()[0]
                                     + header_offset));
                 });
     });
