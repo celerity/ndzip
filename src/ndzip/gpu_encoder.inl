@@ -608,7 +608,7 @@ void compact_chunks(hypercube_group grp, const typename Profile::bits_type *chun
 // => Probably not after the fine-grained compaction refactor
 template<typename Profile>
 void fill_stream_header(index_type num_hypercubes, global_write<stream_align_t> stream_acc,
-        global_read<file_offset_type> offset_acc, sycl::handler &cgh) {
+        global_read<index_type> offset_acc, sycl::handler &cgh) {
     using bits_type = typename Profile::bits_type;
     constexpr index_type hc_size
             = detail::ipow(Profile::hypercube_side_length, Profile::dimensions);

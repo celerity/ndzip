@@ -165,7 +165,7 @@ TEMPLATE_TEST_CASE("file produces a sane hypercube / header layout", "[file]",
 
     CHECK(std::all_of(visited.begin(), visited.end(), [](auto b) { return b; }));
 
-    CHECK(f.file_header_length() == f.num_hypercubes() * sizeof(detail::file_offset_type));
+    CHECK(f.file_header_length() == f.num_hypercubes() * sizeof(detail::index_type));
     CHECK(f.num_hypercubes() == ipow(n_hypercubes_per_dim, dims));
 }
 
@@ -325,16 +325,16 @@ TEMPLATE_TEST_CASE("file headers from different encoders are identical", "[encod
     const auto file = detail::file<profile>(input.size());
     const auto aligned_stream_size_bound
             = compressed_size_bound<typename TestType::data_type>(input.size())
-                    / sizeof(file_offset_type)
+                    / sizeof(index_type)
             + 1;
 
     cpu_encoder<data_type, dims> reference_encoder;
-    std::vector<file_offset_type> reference_stream(aligned_stream_size_bound);
+    std::vector<index_type> reference_stream(aligned_stream_size_bound);
     auto reference_stream_length = reference_encoder.compress(input, reference_stream.data());
     reference_stream.resize(file.num_hypercubes());
 
     TestType test_encoder;
-    std::vector<file_offset_type> test_stream(aligned_stream_size_bound);
+    std::vector<index_type> test_stream(aligned_stream_size_bound);
     auto test_stream_length = test_encoder.compress(input, test_stream.data());
     test_stream.resize(file.num_hypercubes());
 
@@ -795,7 +795,7 @@ TEMPLATE_TEST_CASE("CPU and GPU hypercube encodings are equivalent", "[gpu]", AL
      }).wait();
     auto gpu_length = gpu_num_words * sizeof(bits_type);
 
-    buffer<file_offset_type> length_buf{range<1>{1}};
+    buffer<index_type> length_buf{range<1>{1}};
     q.submit([&](sycl::handler &cgh) {
         auto chunks_acc = chunks_buf.template get_access<sam::read>(cgh);
         auto chunk_offsets_acc = chunk_lengths_buf.template get_access<sam::read>(cgh);

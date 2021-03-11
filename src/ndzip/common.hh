@@ -68,8 +68,6 @@ constexpr Integer floor(Integer x, Integer multiple) {
 template<typename T>
 constexpr inline size_t bitsof = CHAR_BIT * sizeof(T);
 
-using file_offset_type = uint64_t;
-
 // TODO uint32_t is not universally the fastest option, for double it's uint64_t ?!
 using index_type = uint64_t;
 
@@ -251,27 +249,25 @@ struct stream {
             const typename Profile::bits_type, typename Profile::bits_type>;
     using atom_type
             = std::conditional_t<std::is_const_v<Profile>, const stream_align_t, stream_align_t>;
-    using offset_type = std::conditional_t<std::is_const_v<Profile>, const file_offset_type,
-            file_offset_type>;
+    using offset_type = std::conditional_t<std::is_const_v<Profile>, const index_type, index_type>;
 
     index_type num_hypercubes;
     atom_type *buffer;
 
-    offset_type *header() { return static_cast<offset_type *>(buffer); }
+    offset_type *header() { return reinterpret_cast<offset_type *>(buffer); }
 
     index_type offset_after(index_type hc_index) {
-        return static_cast<index_type>(
-                (header()[hc_index] - num_hypercubes * sizeof(offset_type)) / sizeof(bits_type));
+        return header()[hc_index];
     }
 
     void set_offset_after(index_type hc_index, index_type position) {
         // TODO memcpy this, else potential aliasing UB!
-        header()[hc_index] = num_hypercubes * sizeof(offset_type) + position * sizeof(bits_type);
+        header()[hc_index] = position;
     }
 
     // requires header() to be initialized
     bits_type *hypercube(index_type hc_index) {
-        bits_type *base = reinterpret_cast<bits_type *>(
+        auto *base = reinterpret_cast<bits_type *>(
                 static_cast<offset_type *>(buffer) + num_hypercubes);
         if (hc_index == 0) {
             return base;
@@ -310,7 +306,7 @@ class file {
     }
 
     constexpr size_t file_header_length() const {
-        return num_hypercubes() * sizeof(file_offset_type);
+        return num_hypercubes() * sizeof(index_type);
     }
 
     const extent<Profile::dimensions> &size() const { return _size; };
