@@ -264,27 +264,75 @@ struct ndzip_encoder_factory<ndzip::mt_cpu_encoder<Data, Dims>> {
     }
 };
 
+template<typename Data, unsigned Dims>
+struct ndzip_encoder_factory<ndzip::gpu_encoder<Data, Dims>> {
+    ndzip::gpu_encoder<Data, Dims> create(const benchmark_params &) const {
+        return ndzip::gpu_encoder<Data, Dims>{true /* report_kernel_duration */};
+    }
+};
+
+template<template<typename, unsigned> typename Encoder, typename Data, unsigned Dims>
+struct ndzip_benchmark : public benchmark {
+    using benchmark::benchmark;
+
+    size_t time_compression(Encoder<Data, Dims> &encoder,
+            ndzip::slice<const Data, Dims> input_slice, void *compress_buffer) {
+        size_t compressed_size;
+        benchmark::time_compression(
+                [&] { compressed_size = encoder.compress(input_slice, compress_buffer); });
+        return compressed_size;
+    }
+
+    void time_decompression(Encoder<Data, Dims> &encoder, const void *compress_buffer,
+            size_t compressed_size, ndzip::slice<Data, Dims> decompress_slice) {
+        benchmark::time_decompression(
+                [&] { encoder.decompress(compress_buffer, compressed_size, decompress_slice); });
+    }
+};
+
+#if NDZIP_GPU_SUPPORT
+
+template<typename Data, unsigned Dims>
+struct ndzip_benchmark<ndzip::gpu_encoder, Data, Dims> : public benchmark {
+    using benchmark::benchmark;
+
+    size_t time_compression(ndzip::gpu_encoder<Data, Dims> &encoder,
+            ndzip::slice<const Data, Dims> input_slice, void *compress_buffer) {
+        ndzip::kernel_duration duration;
+        auto compressed_size = encoder.compress(input_slice, compress_buffer, &duration);
+        record_compression(std::chrono::duration_cast<std::chrono::microseconds>(duration));
+        return compressed_size;
+    }
+
+    void time_decompression(ndzip::gpu_encoder<Data, Dims> &encoder, const void *compress_buffer,
+            size_t compressed_size, ndzip::slice<Data, Dims> decompress_slice) {
+        ndzip::kernel_duration duration;
+        encoder.decompress(compress_buffer, compressed_size, decompress_slice, &duration);
+        record_decompression(std::chrono::duration_cast<std::chrono::microseconds>(duration));
+    }
+};
+
+#endif  // NDZIP_GPU_SUPPORT
+
 template<template<typename, unsigned> typename Encoder, typename Data, unsigned Dims>
 static benchmark_result benchmark_ndzip_3(
         const Data *input_buffer, const ndzip::extent<Dims> &size, const benchmark_params &params) {
     const auto uncompressed_size = ndzip::num_elements(size) * sizeof(Data);
     const auto input_slice = ndzip::slice{input_buffer, size};
-    auto bench = benchmark{params};
+    auto bench = ndzip_benchmark<Encoder, Data, Dims>{params};
     auto encoder = ndzip_encoder_factory<Encoder<Data, Dims>>{}.create(params);
 
     auto compress_buffer = scratch_buffer{ndzip::compressed_size_bound<Data>(size)};
     size_t compressed_size;
     while (bench.compress_more()) {
-        bench.time_compression(
-                [&] { compressed_size = encoder.compress(input_slice, compress_buffer.data()); });
+        compressed_size = bench.time_compression(encoder, input_slice, compress_buffer.data());
     }
 
     auto decompress_buffer = scratch_buffer<Data>(ndzip::num_elements(size));
     const auto decompress_slice = ndzip::slice{decompress_buffer.data(), size};
     while (bench.decompress_more()) {
-        bench.time_decompression([&] {
-            encoder.decompress(compress_buffer.data(), compressed_size, decompress_slice);
-        });
+        bench.time_decompression(
+                encoder, compress_buffer.data(), compressed_size, decompress_slice);
     }
 
     assert_buffer_equality(input_buffer, decompress_buffer.data(), uncompressed_size);

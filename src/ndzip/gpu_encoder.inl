@@ -630,8 +630,12 @@ template<typename T, unsigned Dims>
 struct ndzip::gpu_encoder<T, Dims>::impl {
     sycl::queue q;
 
-    impl() : q{sycl::gpu_selector{}} {
-        if (auto env = getenv("NDZIP_VERBOSE"); env && *env) {
+    impl(bool report_kernel_duration, bool verbose)
+        : q{sycl::gpu_selector{},
+                report_kernel_duration || verbose
+                        ? sycl::property_list{sycl::property::queue::enable_profiling{}}
+                        : sycl::property_list{}} {
+        if (verbose) {
             auto device = q.get_device();
             printf("Using %s on %s %s (%lu bytes of local memory)\n",
                     device.get_platform().get_info<sycl::info::platform::name>().c_str(),
@@ -643,7 +647,8 @@ struct ndzip::gpu_encoder<T, Dims>::impl {
 };
 
 template<typename T, unsigned Dims>
-ndzip::gpu_encoder<T, Dims>::gpu_encoder() : _pimpl(std::make_unique<impl>()) {
+ndzip::gpu_encoder<T, Dims>::gpu_encoder(bool report_kernel_duration)
+    : _pimpl(std::make_unique<impl>(report_kernel_duration, detail::gpu::verbose())) {
 }
 
 template<typename T, unsigned Dims>
@@ -651,8 +656,8 @@ ndzip::gpu_encoder<T, Dims>::~gpu_encoder() = default;
 
 
 template<typename T, unsigned Dims>
-size_t ndzip::gpu_encoder<T, Dims>::compress(
-        const slice<const data_type, dimensions> &data, void *stream) const {
+size_t ndzip::gpu_encoder<T, Dims>::compress(const slice<const data_type, dimensions> &data,
+        void *stream, kernel_duration *out_kernel_duration) const {
     using namespace detail;
     using namespace detail::gpu;
 
@@ -673,9 +678,7 @@ size_t ndzip::gpu_encoder<T, Dims>::compress(
     detail::file<profile> file(data.size());
     const auto num_hypercubes = file.num_hypercubes();
     const auto num_chunks = num_hypercubes * (1 + hc_size / col_chunk_size);
-    if (auto env = getenv("NDZIP_VERBOSE"); env && *env) {
-        printf("Have %zu hypercubes\n", num_hypercubes);
-    }
+    if (verbose()) { printf("Have %zu hypercubes\n", num_hypercubes); }
 
     sycl::buffer<data_type, dimensions> data_buffer{
             extent_cast<sycl::range<dimensions>>(data.size())};
@@ -688,7 +691,7 @@ size_t ndzip::gpu_encoder<T, Dims>::compress(
     sycl::buffer<index_type> chunk_lengths_buf(
             ceil(1 + num_chunks, hierarchical_inclusive_scan_granularity));
 
-    submit_and_profile(_pimpl->q, "transform + chunk encode", [&](sycl::handler &cgh) {
+    auto encode_kernel = [&](sycl::handler &cgh) {
         auto data_acc = data_buffer.template get_access<sam::read>(cgh);
         auto chunks_acc = chunks_buf.template get_access<sam::discard_write>(cgh);
         auto chunk_lengths_acc = chunk_lengths_buf.get_access<sam::discard_write>(cgh);
@@ -710,21 +713,29 @@ size_t ndzip::gpu_encoder<T, Dims>::compress(
                         grp.single_item([&] { chunk_lengths_acc[0] = 0; });
                     }
                 });
-    });
+    };
+    auto encode_kernel_evt
+            = submit_and_profile(_pimpl->q, "transform + chunk encode", encode_kernel);
 
+    /*
     std::vector<index_type> dbg_lengths(chunk_lengths_buf.get_range()[0]);
     _pimpl->q
             .submit([&](sycl::handler &cgh) {
                 cgh.copy(chunk_lengths_buf.get_access<sam::read>(cgh), dbg_lengths.data());
             })
             .wait();
+            */
+
     hierarchical_inclusive_scan(_pimpl->q, chunk_lengths_buf, sycl::plus<index_type>{});
+
+    /*
     std::vector<index_type> dbg_offsets(chunk_lengths_buf.get_range()[0]);
     _pimpl->q
             .submit([&](sycl::handler &cgh) {
                 cgh.copy(chunk_lengths_buf.get_access<sam::read>(cgh), dbg_offsets.data());
             })
             .wait();
+            */
 
     index_type num_compressed_words;
     auto num_compressed_words_available = _pimpl->q.submit([&](sycl::handler &cgh) {
@@ -737,7 +748,7 @@ size_t ndzip::gpu_encoder<T, Dims>::compress(
             (compressed_size_bound<data_type, dimensions>(data.size()) + sizeof(stream_align_t) - 1)
             / sizeof(stream_align_t));
 
-    submit_and_profile(_pimpl->q, "compact chunks", [&](sycl::handler &cgh) {
+    auto compact_kernel = [&](sycl::handler &cgh) {
         auto chunks_acc = chunks_buf.template get_access<sam::read>(cgh);
         auto offsets_acc = chunk_lengths_buf.template get_access<sam::read>(cgh);
         auto stream_acc = stream_buf.template get_access<sam::discard_write>(cgh);
@@ -753,7 +764,8 @@ size_t ndzip::gpu_encoder<T, Dims>::compress(
                             reinterpret_cast<bits_type *>(
                                     &stream_acc.get_pointer()[0] + header_offset));
                 });
-    });
+    };
+    auto compact_kernel_evt = submit_and_profile(_pimpl->q, "compact chunks", compact_kernel);
 
     num_compressed_words_available.wait();
     auto stream_pos = file.file_header_length() + num_compressed_words * sizeof(bits_type);
@@ -772,13 +784,18 @@ size_t ndzip::gpu_encoder<T, Dims>::compress(
             static_cast<char *>(stream) + stream_pos, data, profile::hypercube_side_length);
 
     _pimpl->q.wait();
+
+    if (out_kernel_duration) {
+        // TODO incude border in measurement
+        *out_kernel_duration = measure_duration(encode_kernel_evt, compact_kernel_evt);
+    }
     return stream_pos;
 }
 
 
 template<typename T, unsigned Dims>
-size_t ndzip::gpu_encoder<T, Dims>::decompress(
-        const void *raw_stream, size_t bytes, const slice<data_type, dimensions> &data) const {
+size_t ndzip::gpu_encoder<T, Dims>::decompress(const void *raw_stream, size_t bytes,
+        const slice<data_type, dimensions> &data, kernel_duration *out_kernel_duration) const {
     using namespace detail;
     using namespace detail::gpu;
 
@@ -800,7 +817,7 @@ size_t ndzip::gpu_encoder<T, Dims>::decompress(
                 stream_buffer.template get_access<sam::discard_write>(cgh));
     });
 
-    submit_and_profile(_pimpl->q, "decompress blocks", [&](sycl::handler &cgh) {
+    auto kernel_evt = submit_and_profile(_pimpl->q, "decompress blocks", [&](sycl::handler &cgh) {
         auto stream_acc = stream_buffer.template get_access<sam::read>(cgh);
         auto data_acc = data_buffer.template get_access<sam::discard_write>(cgh);
         auto data_size = data.size();
@@ -836,6 +853,11 @@ size_t ndzip::gpu_encoder<T, Dims>::decompress(
     stream_pos
             += detail::unpack_border(data, static_cast<const std::byte *>(raw_stream) + stream_pos,
                     profile::hypercube_side_length);
+
+    if (out_kernel_duration) {
+        // TODO incude border in measurement
+        *out_kernel_duration = measure_duration(kernel_evt, kernel_evt);
+    }
 
     return stream_pos;
 }

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <ndzip/gpu_encoder.hh>
 #include "common.hh"
 
 #include <type_traits>
@@ -9,17 +10,24 @@
 
 namespace ndzip::detail::gpu {
 
+inline bool verbose()
+{
+    auto env = getenv("NDZIP_VERBOSE");
+    return env && *env;
+}
+
+kernel_duration measure_duration(const sycl::event &start, const sycl::event &end) {
+    auto ns = end.template get_profiling_info<sycl::info::event_profiling::command_end>()
+              - start.template get_profiling_info<sycl::info::event_profiling::command_start>();
+    return kernel_duration{ns};
+}
+
 template<typename CGF>
 auto submit_and_profile(sycl::queue &q, const char *label, CGF &&cgf) {
-    if (auto env = getenv("NDZIP_VERBOSE"); env && *env) {
-        // no kernel profiling in hipSYCL yet!
-        q.wait_and_throw();
-        auto before = std::chrono::system_clock::now();
+    if (verbose()) {
         auto evt = q.submit(std::forward<CGF>(cgf));
-        q.wait_and_throw();
-        auto after = std::chrono::system_clock::now();
-        auto seconds = std::chrono::duration_cast<std::chrono::duration<double>>(after - before);
-        printf("[profile] %s: %.3fms\n", label, seconds.count() * 1e3);
+        auto duration = measure_duration(evt, evt);
+        printf("[profile] %s: %.3fms\n", label, duration.count() * 1e-6);
         return evt;
     } else {
         return q.submit(std::forward<CGF>(cgf));
@@ -183,7 +191,7 @@ void hierarchical_inclusive_scan(
         const auto local_range = sycl::range<1>{local_size};
 
         char label[50];
-        sprintf(label, "hierarchical_inclusive_scanner reduce %zu", i);
+        sprintf(label, "hierarchical_inclusive_scan reduce %zu", i);
         submit_and_profile(queue, label, [&](sycl::handler &cgh) {
             auto big_acc = big_buffer.template get_access<sam::read_write>(cgh);
             auto small_acc = small_buffer.template get_access<sam::discard_write>(cgh);
@@ -211,7 +219,7 @@ void hierarchical_inclusive_scan(
         const auto local_range = sycl::range<1>{local_size};
 
         char label[50];
-        sprintf(label, "hierarchical_inclusive_scanner expand %zu", ii);
+        sprintf(label, "hierarchical_inclusive_scan expand %zu", ii);
         submit_and_profile(queue, label, [&](sycl::handler &cgh) {
             auto small_acc = small_buffer.template get_access<sam::read>(cgh);
             auto big_acc = big_buffer.template get_access<sam::read_write>(cgh);

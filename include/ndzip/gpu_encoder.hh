@@ -2,9 +2,12 @@
 
 #include "array.hh"
 
+#include <chrono>
 #include <memory>
 
 namespace ndzip {
+
+using kernel_duration = std::chrono::duration<uint64_t, std::nano>;
 
 template<typename T, unsigned Dims>
 class gpu_encoder {
@@ -12,15 +15,17 @@ class gpu_encoder {
     using data_type = T;
     constexpr static unsigned dimensions = Dims;
 
-    gpu_encoder();
+    explicit gpu_encoder(bool report_kernel_duration = false);
     ~gpu_encoder();
     gpu_encoder(gpu_encoder &&) noexcept = default;
     gpu_encoder &operator=(gpu_encoder &&) noexcept = default;
 
-    size_t compress(const slice<const data_type, dimensions> &item, void *stream) const;
+    size_t compress(const slice<const data_type, dimensions> &item, void *stream,
+            kernel_duration *out_kernel_duration = nullptr) const;
 
     size_t decompress(
-            const void *raw_stream, size_t bytes, const slice<data_type, dimensions> &data) const;
+            const void *raw_stream, size_t bytes, const slice<data_type, dimensions> &data,
+            kernel_duration *out_kernel_duration = nullptr) const;
 
   private:
     struct impl;

@@ -302,7 +302,7 @@ size_t GFC_Compress_Memory(const void *in_stream, size_t in_size, void *out_stre
     int warpsperblock, int dimensionality, uint64_t *kernel_time_us)
 {
   if (sizeof(ull) * MAX < in_size) {
-    fprintf(stderr, "GFC: in_size %zu exceeds max %d\n", in_size, sizeof(ull)*MAX); abort();
+    fprintf(stderr, "GFC: in_size %zu exceeds max %zu\n", in_size, sizeof(ull)*MAX); abort();
   }
 
   size_t in_cursor = 0;
