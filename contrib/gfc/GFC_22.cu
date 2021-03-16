@@ -105,6 +105,9 @@ __global__ void CompressionKernel()
   term = cutd[warp];
   off = ((start+1)/2*17);
 
+  // __syncwarp() requires all threads to participate (otherwise we need to derive an active mask)
+  assert((term - start) % WARPSIZE == 0);
+
   prev = 0;
   for (int i = start + lane; i < term; i += WARPSIZE) {
     // calculate delta between value to compress and prediction
@@ -121,17 +124,17 @@ __global__ void CompressionKernel()
 
     // prefix sum to determine start positions of non-zero delta bytes
     ibufs[iindex] = bcount;
-    __threadfence_block();
+    __syncwarp();
     ibufs[iindex] += ibufs[iindex-1];
-    __threadfence_block();
+    __syncwarp();
     ibufs[iindex] += ibufs[iindex-2];
-    __threadfence_block();
+    __syncwarp();
     ibufs[iindex] += ibufs[iindex-4];
-    __threadfence_block();
+    __syncwarp();
     ibufs[iindex] += ibufs[iindex-8];
-    __threadfence_block();
+    __syncwarp();
     ibufs[iindex] += ibufs[iindex-16];
-    __threadfence_block();
+    __syncwarp();
 
     // write out non-zero bytes of delta to compressed buffer
     beg = off + (WARPSIZE/2) + ibufs[iindex-1];
@@ -145,7 +148,7 @@ __global__ void CompressionKernel()
     tmp = ibufs[lastidx];
     code |= bcount;
     ibufs[iindex] = code;
-    __threadfence_block();
+    __syncwarp();
 
     // write out half-bytes of sign and leading-zero-byte count (every other thread
     // writes its half-byte and neighbor's half-byte)
@@ -205,6 +208,9 @@ __global__ void DecompressionKernel()
   term = cutd[warp];
   off = ((start+1)/2*17);
 
+  // __syncwarp() requires all threads to participate (otherwise we need to derive an active mask)
+  assert((term - start) % WARPSIZE == 0);
+
   prev = 0;
   for (int i = start + lane; i < term; i += WARPSIZE) {
     // read in half-bytes of size and leading-zero count information
@@ -214,7 +220,7 @@ __global__ void DecompressionKernel()
       ibufs[iindex + 1] = code >> 4;
     }
     off += (WARPSIZE/2);
-    __threadfence_block();
+    __syncwarp();
     code = ibufs[iindex];
 
     bcount = code & 7;
@@ -222,17 +228,17 @@ __global__ void DecompressionKernel()
 
     // calculate start positions of compressed data
     ibufs[iindex] = bcount;
-    __threadfence_block();
+    __syncwarp();
     ibufs[iindex] += ibufs[iindex-1];
-    __threadfence_block();
+    __syncwarp();
     ibufs[iindex] += ibufs[iindex-2];
-    __threadfence_block();
+    __syncwarp();
     ibufs[iindex] += ibufs[iindex-4];
-    __threadfence_block();
+    __syncwarp();
     ibufs[iindex] += ibufs[iindex-8];
-    __threadfence_block();
+    __syncwarp();
     ibufs[iindex] += ibufs[iindex-16];
-    __threadfence_block();
+    __syncwarp();
 
     // read in compressed data (the non-zero bytes)
     beg = off + ibufs[iindex-1];
@@ -251,7 +257,7 @@ __global__ void DecompressionKernel()
 
     // write out the uncompressed word
     fbufd[i] = prev + diff;
-    __threadfence_block();
+    __syncwarp();
 
     // save prediction for next subchunk
     prev = fbufd[i + offset];
