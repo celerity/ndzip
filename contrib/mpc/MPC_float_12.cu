@@ -51,10 +51,25 @@ extern "C" {
 
 #define TPB 1024  /* do not change */
 
+// BLOCKS_PER_SM on the device must be equal to blocksPerSM (see below) on the host
+#ifdef __CUDA_ARCH__
+#   if __CUDA_ARCH__ == 750 || __CUDA_ARCH__ == 860
+#      define BLOCKS_PER_SM 1
+#   elif __CUDA_ARCH__ <= 860
+#      define BLOCKS_PER_SM 2
+#   else
+#      error Check how many 1024-thread blocks per SM your target supports and update BLOCKS_PER_SM
+#   endif
+#else
+#   define BLOCKS_PER_SM 0 // dummy for host compilation
+#endif
+
+#if __CUDA_ARCH__ >= 700 || CUDART_VERSION >= 9000
 // Unsynced versions are deprecated
 #define __shfl(...) __shfl_sync(0xffffffff, __VA_ARGS__)
 #define __shfl_up(...) __shfl_up_sync(0xffffffff, __VA_ARGS__)
 #define __ballot(...) __ballot_sync(0xffffffff, __VA_ARGS__)
+#endif
 
 static inline __device__
 void prefixsum2(int &val, int sbuf[TPB], int &valb, int sbufb[TPB])
@@ -167,7 +182,7 @@ The second element of the output array specifies how many elements are actually
 used.  It should be replaced by the value n before the data is further processed.
 *****************************************************************************/
 
-static __global__ __launch_bounds__(1024, 2)
+static __global__ __launch_bounds__(TPB, BLOCKS_PER_SM)
 void MPCcompress(const int n, int* const original, int* const compressed, volatile int* const goffset, unsigned char dim)
 {
   const int tid = threadIdx.x;
@@ -305,7 +320,7 @@ The output array needs to provide space for n elements has to be cast to an
 array of floats before it can be used.
 *****************************************************************************/
 
-static __global__ __launch_bounds__(1024, 2)
+static __global__ __launch_bounds__(TPB, BLOCKS_PER_SM)
 void MPCdecompress(int* const compressed, int* const decompressed, volatile int* const goffset)
 {
   const int dim = (compressed[0] & 31) + 1;
@@ -430,7 +445,8 @@ int MPC_float_compressMemory(int *output, const int *input, int insize, int dim,
         fprintf(stderr, "Need at least compute capability 3.0\n");
         abort();
     }
-    const int blocks = deviceProp.multiProcessorCount * 2;
+    const int blocksPerSM = deviceProp.maxThreadsPerMultiProcessor / TPB;
+    const int blocks = deviceProp.multiProcessorCount * blocksPerSM;
 
     int outsize = MPC_float_compressBound(insize);
     assert(0 < dim);  assert(dim <= 32);
@@ -497,7 +513,8 @@ int MPC_float_decompressMemory(int *output, const int *input, int insize, uint64
         fprintf(stderr, "Need at least compute capability 3.0\n");
         abort();
     }
-    const int blocks = deviceProp.multiProcessorCount * 2;
+    const int blocksPerSM = deviceProp.maxThreadsPerMultiProcessor / TPB;
+    const int blocks = deviceProp.multiProcessorCount * blocksPerSM;
 
     int outsize = MPC_float_decompressedSize(input, insize);
 

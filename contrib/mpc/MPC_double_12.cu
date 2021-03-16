@@ -51,10 +51,25 @@ extern "C" {
 
 #define TPB 1024  /* do not change */
 
+// BLOCKS_PER_SM on the device must be equal to blocksPerSM (see below) on the host
+#ifdef __CUDA_ARCH__
+#   if __CUDA_ARCH__ == 750 || __CUDA_ARCH__ == 860
+#      define BLOCKS_PER_SM 1
+#   elif __CUDA_ARCH__ <= 860
+#      define BLOCKS_PER_SM 2
+#   else
+#      error Check how many 1024-thread blocks per SM your target supports and update BLOCKS_PER_SM
+#   endif
+#else
+#   define BLOCKS_PER_SM 0 // dummy for host compilation
+#endif
+
+#if __CUDA_ARCH__ >= 700 || CUDART_VERSION >= 9000
 // Unsynced versions are deprecated
 #define __shfl(...) __shfl_sync(0xffffffff, __VA_ARGS__)
 #define __shfl_up(...) __shfl_up_sync(0xffffffff, __VA_ARGS__)
 #define __ballot(...) __ballot_sync(0xffffffff, __VA_ARGS__)
+#endif
 
 static inline __device__
 void prefixsum(int &val, int sbuf[TPB])
@@ -167,7 +182,7 @@ The upper half of the first element specifies how many elements are actually
 used.  It should be replaced by the value n before the data is further processed.
 *****************************************************************************/
 
-static __global__ __launch_bounds__(1024, 2)
+static __global__ __launch_bounds__(TPB, BLOCKS_PER_SM)
 void MPCcompress(const int n, long* const original, long* const compressed, volatile int* const goffset, unsigned char dim)
 {
   const int tid = threadIdx.x;
@@ -277,7 +292,7 @@ The output array needs to provide space for n elements has to be cast to an
 array of doubles before it can be used.
 *****************************************************************************/
 
-static __global__ __launch_bounds__(1024, 2)
+static __global__ __launch_bounds__(TPB, BLOCKS_PER_SM)
 void MPCdecompress(long* const compressed, long* const decompressed, volatile int* const goffset)
 {
   const int dim = (compressed[0] & 31) + 1;
@@ -381,7 +396,8 @@ int MPC_double_compressMemory(long *output, const long *input, int insize, int d
         fprintf(stderr, "Need at least compute capability 3.0\n");
         abort();
     }
-    const int blocks = deviceProp.multiProcessorCount * 2;
+    const int blocksPerSM = deviceProp.maxThreadsPerMultiProcessor / TPB;
+    const int blocks = deviceProp.multiProcessorCount * blocksPerSM;
 
     cudaDeviceSetSharedMemConfig(cudaSharedMemBankSizeEightByte);
 
@@ -452,7 +468,8 @@ int MPC_double_decompressMemory(long *output, const long *input, int insize,
         fprintf(stderr, "Need at least compute capability 3.0\n");
         abort();
     }
-    const int blocks = deviceProp.multiProcessorCount * 2;
+    const int blocksPerSM = deviceProp.maxThreadsPerMultiProcessor / TPB;
+    const int blocks = deviceProp.multiProcessorCount * blocksPerSM;
 
     cudaDeviceSetSharedMemConfig(cudaSharedMemBankSizeEightByte);
 
