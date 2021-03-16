@@ -114,6 +114,7 @@ struct benchmark_params {
     size_t num_threads = 1;
     std::chrono::microseconds min_time = std::chrono::seconds(1);
     unsigned min_reps = 1;
+    unsigned max_reps = 100;
     bool warm_up = true;
 };
 
@@ -182,8 +183,9 @@ class benchmark {
         bool warmed_up = false;
 
         bool more(const benchmark_params &params) const {
-            return (params.warm_up && !warmed_up) || total_time < params.min_time
-                    || reps < std::max(1u, params.min_reps);
+            return (params.warm_up && !warmed_up) || reps < std::max(1u, params.min_reps)
+                    || (total_time < params.min_time
+                            && reps < std::max(std::max(1u, params.min_reps), params.max_reps));
         }
 
         template<typename F>
@@ -1019,7 +1021,7 @@ struct join {
 
 
 static void benchmark_file(const metadata &metadata, const algorithm_map &algorithms, bool warm_up,
-        std::chrono::microseconds min_time, unsigned min_reps, tuning tunables,
+        std::chrono::microseconds min_time, unsigned min_reps, unsigned max_reps, tuning tunables,
         bool benchmark_scaling, const ndzip::detail::io_factory &io_factory) {
     auto input_stream
             = io_factory.create_input_stream(metadata.path.string(), metadata.size_in_bytes());
@@ -1049,7 +1051,8 @@ static void benchmark_file(const metadata &metadata, const algorithm_map &algori
         for (auto tunable : tunable_values) {
             for (size_t num_threads = min_num_threads; num_threads <= max_num_threads;
                     ++num_threads) {
-                auto params = benchmark_params{tunable, num_threads, min_time, min_reps, warm_up};
+                auto params = benchmark_params{
+                        tunable, num_threads, min_time, min_reps, max_reps, warm_up};
 
                 benchmark_result result;
                 try {
@@ -1125,7 +1128,8 @@ int main(int argc, char **argv) {
     std::vector<std::string> exclude_algorithms;
     tuning tunables = tuning::good;
     unsigned benchmark_ms = 1000;
-    unsigned benchmark_reps = 1;
+    unsigned benchmark_min_reps = 1;
+    unsigned benchmark_max_reps = 100;
     bool no_mmap = false;
     bool no_warmup = false;
     bool benchmark_scaling = false;
@@ -1145,8 +1149,10 @@ int main(int argc, char **argv) {
                     "algorithms to NOT evaluate (see --help)")
             ("time-each,t", opts::value(&benchmark_ms),
                     "repeat each for at least t ms (default 1000)")
-            ("reps-each,r", opts::value(&benchmark_reps),
-                    "repeat each at least n times (default 3)")
+            ("min-reps,r", opts::value(&benchmark_min_reps),
+                    "repeat each at least n times (default 1)")
+            ("max-reps,R", opts::value(&benchmark_max_reps),
+                    "repeat each at most n times (default 100)")
             ("tunables", opts::value<std::string>(), "tunables good|minmax|full (default good)")
             ("scaling", opts::bool_switch(&benchmark_scaling),
                     "vary number of threads for multi-threaded algorithms")
@@ -1230,8 +1236,8 @@ int main(int argc, char **argv) {
                      "uncompressed bytes;compressed bytes\n";
         for (auto &metadata : load_metadata_file(metadata_csv_file)) {
             benchmark_file(metadata, selected_algorithms, !no_warmup,
-                    std::chrono::milliseconds(benchmark_ms), benchmark_reps, tunables,
-                    benchmark_scaling, *io_factory);
+                    std::chrono::milliseconds(benchmark_ms), benchmark_min_reps, benchmark_max_reps,
+                    tunables, benchmark_scaling, *io_factory);
         }
         return EXIT_SUCCESS;
     } catch (std::exception &e) {
