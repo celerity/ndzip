@@ -67,7 +67,7 @@ TEMPLATE_TEST_CASE("Loading", "[load]", ALL_PROFILES) {
                     [=](hypercube_group grp, sycl::physical_item<1>) {
                         hypercube_memory<bits_type, hc_layout> lm{grp};
                         gpu::hypercube_ptr<TestType, gpu::forward_transform_tag> hc{lm()};
-                        detail::gpu::index_type hc_index = grp.get_id(0);
+                        index_type hc_index = grp.get_id(0);
                         slice<const data_type, dimensions> data{
                                 data_acc.get_pointer(), grid_extent};
 
@@ -187,7 +187,7 @@ TEMPLATE_TEST_CASE("Chunk encoding", "[encode]", ALL_PROFILES) {
 
     {
         sycl::queue q;
-        gpu::hierarchical_inclusive_scan(q, lengths, sycl::plus<gpu::index_type>{});
+        gpu::hierarchical_inclusive_scan(q, lengths, sycl::plus<index_type>{});
     }
 
     sycl::buffer<bits_type> stream(n_blocks * hc_total_chunks_size);

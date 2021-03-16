@@ -16,7 +16,7 @@ inline bool verbose()
     return env && *env;
 }
 
-kernel_duration measure_duration(const sycl::event &start, const sycl::event &end) {
+inline kernel_duration measure_duration(const sycl::event &start, const sycl::event &end) {
     auto ns = end.template get_profiling_info<sycl::info::event_profiling::command_end>()
               - start.template get_profiling_info<sycl::info::event_profiling::command_start>();
     return kernel_duration{ns};
