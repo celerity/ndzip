@@ -29,6 +29,10 @@
 #if NDZIP_BENCHMARK_HAVE_FPZIP
 #include <fpzip.h>
 #endif
+#if NDZIP_BENCHMARK_HAVE_CUDPP
+#include <cuda_runtime.h>
+#include <cudpp.h>
+#endif
 #include <SPDP_11.h>
 #include <fpc.h>
 #include <pFPC.h>
@@ -640,6 +644,110 @@ static benchmark_result benchmark_mpc(
 #endif
 
 
+#if NDZIP_BENCHMARK_HAVE_CUDPP
+
+#define STRINGIFY2(x) #x
+#define STRINGIFY(x) STRINGIFY2(x)
+
+#define CHECKED_CUDPP_CALL(f, ...) \
+    do { \
+        if (CUDPPResult r = f(__VA_ARGS__); r != CUDPP_SUCCESS) { \
+            throw std::runtime_error(STRINGIFY(f) ": CUDPP error code " + std::to_string(r)); \
+        } \
+    } while (0)
+
+#define CHECKED_CUDA_CALL(f, ...) \
+    do { \
+        if (cudaError_t r = f(__VA_ARGS__); r != cudaSuccess) { \
+            throw std::runtime_error(std::string{STRINGIFY(f) ": "} + cudaGetErrorName(r)); \
+        } \
+    } while (0)
+
+static benchmark_result benchmark_cudpp_compress(
+        const void *input_buffer, const metadata &metadata, const benchmark_params &params) {
+    const auto uncompressed_size = metadata.size_in_bytes();
+    const size_t block_size = 1'048'576;
+    const size_t num_blocks = (uncompressed_size + block_size - 1) / block_size;
+
+    auto bench = benchmark{params};
+
+    CUDPPHandle pp;
+    CHECKED_CUDPP_CALL(cudppCreate, &pp);
+    auto destroy_pp = defer([&] { CHECKED_CUDPP_CALL(cudppDestroy, pp); });
+
+    CUDPPHandle plan;
+    CUDPPConfiguration config{
+            CUDPP_COMPRESS, CUDPP_OPERATOR_INVALID, CUDPP_UCHAR, 0, CUDPP_DEFAULT_BUCKET_MAPPER};
+    CHECKED_CUDPP_CALL(cudppPlan, pp, &plan, config, block_size, 0, 0);
+    auto destroy_plan = defer([&] { CHECKED_CUDPP_CALL(cudppDestroyPlan, plan); });
+
+    unsigned char *d_uncompressed = nullptr;
+    int *d_bwtIndex = nullptr;
+    unsigned int *d_histSize = nullptr;
+    unsigned int *d_hist = nullptr;
+    unsigned int *d_encodeOffset = nullptr;
+    unsigned int *d_compressedSize = nullptr;
+    unsigned int *d_compressed = nullptr;
+
+    CHECKED_CUDA_CALL(cudaMalloc, &d_uncompressed, num_blocks * block_size);
+    auto free_d_uncompressed = defer([&] { CHECKED_CUDA_CALL(cudaFree, d_uncompressed); });
+    CHECKED_CUDA_CALL(cudaMalloc, &d_bwtIndex, sizeof(int));
+    auto free_d_bwtIndex = defer([&] { CHECKED_CUDA_CALL(cudaFree, d_bwtIndex); });
+    CHECKED_CUDA_CALL(cudaMalloc, &d_hist, sizeof(unsigned int) * 256);
+    auto free_d_hist = defer([&] { CHECKED_CUDA_CALL(cudaFree, d_hist); });
+    CHECKED_CUDA_CALL(cudaMalloc, &d_encodeOffset, sizeof(unsigned int) * 256);
+    auto free_d_encodeOffset = defer([&] { CHECKED_CUDA_CALL(cudaFree, d_encodeOffset); });
+    CHECKED_CUDA_CALL(cudaMalloc, &d_compressedSize, sizeof(unsigned int) * num_blocks);
+    auto free_d_compressedSize = defer([&] { CHECKED_CUDA_CALL(cudaFree, d_compressedSize); });
+    CHECKED_CUDA_CALL(cudaMalloc, &d_compressed, block_size * 2);
+    auto free_d_compressed = defer([&] { CHECKED_CUDA_CALL(cudaFree, d_compressed); });
+
+    CHECKED_CUDA_CALL(
+            cudaMemcpy, d_uncompressed, input_buffer, uncompressed_size, cudaMemcpyHostToDevice);
+    // cudPPCompress must be called with exactly block_size elements
+    CHECKED_CUDA_CALL(cudaMemset, d_uncompressed + uncompressed_size, 0,
+            num_blocks * block_size - uncompressed_size);
+
+    size_t compressed_size = 0;
+    while (bench.compress_more()) {
+        cudaEvent_t begin, end;
+        CHECKED_CUDA_CALL(cudaEventCreate, &begin);
+        auto destroy_begin = defer([&] { CHECKED_CUDA_CALL(cudaEventDestroy, begin); });
+        CHECKED_CUDA_CALL(cudaEventCreate, &end);
+        auto destroy_end = defer([&] { CHECKED_CUDA_CALL(cudaEventDestroy, end); });
+        CHECKED_CUDA_CALL(cudaEventRecord, begin, nullptr);
+
+        for (size_t i = 0; i < num_blocks; ++i) {
+            auto offset = block_size * i;
+            CHECKED_CUDPP_CALL(cudppCompress, plan, d_uncompressed + offset, d_bwtIndex, d_histSize,
+                    d_hist, d_encodeOffset, d_compressedSize + i, d_compressed, block_size);
+        }
+
+        CHECKED_CUDA_CALL(cudaEventRecord, end, nullptr);
+        CHECKED_CUDA_CALL(cudaEventSynchronize, end);
+        float duration_ms = 0;
+        CHECKED_CUDA_CALL(cudaEventElapsedTime, &duration_ms, begin, end);
+
+        bench.record_compression(
+                std::chrono::microseconds{static_cast<uint64_t>(duration_ms * 1e3)});
+
+        if (compressed_size == 0) {
+            std::vector<unsigned int> compressed_block_sizes(num_blocks);
+            CHECKED_CUDA_CALL(cudaMemcpy, compressed_block_sizes.data(), d_compressedSize,
+                    num_blocks * sizeof *d_compressedSize, cudaMemcpyDeviceToHost);
+            // Output sizes are reported in words (i.e. "typedef uint" in CUDPP the code)
+            compressed_size = sizeof(unsigned int) * std::accumulate(
+                    compressed_block_sizes.begin(), compressed_block_sizes.end(), size_t{0});
+        }
+    }
+
+    // CUDPP has no GPU decompressor
+
+    return std::move(bench).result(uncompressed_size, compressed_size);
+}
+#endif
+
+
 #if NDZIP_BENCHMARK_HAVE_ZLIB
 static benchmark_result benchmark_deflate(
         const void *input_buffer, const metadata &metadata, const benchmark_params &params) {
@@ -963,6 +1071,9 @@ const algorithm_map &available_algorithms() {
 #endif
 #if NDZIP_BENCHMARK_HAVE_FPZIP
         {"fpzip", {benchmark_fpzip}},
+#endif
+#if NDZIP_BENCHMARK_HAVE_CUDPP
+        {"cudpp-compress", {benchmark_cudpp_compress}},
 #endif
         {"fpc", {benchmark_fpc, 1, 15, 25}},
         {"pfpc", {benchmark_pfpc, 1, 15, 25, true /* multithreaded */}},

@@ -34,6 +34,12 @@ if (NDZIP_BUILD_BENCHMARK)
     else ()
         message(WARNING "Building without fpzip benchmark, perform git submodule step to enable")
     endif ()
+
+    if (EXISTS "${CMAKE_SOURCE_DIR}/contrib/cudpp/CMakeLists.txt")
+        set(CUDPP_FOUND TRUE)
+    else ()
+        message(WARNING "Building without cudpp benchmark, perform git submodule step to enable")
+    endif ()
 endif ()
 
 
@@ -149,6 +155,12 @@ if (NDZIP_BUILD_BENCHMARK)
     add_subdirectory(contrib/pfpc EXCLUDE_FROM_ALL)
     add_subdirectory(contrib/spdp EXCLUDE_FROM_ALL)
 
+    if (CUDPP_FOUND)
+        set(CUDPP_BUILD_SHARED_LIBS ON CACHE BOOL "On to build shared libraries, off for static libraries.")
+        add_subdirectory(contrib/cudpp EXCLUDE_FROM_ALL)
+        include_directories(contrib/cudpp/include)
+    endif ()
+
     if (CUDAToolkit_FOUND)
         add_subdirectory(contrib/gfc EXCLUDE_FROM_ALL)
         add_subdirectory(contrib/mpc EXCLUDE_FROM_ALL)
@@ -164,6 +176,7 @@ if (NDZIP_BUILD_BENCHMARK)
         "-DNDZIP_BENCHMARK_HAVE_LZ4=$<BOOL:${LZ4_FOUND}>"
         "-DNDZIP_BENCHMARK_HAVE_LZMA=$<BOOL:${LZMA_FOUND}>"
         "-DNDZIP_BENCHMARK_HAVE_FPZIP=$<BOOL:${FPZIP_FOUND}>"
+        "-DNDZIP_BENCHMARK_HAVE_CUDPP=$<BOOL:${CUDPP_FOUND}>"
         "-DNDZIP_BENCHMARK_HAVE_GFC=$<BOOL:${CUDAToolkit_FOUND}>"
         "-DNDZIP_BENCHMARK_HAVE_MPC=$<BOOL:${CUDAToolkit_FOUND}>"
         "-DNDZIP_BENCHMARK_HAVE_ZSTD=$<BOOL:${ZSTD_FOUND}>"
@@ -185,6 +198,9 @@ if (NDZIP_BUILD_BENCHMARK)
     endif ()
     if (FPZIP_FOUND)
         target_link_libraries(benchmark PRIVATE fpzip::fpzip)
+    endif ()
+    if (CUDPP_FOUND)
+        target_link_libraries(benchmark PRIVATE cudpp)
     endif ()
     if (CUDAToolkit_FOUND)
         target_link_libraries(benchmark PRIVATE gfc)
