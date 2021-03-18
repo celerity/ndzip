@@ -68,6 +68,8 @@ constexpr Integer floor(Integer x, Integer multiple) {
 template<typename T>
 constexpr inline size_t bitsof = CHAR_BIT * sizeof(T);
 
+// TODO change to uint32_t and ensure no implicit index_type -> size_t conversions happen anywhere.
+//  Be wary of things like sizeof and bitsof.
 using index_type = size_t;
 
 template<typename Fn, typename Index, typename T>

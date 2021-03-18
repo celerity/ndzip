@@ -61,11 +61,8 @@ size_t global_offset(size_t local_offset, extent<Profile::dimensions> global_siz
     return global_offset;
 }
 
-// Fine tuning block size. For block transform:
-//    -  double precision, 256 >> 128
-//    - single precision 1D, 512 >> 128 > 256.
-//    - single precision forward 1D 2D, 512 >> 256.
-// At least for sm_61 profile<double, 3d> exceeds maximum register usage with 512
+// TODO for 64-bit, 512 or 1024 is probably better (we want enough threads to achieve max occupancy
+//  even though blocks/SM is limited by local memory size). Should be template<typename Profile>
 inline constexpr index_type hypercube_group_size = 256;
 using hypercube_group = known_size_group<hypercube_group_size>;
 
@@ -525,7 +522,7 @@ void write_transposed_chunks(hypercube_group grp, hypercube_ptr<Profile, forward
                     // requires two outer loop iterations, one computing the lower and one computing
                     // the upper word of each column. The number of shifts/adds remains the same.
                     // Note that this makes assumptions about the endianness of uint64_t.
-                    static_assert(warp_size == 32); // implicit assumption with uint32_t
+                    static_assert(warp_size == 32);  // implicit assumption with uint32_t
                     sycl::vec<uint32_t, warps_per_col_chunk> columns[warps_per_col_chunk];
 #pragma unroll
                     for (index_type i = 0; i < warps_per_col_chunk; ++i) {
@@ -535,8 +532,9 @@ void write_transposed_chunks(hypercube_group grp, hypercube_ptr<Profile, forward
 #pragma unroll
                             for (index_type w = 0; w < warps_per_col_chunk; ++w) {
                                 columns[w][i] |= ((row[warps_per_col_chunk - 1 - w]
-                                                               >> (31 - item % warp_size))
-                                                              & uint32_t{1}) << j;
+                                                          >> (31 - item % warp_size))
+                                                         & uint32_t{1})
+                                        << j;
                             }
                         }
                     }
@@ -570,6 +568,11 @@ void read_transposed_chunks(hypercube_group grp, hypercube_ptr<Profile, inverse_
     constexpr index_type chunk_size = bitsof<bits_type>;
     constexpr index_type num_chunks = hc_size / chunk_size;
 
+    using word_type = uint32_t;
+    constexpr index_type word_size = bitsof<word_type>;
+    constexpr index_type words_per_col = sizeof(bits_type) / sizeof(word_type);
+    using row_type = sycl::vec<word_type, words_per_col>;
+
     sycl::local_memory<index_type[1 + num_chunks]> chunk_offsets{grp};
     grp.distribute_for(
             num_chunks, [&](index_type item) { chunk_offsets[1 + item] = popcount(stream[item]); });
@@ -577,26 +580,36 @@ void read_transposed_chunks(hypercube_group grp, hypercube_ptr<Profile, inverse_
     inclusive_scan<num_chunks>(grp, chunk_offsets(), sycl::plus<index_type>());
 
     grp.distribute_for(
-            hc_size, [&](index_type item, index_type, sycl::logical_item<1>, sycl::sub_group sg) {
+            hc_size, [&](index_type item, index_type, sycl::logical_item<1>, sycl::sub_group) {
                 auto chunk_index = item / chunk_size;
                 auto head = stream[chunk_index];
 
-                bits_type row = 0;
+                row_type row;
                 if (head != 0) {
-                    auto offset = chunk_offsets[chunk_index];
                     const auto chunk_base = floor(item, chunk_size);
-                    const auto cell = item - chunk_base;
-                    for (index_type i = 0; i < chunk_size; ++i) {
-                        // TODO for double, can we still operate on 32 bit words? e.g split into
-                        //  low / high loop
-                        if ((head >> (chunk_size - 1 - i)) & bits_type{1}) {
-                            row |= (stream[offset] >> (chunk_size - 1 - cell) & bits_type{1})
-                                    << (chunk_size - 1 - i);
-                            offset += 1;
+                    const auto outer_cell = words_per_col - 1 - (item - chunk_base) / word_size;
+                    const auto inner_cell = word_size - 1 - (item - chunk_base) % word_size;
+
+                    auto head_col = bit_cast<row_type>(head);
+                    auto offset = chunk_offsets[chunk_index];
+
+                    // See write_transposed_chunks for the optimization of the 64-bit case
+#pragma unroll
+                    for (index_type i = 0; i < words_per_col; ++i) {
+                        const auto ii = words_per_col - 1 - i;
+                        for (index_type j = 0; j < word_size; ++j) {
+                            const auto jj = word_size - 1 - j;
+                            auto col_word = load_aligned<word_type>(
+                                    reinterpret_cast<const std::byte *>(stream + offset)
+                                    + sizeof(word_type) * outer_cell);
+                            if ((head_col[ii] >> jj) & word_type{1}) {
+                                row[ii] |= ((col_word >> inner_cell) & word_type{1}) << jj;
+                                offset += 1;
+                            }
                         }
                     }
                 }
-                hc.store(item, row);
+                hc.store(item, bit_cast<bits_type>(row));
             });
 }
 
