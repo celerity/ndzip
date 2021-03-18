@@ -68,8 +68,7 @@ constexpr Integer floor(Integer x, Integer multiple) {
 template<typename T>
 constexpr inline size_t bitsof = CHAR_BIT * sizeof(T);
 
-// TODO uint32_t is not universally the fastest option, for double it's uint64_t ?!
-using index_type = uint64_t;
+using index_type = size_t;
 
 template<typename Fn, typename Index, typename T>
 [[gnu::always_inline]] void invoke_for_element(Fn &&fn, Index index, T &&value) {

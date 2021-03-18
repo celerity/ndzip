@@ -42,7 +42,7 @@ T extent_cast(const sycl::id<Dims> &r) {
 
 template<typename U, typename T>
 [[gnu::always_inline]] U bit_cast(T v) {
-    static_assert(std::is_pod_v<T> && std::is_pod_v<U> && sizeof(U) == sizeof(T));
+    static_assert(std::is_trivially_copy_constructible_v<U> && sizeof(U) == sizeof(T));
     U cast;
     __builtin_memcpy(&cast, &v, sizeof cast);
     return cast;
@@ -290,14 +290,18 @@ struct hypercube_ptr {
 
     uint_bank_t *memory;
 
-    bits_type load(index_type i) const {
-        return load_aligned<alignof(uint_bank_t), bits_type>(
-                memory + layout::pad(i, sizeof(bits_type) / sizeof(uint_bank_t)));
+    template<typename T = bits_type>
+    T load(index_type i) const {
+        static_assert(sizeof(T) == sizeof(bits_type));
+        return load_aligned<alignof(uint_bank_t), T>(
+                memory + layout::pad(i, sizeof(T) / sizeof(uint_bank_t)));
     }
 
-    void store(index_type i, bits_type bits) {
-        store_aligned<alignof(uint_bank_t), bits_type>(
-                memory + layout::pad(i, sizeof(bits_type) / sizeof(uint_bank_t)), bits);
+    template<typename T = bits_type>
+    void store(index_type i, std::common_type_t<T> bits) {
+        static_assert(sizeof(T) == sizeof(bits_type));
+        store_aligned<alignof(uint_bank_t), T>(
+                memory + layout::pad(i, sizeof(T) / sizeof(uint_bank_t)), bits);
     }
 };
 
@@ -489,17 +493,25 @@ void write_transposed_chunks(hypercube_group grp, hypercube_ptr<Profile, forward
                 const auto col_chunk_index = item / warp_size;
                 const auto in_col_chunk_base = col_chunk_index * col_chunk_size;
 
+                // Collectively determine the head for a chunk
                 bits_type head = 0;
                 for (index_type w = 0; w < warps_per_col_chunk; ++w) {
-                    auto col = in_col_chunk_base + w * warp_size + item % warp_size;
-                    head |= sycl::group_reduce(sg, hc.load(col), sycl::bit_or<bits_type>{});
+                    auto row = hc.load(in_col_chunk_base + w * warp_size + item % warp_size);
+                    head |= sycl::group_reduce(sg, row, sycl::bit_or<bits_type>{});
                 }
 
                 index_type chunk_compact_size = 0;
 
-                if (head != 0) { // short-circuit the entire warp
+                if (head != 0) {  // short-circuit the entire warp
+                    const auto out_col_chunk = out_chunks + header_chunk_size + in_col_chunk_base;
+
+                    // Each thread computes 1 column for 32 bit and 2 columns for 64 bit. For the
+                    // 2-iteration scenario, we compute the relative output position of the second
+                    // column directly, so that one warp-collective prefix sum is enough to
+                    // determine the final position within the chunk.
                     index_type compact_warp_offset[1 + warps_per_col_chunk];
                     compact_warp_offset[0] = 0;
+#pragma unroll
                     for (index_type w = 0; w < warps_per_col_chunk; ++w) {
                         static_assert(warp_size == bitsof<uint32_t>);
                         compact_warp_offset[1 + w] = compact_warp_offset[w]
@@ -508,22 +520,34 @@ void write_transposed_chunks(hypercube_group grp, hypercube_ptr<Profile, forward
                     }
                     chunk_compact_size = compact_warp_offset[warps_per_col_chunk];
 
-                    const auto out_col_chunk = out_chunks + header_chunk_size + in_col_chunk_base;
-                    for (index_type w = 0; w < warps_per_col_chunk; ++w) {
-                        bits_type column = 0;
-                        const auto cell = w * warp_size + item % warp_size;
-                        for (index_type i = 0; i < col_chunk_size; ++i) {
-                            // TODO for double, can we still operate on 32 bit words? e.g split into
-                            //  low / high loop
-                            column |= (hc.load(in_col_chunk_base + i) >> (col_chunk_size - 1 - cell)
-                                              & bits_type{1})
-                                    << (col_chunk_size - 1 - i);
+                    // Transposition is relatively simple in the 32-bit case, but for 64-bit, we
+                    // achieve considerable speedup (> 2x) by operating on 32-bit values. This
+                    // requires two outer loop iterations, one computing the lower and one computing
+                    // the upper word of each column. The number of shifts/adds remains the same.
+                    // Note that this makes assumptions about the endianness of uint64_t.
+                    static_assert(warp_size == 32); // implicit assumption with uint32_t
+                    sycl::vec<uint32_t, warps_per_col_chunk> columns[warps_per_col_chunk];
+#pragma unroll
+                    for (index_type i = 0; i < warps_per_col_chunk; ++i) {
+                        for (index_type j = 0; j < warp_size; ++j) {
+                            auto row = hc.template load<sycl::vec<uint32_t, warps_per_col_chunk>>(
+                                    in_col_chunk_base + col_chunk_size - 1 - (warp_size * i + j));
+#pragma unroll
+                            for (index_type w = 0; w < warps_per_col_chunk; ++w) {
+                                columns[w][i] |= ((row[warps_per_col_chunk - 1 - w]
+                                                               >> (31 - item % warp_size))
+                                                              & uint32_t{1}) << j;
+                            }
                         }
+                    }
 
+#pragma unroll
+                    for (index_type w = 0; w < warps_per_col_chunk; ++w) {
+                        auto column_bits = bit_cast<bits_type>(columns[w]);
                         auto pos_in_out_col_chunk = compact_warp_offset[w]
                                 + sycl::group_exclusive_scan(
-                                        sg, index_type{column != 0}, sycl::plus<index_type>{});
-                        if (column != 0) { out_col_chunk[pos_in_out_col_chunk] = column; }
+                                        sg, index_type{column_bits != 0}, sycl::plus<index_type>{});
+                        if (column_bits != 0) { out_col_chunk[pos_in_out_col_chunk] = column_bits; }
                     }
                 }
 
