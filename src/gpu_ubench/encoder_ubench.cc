@@ -173,7 +173,9 @@ TEMPLATE_TEST_CASE("Chunk encoding", "[encode]", ALL_PROFILES) {
                     [=](hypercube_group grp, sycl::physical_item<1> phys_idx) {
                         hypercube_memory<bits_type, hc_layout> lm{grp};
                         gpu::hypercube_ptr<TestType, gpu::forward_transform_tag> hc{lm()};
-                        grp.distribute_for(hc_size, [&](index_type i) { hc.store(i, i * 199); });
+                        // Set some to zero - test zero-head shortcut optimization
+                        grp.distribute_for(hc_size,
+                                [&](index_type i) { hc.store(i, (i > 512 ? i * 199 : 0)); });
                         const auto hc_index = grp.get_id(0);
                         write_transposed_chunks(grp, hc, &c[hc_index * hc_total_chunks_size],
                                 &l[1 + hc_index * chunks_per_hc]);

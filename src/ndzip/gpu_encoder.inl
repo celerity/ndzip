@@ -495,36 +495,36 @@ void write_transposed_chunks(hypercube_group grp, hypercube_ptr<Profile, forward
                     head |= sycl::group_reduce(sg, hc.load(col), sycl::bit_or<bits_type>{});
                 }
 
-                index_type compact_warp_offset[1 + warps_per_col_chunk];
-                compact_warp_offset[0] = 0;
-                for (index_type w = 0; w < warps_per_col_chunk; ++w) {
-                    static_assert(warp_size == bitsof<uint32_t>);
-                    compact_warp_offset[1 + w] = compact_warp_offset[w]
-                            + popcount(static_cast<uint32_t>(
-                                    head >> ((warps_per_col_chunk - 1 - w) * warp_size)));
-                }
-                const auto chunk_compact_size = compact_warp_offset[warps_per_col_chunk];
+                index_type chunk_compact_size = 0;
 
-                const auto out_col_chunk = out_chunks + header_chunk_size + in_col_chunk_base;
-                for (index_type w = 0; w < warps_per_col_chunk; ++w) {
-                    bits_type column = 0;
-                    // TODO this shortcut does not improve performance - but why? Shortcut' warps
-                    // are stalled on the final barrier, but given a large enough group_size, this
-                    // should still result in much fewer wasted cycles if (head != 0) {
-                    // ??????
-                    const auto cell = w * warp_size + item % warp_size;
-                    for (index_type i = 0; i < col_chunk_size; ++i) {
-                        // TODO for double, can we still operate on 32 bit words? e.g split into
-                        //  low / high loop
-                        column |= (hc.load(in_col_chunk_base + i) >> (col_chunk_size - 1 - cell)
-                                          & bits_type{1})
-                                << (col_chunk_size - 1 - i);
+                if (head != 0) { // short-circuit the entire warp
+                    index_type compact_warp_offset[1 + warps_per_col_chunk];
+                    compact_warp_offset[0] = 0;
+                    for (index_type w = 0; w < warps_per_col_chunk; ++w) {
+                        static_assert(warp_size == bitsof<uint32_t>);
+                        compact_warp_offset[1 + w] = compact_warp_offset[w]
+                                + popcount(static_cast<uint32_t>(
+                                        head >> ((warps_per_col_chunk - 1 - w) * warp_size)));
                     }
+                    chunk_compact_size = compact_warp_offset[warps_per_col_chunk];
 
-                    auto pos_in_out_col_chunk = compact_warp_offset[w]
-                            + sycl::group_exclusive_scan(
-                                    sg, index_type{column != 0}, sycl::plus<index_type>{});
-                    if (column != 0) { out_col_chunk[pos_in_out_col_chunk] = column; }
+                    const auto out_col_chunk = out_chunks + header_chunk_size + in_col_chunk_base;
+                    for (index_type w = 0; w < warps_per_col_chunk; ++w) {
+                        bits_type column = 0;
+                        const auto cell = w * warp_size + item % warp_size;
+                        for (index_type i = 0; i < col_chunk_size; ++i) {
+                            // TODO for double, can we still operate on 32 bit words? e.g split into
+                            //  low / high loop
+                            column |= (hc.load(in_col_chunk_base + i) >> (col_chunk_size - 1 - cell)
+                                              & bits_type{1})
+                                    << (col_chunk_size - 1 - i);
+                        }
+
+                        auto pos_in_out_col_chunk = compact_warp_offset[w]
+                                + sycl::group_exclusive_scan(
+                                        sg, index_type{column != 0}, sycl::plus<index_type>{});
+                        if (column != 0) { out_col_chunk[pos_in_out_col_chunk] = column; }
+                    }
                 }
 
                 if (sg.leader()) {
