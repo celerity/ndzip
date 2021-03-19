@@ -3,4 +3,4 @@
 	url = https://github.com/LLNL/fpzip
 [submodule "contrib/cudpp"]
 	path = contrib/cudpp
-	url = https://github.com/cudpp/cudpp
+	url = https://github.com/fknorr/cudpp
