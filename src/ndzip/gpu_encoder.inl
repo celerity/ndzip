@@ -419,15 +419,15 @@ void inverse_transform_lanes(
 }
 
 
-unsigned popcount(unsigned int x) {
+inline unsigned popcount(unsigned int x) {
     return __builtin_popcount(x);
 }
 
-unsigned popcount(unsigned long x) {
+inline unsigned popcount(unsigned long x) {
     return __builtin_popcountl(x);
 }
 
-unsigned popcount(unsigned long long x) {
+inline unsigned popcount(unsigned long long x) {
     return __builtin_popcountll(x);
 }
 

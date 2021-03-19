@@ -7,6 +7,9 @@ option(NDZIP_BUILD_BENCHMARK "Build benchmarks against other algorithms" ON)
 option(NDZIP_WITH_MT "Enable parallel CPU implementation through OpenMP if available " ON)
 option(NDZIP_WITH_GPU "Enable GPU implementation through hipSYCL if available" ON)
 
+set(CMAKE_MODULE_PATH "${PROJECT_SOURCE_DIR}/cmake")
+include(SplitConfiguration)
+
 find_package(Boost REQUIRED COMPONENTS thread program_options)
 
 if (NDZIP_WITH_MT)
@@ -66,6 +69,11 @@ add_library(ndzip SHARED
     src/ndzip/cpu_encoder.inl
     src/ndzip/cpu_encoder.cc
 )
+target_split_configured_sources(ndzip PRIVATE
+    src/ndzip/cpu_encoder.cc
+    VARIABLE DATA_TYPE VALUES float double
+    VARIABLE DIMENSIONS VALUES 1 2 3
+)
 
 target_include_directories(ndzip PUBLIC include)
 target_compile_definitions(ndzip PUBLIC
@@ -83,6 +91,11 @@ if (NDZIP_USE_HIPSYCL)
         src/ndzip/gpu_bits.hh
         src/ndzip/gpu_encoder.inl
         src/ndzip/gpu_encoder.cc
+    )
+    target_split_configured_sources(ndzip-gpu PRIVATE
+        src/ndzip/gpu_encoder.cc
+        VARIABLE DATA_TYPE VALUES float double
+        VARIABLE DIMENSIONS VALUES 1 2 3
     )
     target_include_directories(ndzip-gpu PUBLIC include)
     target_compile_options(ndzip-gpu PRIVATE ${NDZIP_COMPILE_FLAGS} ${NDZIP_GPU_COMPILE_FLAGS})
