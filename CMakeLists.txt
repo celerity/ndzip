@@ -58,6 +58,11 @@ set(NDZIP_COMPILE_FLAGS
 # Aggressive inlining avoids GPU call stack allocation == global memory access bottleneck
 set(NDZIP_GPU_COMPILE_FLAGS -mllvm -inline-threshold=2000 -Xarch_device -DNDEBUG=1)
 
+set(NDZIP_PROFILE_CONFIGURATIONS
+    VARIABLE DATA_TYPE VALUES float double
+    VARIABLE DIMENSIONS VALUES 1 2 3
+)
+
 add_library(ndzip SHARED
     include/ndzip/ndzip.hh
     include/ndzip/array.hh
@@ -67,12 +72,10 @@ add_library(ndzip SHARED
     src/ndzip/common.hh
     src/ndzip/common.cc
     src/ndzip/cpu_encoder.inl
-    src/ndzip/cpu_encoder.cc
 )
 target_split_configured_sources(ndzip PRIVATE
-    src/ndzip/cpu_encoder.cc
-    VARIABLE DATA_TYPE VALUES float double
-    VARIABLE DIMENSIONS VALUES 1 2 3
+    GENERATE cpu_encoder.cc FROM src/ndzip/cpu_encoder.inl
+    ${NDZIP_PROFILE_CONFIGURATIONS}
 )
 
 target_include_directories(ndzip PUBLIC include)
@@ -90,12 +93,10 @@ if (NDZIP_USE_HIPSYCL)
     add_library(ndzip-gpu SHARED
         src/ndzip/gpu_bits.hh
         src/ndzip/gpu_encoder.inl
-        src/ndzip/gpu_encoder.cc
     )
     target_split_configured_sources(ndzip-gpu PRIVATE
-        src/ndzip/gpu_encoder.cc
-        VARIABLE DATA_TYPE VALUES float double
-        VARIABLE DIMENSIONS VALUES 1 2 3
+        GENERATE gpu_encoder.cc FROM src/ndzip/gpu_encoder.inl
+        ${NDZIP_PROFILE_CONFIGURATIONS}
     )
     target_include_directories(ndzip-gpu PUBLIC include)
     target_compile_options(ndzip-gpu PRIVATE ${NDZIP_COMPILE_FLAGS} ${NDZIP_GPU_COMPILE_FLAGS})
@@ -123,8 +124,14 @@ endif ()
 
 if (NDZIP_BUILD_TEST AND Catch2_FOUND)
     add_executable(encoder_test
-            src/test/test_utils.hh
-            src/test/encoder_test.cc)
+        src/test/test_utils.hh
+        src/test/test_main.cc
+        src/test/encoder_generic_test.cc
+        src/test/encoder_profile_test.inl)
+    target_split_configured_sources(encoder_test PRIVATE
+        GENERATE encoder_profile_test.cc FROM src/test/encoder_profile_test.inl
+        ${NDZIP_PROFILE_CONFIGURATIONS}
+    )
     target_include_directories(encoder_test PRIVATE src)
     target_compile_options(encoder_test PRIVATE ${NDZIP_COMPILE_FLAGS} ${NDZIP_GPU_COMPILE_FLAGS})
     target_link_libraries(encoder_test PRIVATE ndzip Catch2::Catch2 Boost::thread)
@@ -144,13 +151,17 @@ if (NDZIP_BUILD_TEST AND Catch2_FOUND AND NDZIP_USE_HIPSYCL)
     add_sycl_to_target(TARGET gpu_bits_test)
 
     add_executable(gpu_ubench
-            src/gpu_ubench/ubench.hh
-            src/gpu_ubench/encoder_ubench.cc
-            src/gpu_ubench/gpu_bits_ubench.cc
-            src/gpu_ubench/ubench_main.cc)
+        src/gpu_ubench/ubench.hh
+        src/gpu_ubench/encoder_ubench.inl
+        src/gpu_ubench/gpu_bits_ubench.cc
+        src/gpu_ubench/ubench_main.cc)
+    target_split_configured_sources(gpu_ubench PRIVATE
+        GENERATE encoder_ubench.cc FROM src/gpu_ubench/encoder_ubench.inl
+        ${NDZIP_PROFILE_CONFIGURATIONS}
+    )
     target_include_directories(gpu_ubench PRIVATE src include)
     target_compile_options(gpu_ubench PRIVATE ${NDZIP_COMPILE_FLAGS} ${NDZIP_GPU_COMPILE_FLAGS})
-    target_link_libraries(gpu_ubench PRIVATE Catch2::Catch2)
+    target_link_libraries(gpu_ubench PRIVATE ndzip-gpu Catch2::Catch2)
     add_sycl_to_target(TARGET gpu_ubench)
 endif ()
 

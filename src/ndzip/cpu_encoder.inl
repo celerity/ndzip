@@ -932,13 +932,23 @@ extern template class cpu_encoder<double, 1>;
 extern template class cpu_encoder<double, 2>;
 extern template class cpu_encoder<double, 3>;
 
+#ifdef SPLIT_CONFIGURATION_cpu_encoder
+template class cpu_encoder<DATA_TYPE, DIMENSIONS>;
+#endif
+
 #if NDZIP_OPENMP_SUPPORT
+
 extern template class mt_cpu_encoder<float, 1>;
 extern template class mt_cpu_encoder<float, 2>;
 extern template class mt_cpu_encoder<float, 3>;
 extern template class mt_cpu_encoder<double, 1>;
 extern template class mt_cpu_encoder<double, 2>;
 extern template class mt_cpu_encoder<double, 3>;
+
+#ifdef SPLIT_CONFIGURATION_cpu_encoder
+template class mt_cpu_encoder<DATA_TYPE, DIMENSIONS>;
+#endif
+
 #endif  // NDZIP_OPENMP_SUPPORT
 
 }  // namespace ndzip

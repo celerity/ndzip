@@ -909,4 +909,8 @@ extern template class gpu_encoder<double, 1>;
 extern template class gpu_encoder<double, 2>;
 extern template class gpu_encoder<double, 3>;
 
+#ifdef SPLIT_CONFIGURATION_gpu_encoder
+template class gpu_encoder<DATA_TYPE, DIMENSIONS>;
+#endif
+
 }  // namespace ndzip

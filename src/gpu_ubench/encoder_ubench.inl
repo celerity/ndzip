@@ -9,9 +9,8 @@ using namespace ndzip::detail::gpu;
 using sam = sycl::access::mode;
 
 
-#define ALL_PROFILES \
-    (profile<float, 1>), (profile<float, 2>), (profile<float, 3>), (profile<double, 1>), \
-            (profile<double, 2>), (profile<double, 3>)
+#define ALL_PROFILES (profile<DATA_TYPE, DIMENSIONS>)
+
 
 // Kernel names (for profiler)
 template<typename>
