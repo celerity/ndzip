@@ -13,7 +13,7 @@ using namespace ndzip::detail;
 template<typename Bits>
 Bits zero_map_from_transposed(const Bits *transposed) {
     Bits zero_map = 0;
-    for (size_t i = 0; i < bitsof<Bits>; ++i) {
+    for (index_type i = 0; i < bits_of<Bits>; ++i) {
         zero_map = (zero_map << 1u) | (transposed[i] != 0);
     }
     return zero_map;
@@ -21,11 +21,11 @@ Bits zero_map_from_transposed(const Bits *transposed) {
 
 
 TEMPLATE_TEST_CASE("CPU zero-word compaction is reversible", "[cpu]", uint32_t, uint64_t) {
-    cpu::simd_aligned_buffer<TestType> input(bitsof<TestType>);
+    cpu::simd_aligned_buffer<TestType> input(bits_of<TestType>);
     auto gen = std::minstd_rand();  // NOLINT(cert-msc51-cpp)
     auto dist = std::uniform_int_distribution<TestType>();
-    size_t zeroes = 0;
-    for (size_t i = 0; i < bitsof<TestType>; ++i) {
+    index_type zeroes = 0;
+    for (index_type i = 0; i < bits_of<TestType>; ++i) {
         auto r = dist(gen);
         if (r % 5 == 2) {
             input[i] = 0;
@@ -35,38 +35,38 @@ TEMPLATE_TEST_CASE("CPU zero-word compaction is reversible", "[cpu]", uint32_t, 
         }
     }
 
-    std::vector<std::byte> compact((bitsof<TestType> + 1) * sizeof(TestType));
+    std::vector<std::byte> compact((bits_of<TestType> + 1) * sizeof(TestType));
     auto head = zero_map_from_transposed(input.data());
     auto bytes_written = cpu::compact_zero_words(input.data(), compact.data());
-    CHECK(bytes_written == (bitsof<TestType> - zeroes) * sizeof(TestType));
+    CHECK(bytes_written == (bits_of<TestType> - zeroes) * sizeof(TestType));
 
-    std::vector<TestType> output(bitsof<TestType>);
+    std::vector<TestType> output(bits_of<TestType>);
     auto bytes_read = cpu::expand_zero_words(compact.data(), output.data(), head);
     CHECK(bytes_read == bytes_written);
-    CHECK(output == std::vector<TestType>(input.data(), input.data() + bitsof<TestType>));
+    CHECK(output == std::vector<TestType>(input.data(), input.data() + bits_of<TestType>));
 }
 
 
 TEMPLATE_TEST_CASE("CPU bit transposition is reversible", "[cpu]", uint32_t, uint64_t) {
-    alignas(cpu::simd_width_bytes) TestType input[bitsof<TestType>];
+    alignas(cpu::simd_width_bytes) TestType input[bits_of<TestType>];
     auto rng = std::minstd_rand(1);
     auto bit_dist = std::uniform_int_distribution<TestType>();
-    auto shift_dist = std::uniform_int_distribution<unsigned>(0, bitsof<TestType> - 1);
+    auto shift_dist = std::uniform_int_distribution<unsigned>(0, bits_of<TestType> - 1);
     for (auto &value : input) {
         value = bit_dist(rng) >> shift_dist(rng);
     }
 
-    alignas(cpu::simd_width_bytes) TestType transposed[bitsof<TestType>];
+    alignas(cpu::simd_width_bytes) TestType transposed[bits_of<TestType>];
     cpu::transpose_bits(input, transposed);
 
-    alignas(cpu::simd_width_bytes) TestType output[bitsof<TestType>];
+    alignas(cpu::simd_width_bytes) TestType output[bits_of<TestType>];
     cpu::transpose_bits(transposed, output);
 
     CHECK(memcmp(input, output, sizeof input) == 0);
 }
 
 
-using border_slice = std::pair<size_t, size_t>;
+using border_slice = std::pair<index_type, index_type>;
 using slice_vec = std::vector<border_slice>;
 
 namespace std {
@@ -79,7 +79,7 @@ template<unsigned Dims>
 static auto dump_border_slices(const extent<Dims> &size, unsigned side_length) {
     slice_vec v;
     for_each_border_slice(
-            size, side_length, [&](size_t offset, size_t count) { v.emplace_back(offset, count); });
+            size, side_length, [&](index_type offset, index_type count) { v.emplace_back(offset, count); });
     return v;
 }
 
@@ -101,7 +101,7 @@ TEMPLATE_TEST_CASE("file produces a sane hypercube / header layout", "[file]",
         (std::integral_constant<unsigned, 3>), (std::integral_constant<unsigned, 4>) ) {
     constexpr unsigned dims = TestType::value;
     using profile = detail::profile<float, dims>;
-    const size_t n = 100;
+    const index_type n = 100;
     const auto n_hypercubes_per_dim = n / profile::hypercube_side_length;
     const auto side_length = profile::hypercube_side_length;
 
@@ -115,7 +115,7 @@ TEMPLATE_TEST_CASE("file produces a sane hypercube / header layout", "[file]",
 
     file<profile> f(size);
     std::vector<extent<dims>> blocks;
-    size_t hypercube_index = 0;
+    index_type hypercube_index = 0;
     f.for_each_hypercube([&](auto hc_offset, auto hc_index) {
         CHECK(hc_index == hypercube_index);
 
@@ -139,7 +139,7 @@ TEMPLATE_TEST_CASE("file produces a sane hypercube / header layout", "[file]",
 
     CHECK(std::all_of(visited.begin(), visited.end(), [](auto b) { return b; }));
 
-    CHECK(f.file_header_length() == f.num_hypercubes() * sizeof(detail::index_type));
+    CHECK(f.file_header_length() == f.num_hypercubes() * sizeof(index_type));
     CHECK(f.num_hypercubes() == ipow(n_hypercubes_per_dim, dims));
 }
 

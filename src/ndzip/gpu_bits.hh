@@ -183,7 +183,7 @@ void hierarchical_inclusive_scan(
         }
     }
 
-    for (size_t i = 0; i < intermediate_bufs.size(); ++i) {
+    for (index_type i = 0; i < intermediate_bufs.size(); ++i) {
         auto &big_buffer = i > 0 ? intermediate_bufs[i - 1] : in_out_buffer;
         auto &small_buffer = intermediate_bufs[i];
         const auto group_range = sycl::range<1>{
@@ -191,7 +191,7 @@ void hierarchical_inclusive_scan(
         const auto local_range = sycl::range<1>{local_size};
 
         char label[50];
-        sprintf(label, "hierarchical_inclusive_scan reduce %zu", i);
+        sprintf(label, "hierarchical_inclusive_scan reduce %u", i);
         submit_and_profile(queue, label, [&](sycl::handler &cgh) {
             auto big_acc = big_buffer.template get_access<sam::read_write>(cgh);
             auto small_acc = small_buffer.template get_access<sam::discard_write>(cgh);
@@ -210,8 +210,8 @@ void hierarchical_inclusive_scan(
         });
     }
 
-    for (size_t i = 1; i < intermediate_bufs.size(); ++i) {
-        auto ii = intermediate_bufs.size() - 1 - i;
+    for (index_type i = 1; i < intermediate_bufs.size(); ++i) {
+        auto ii = static_cast<index_type>(intermediate_bufs.size()) - 1 - i;
         auto &small_buffer = intermediate_bufs[ii];
         auto &big_buffer = ii > 0 ? intermediate_bufs[ii - 1] : in_out_buffer;
         const auto group_range = sycl::range<1>{
@@ -219,7 +219,7 @@ void hierarchical_inclusive_scan(
         const auto local_range = sycl::range<1>{local_size};
 
         char label[50];
-        sprintf(label, "hierarchical_inclusive_scan expand %zu", ii);
+        sprintf(label, "hierarchical_inclusive_scan expand %u", ii);
         submit_and_profile(queue, label, [&](sycl::handler &cgh) {
             auto small_acc = small_buffer.template get_access<sam::read>(cgh);
             auto big_acc = big_buffer.template get_access<sam::read_write>(cgh);

@@ -141,7 +141,7 @@ TEMPLATE_TEST_CASE("Chunk encoding", "[encode]", ALL_PROFILES) {
     using bits_type = typename TestType::bits_type;
     using hc_layout = gpu::hypercube_layout<TestType::dimensions, gpu::forward_transform_tag>;
     constexpr auto hc_size = ipow(TestType::hypercube_side_length, TestType::dimensions);
-    constexpr index_type col_chunk_size = bitsof<bits_type>;
+    constexpr index_type col_chunk_size = bits_of<bits_type>;
     constexpr index_type header_chunk_size = hc_size / col_chunk_size;
     constexpr index_type hc_total_chunks_size = hc_size + header_chunk_size;
     constexpr index_type chunks_per_hc = 1 /* header */ + hc_size / col_chunk_size;

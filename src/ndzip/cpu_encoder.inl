@@ -114,7 +114,7 @@ template<typename Profile>
 
 template<typename Bits>
 [[gnu::always_inline]] __m256i add_packed(__m256i a, __m256i b) {
-    if constexpr (bitsof<Bits> == 32) {
+    if constexpr (bits_of<Bits> == 32) {
         return _mm256_add_epi32(a, b);
     } else {
         return _mm256_add_epi64(a, b);
@@ -123,7 +123,7 @@ template<typename Bits>
 
 template<typename Bits>
 [[gnu::always_inline]] __m256i subtract_packed(__m256i a, __m256i b) {
-    if constexpr (bitsof<Bits> == 32) {
+    if constexpr (bits_of<Bits> == 32) {
         return _mm256_sub_epi32(a, b);
     } else {
         return _mm256_sub_epi64(a, b);
@@ -138,7 +138,7 @@ template<unsigned SideLength, typename Bits>
     // TODO is there a better option than the setr sequence? vpmaskmov and overflowing vmovdqu +
     // blend are both slower.
     __m256i top_n;
-    if constexpr (bitsof<Bits> == 32) {
+    if constexpr (bits_of<Bits> == 32) {
         top_n = _mm256_setr_epi32(0, line[0], line[1], line[2], line[3], line[4], line[5], line[6]);
     } else {
         top_n = _mm256_setr_epi64x(0, line[0], line[1], line[2]);
@@ -347,7 +347,7 @@ template<typename T>
 T generate_zero_map(const T *u) {
     u = assume_simd_aligned(u);
     T zero_map = 0;
-    for (unsigned j = 0; j < bitsof<T>; ++j) {
+    for (unsigned j = 0; j < bits_of<T>; ++j) {
         zero_map |= u[j];
     }
     return zero_map;
@@ -356,10 +356,10 @@ T generate_zero_map(const T *u) {
 
 template<typename T>
 [[gnu::always_inline]] void transpose_bits_trivial(const T *__restrict vs, T *__restrict out) {
-    for (unsigned i = 0; i < bitsof<T>; ++i) {
+    for (unsigned i = 0; i < bits_of<T>; ++i) {
         out[i] = 0;
-        for (unsigned j = 0; j < bitsof<T>; ++j) {
-            out[i] |= ((vs[j] >> (bitsof<T> - 1 - i)) & 1u) << (bitsof<T> - 1 - j);
+        for (unsigned j = 0; j < bits_of<T>; ++j) {
+            out[i] |= ((vs[j] >> (bits_of<T> - 1 - i)) & 1u) << (bits_of<T> - 1 - j);
         }
     }
 }
@@ -518,7 +518,7 @@ template<typename T>
 template<typename T>
 [[gnu::always_inline]] size_t compact_zero_words(const T *shifted, std::byte *out0) {
     auto out = out0;
-    for (unsigned i = 0; i < bitsof<T>; ++i) {
+    for (unsigned i = 0; i < bits_of<T>; ++i) {
         if (shifted[i] != 0) {
             store_aligned(out, shifted[i]);
             out += sizeof(T);
@@ -530,8 +530,8 @@ template<typename T>
 template<typename T>
 [[gnu::always_inline]] size_t expand_zero_words(const std::byte *in0, T *shifted, T head) {
     auto in = in0;
-    for (unsigned i = 0; i < bitsof<T>; ++i) {
-        if ((head >> (bitsof<T> - 1 - i)) & T{1}) {
+    for (unsigned i = 0; i < bits_of<T>; ++i) {
+        if ((head >> (bits_of<T> - 1 - i)) & T{1}) {
             shifted[i] = load_aligned<T>(in);
             in += sizeof(T);
         } else {
@@ -545,15 +545,15 @@ template<typename T>
 template<typename Bits>
 [[gnu::noinline]] size_t zero_bit_encode(const Bits *cube, std::byte *stream, size_t hc_size) {
     size_t head_pos = 0;
-    size_t body_pos = hc_size / detail::bitsof<Bits> * sizeof(Bits);
-    for (size_t offset = 0; offset < hc_size; offset += detail::bitsof<Bits>) {
+    size_t body_pos = hc_size / detail::bits_of<Bits> * sizeof(Bits);
+    for (size_t offset = 0; offset < hc_size; offset += detail::bits_of<Bits>) {
         auto in = cube + offset;
         auto zero_map = generate_zero_map(in);
         store_aligned(stream + head_pos, zero_map);
         head_pos += sizeof(Bits);
         // all-zero is relatively common, transpose+compact is expensive
         if (zero_map != 0) {
-            alignas(simd_width_bytes) Bits transposed[detail::bitsof<Bits>];
+            alignas(simd_width_bytes) Bits transposed[detail::bits_of<Bits>];
             detail::cpu::transpose_bits(in, transposed);
             body_pos += detail::cpu::compact_zero_words(transposed, stream + body_pos);
         }
@@ -565,9 +565,9 @@ template<typename Bits>
 template<typename Bits>
 [[gnu::noinline]] size_t zero_bit_decode(const std::byte *stream, Bits *cube, size_t hc_size) {
     size_t head_pos = 0;
-    size_t body_pos = hc_size / detail::bitsof<Bits> * sizeof(Bits);
-    for (size_t i = 0; i < hc_size; i += detail::bitsof<Bits>) {
-        alignas(simd_width_bytes) Bits transposed[detail::bitsof<Bits>];
+    size_t body_pos = hc_size / detail::bits_of<Bits> * sizeof(Bits);
+    for (size_t i = 0; i < hc_size; i += detail::bits_of<Bits>) {
+        alignas(simd_width_bytes) Bits transposed[detail::bits_of<Bits>];
         auto head = load_aligned<Bits>(stream + head_pos);
         head_pos += sizeof(Bits);
         if (head == 0) {
@@ -607,19 +607,18 @@ size_t ndzip::cpu_encoder<T, Dims>::compress(
     using profile = detail::profile<T, Dims>;
     using bits_type = typename profile::bits_type;
 
-    if (reinterpret_cast<uintptr_t>(raw_stream) % sizeof(detail::stream_align_t) != 0) {
+    if (reinterpret_cast<uintptr_t>(raw_stream) % sizeof(bits_type) != 0) {
         throw std::invalid_argument("stream is not properly aligned");
     }
 
     detail::file<profile> file(data.size());
-    size_t stream_pos = file.file_header_length();
     auto hc_size = detail::ipow(profile::hypercube_side_length, profile::dimensions);
 
     detail::stream<profile> stream{
-            file.num_hypercubes(), static_cast<detail::stream_align_t *>(raw_stream)};
+            file.num_hypercubes(), static_cast<bits_type *>(raw_stream)};
 
     auto &cube = _pimpl->cube;
-    detail::index_type offset = 0;
+    index_type offset = 0;
     file.for_each_hypercube([&](auto hc_offset, auto hc_index) {
         detail::cpu::load_hypercube<profile>(hc_offset, data, cube.data());
         detail::cpu::block_transform<profile>(cube.data());
@@ -630,36 +629,36 @@ size_t ndzip::cpu_encoder<T, Dims>::compress(
         stream.set_offset_after(hc_index, offset);
     });
 
-    stream_pos += sizeof(bits_type) * offset;
-    stream_pos += detail::pack_border(stream.border(), data, profile::hypercube_side_length);
-    return stream_pos;
+    auto border_bytes = detail::pack_border(stream.border(), data, profile::hypercube_side_length);
+    return (stream.border() - stream.buffer) * sizeof(bits_type) + border_bytes;
 }
 
 
 template<typename T, unsigned Dims>
 size_t ndzip::cpu_encoder<T, Dims>::decompress(
-        const void *stream, size_t bytes, const slice<data_type, dimensions> &data) const {
+        const void *raw_stream, size_t bytes, const slice<data_type, dimensions> &data) const {
     using profile = detail::profile<T, Dims>;
     using bits_type = typename profile::bits_type;
 
-    if (reinterpret_cast<uintptr_t>(stream) % sizeof(detail::stream_align_t) != 0) {
+    if (reinterpret_cast<uintptr_t>(raw_stream) % sizeof(bits_type) != 0) {
         throw std::invalid_argument("stream is not properly aligned");
     }
 
     detail::file<profile> file(data.size());
     auto hc_size = detail::ipow(profile::hypercube_side_length, profile::dimensions);
 
+    detail::stream<const profile> stream{
+            file.num_hypercubes(), static_cast<const bits_type *>(raw_stream)};
+
     auto &cube = _pimpl->cube;
-    size_t stream_pos = file.file_header_length();  // simply skip the header
-    file.for_each_hypercube([&](auto hc_offset) {
-        stream_pos += detail::cpu::zero_bit_decode<bits_type>(
-                static_cast<const std::byte *>(stream) + stream_pos, cube.data(), hc_size);
+    file.for_each_hypercube([&](auto hc_offset, auto hc_index) {
+        detail::cpu::zero_bit_decode<bits_type>(reinterpret_cast<const std::byte*>(stream.hypercube(hc_index)), cube.data(), hc_size);
         detail::cpu::inverse_block_transform<profile>(cube.data());
         detail::cpu::store_hypercube<profile>(hc_offset, cube.data(), data);
     });
-    stream_pos += detail::unpack_border(data, static_cast<const std::byte *>(stream) + stream_pos,
+    auto border_bytes = detail::unpack_border(data, stream.border(),
             profile::hypercube_side_length);
-    return stream_pos;
+    return (stream.border() - stream.buffer) * sizeof(bits_type) + border_bytes;
 }
 
 
@@ -753,7 +752,7 @@ size_t ndzip::mt_cpu_encoder<T, Dims>::compress(
     constexpr auto num_hcs_per_chunk = impl::num_hcs_per_chunk;
     const auto hc_size = detail::ipow(side_length, profile::dimensions);
 
-    if (reinterpret_cast<uintptr_t>(raw_stream) % sizeof(detail::stream_align_t) != 0) {
+    if (reinterpret_cast<uintptr_t>(raw_stream) % sizeof(bits_type) != 0) {
         throw std::invalid_argument("stream is not properly aligned");
     }
 
@@ -765,12 +764,12 @@ size_t ndzip::mt_cpu_encoder<T, Dims>::compress(
     const auto num_threads = _pimpl->num_threads;
 
     detail::stream<profile> stream{
-            file.num_hypercubes(), static_cast<detail::stream_align_t *>(raw_stream)};
+            file.num_hypercubes(), static_cast<bits_type *>(raw_stream)};
 
     std::atomic<size_t> next_hc_index_to_read = 0;
     std::atomic<size_t> next_hc_index_to_write = 0;
     std::atomic<size_t> next_available_write_task_hc_index = SIZE_MAX;
-    detail::index_type stream_offset = 0;
+    index_type stream_offset = 0;
 
     const auto num_hypercubes = file.num_hypercubes();
 
@@ -870,9 +869,8 @@ size_t ndzip::mt_cpu_encoder<T, Dims>::compress(
         }
     }
 
-    auto stream_pos = file.file_header_length() + stream_offset * sizeof(bits_type);
-    stream_pos += detail::pack_border(stream.border(), data, side_length);
-    return stream_pos;
+    auto border_bytes = detail::pack_border(stream.border(), data, side_length);
+    return (stream.border() - stream.buffer) * sizeof(bits_type) + border_bytes;
 }
 
 
@@ -885,7 +883,7 @@ size_t ndzip::mt_cpu_encoder<T, Dims>::decompress(
     constexpr static auto side_length = profile::hypercube_side_length;
     const auto hc_size = detail::ipow(side_length, profile::dimensions);
 
-    if (reinterpret_cast<uintptr_t>(raw_stream) % sizeof(detail::stream_align_t) != 0) {
+    if (reinterpret_cast<uintptr_t>(raw_stream) % sizeof(bits_type) != 0) {
         throw std::invalid_argument("stream is not properly aligned");
     }
 
@@ -894,7 +892,7 @@ size_t ndzip::mt_cpu_encoder<T, Dims>::decompress(
     const auto num_threads = _pimpl->num_threads;
 
     detail::stream<const profile> stream{
-            file.num_hypercubes(), static_cast<const detail::stream_align_t *>(raw_stream)};
+            file.num_hypercubes(), static_cast<const bits_type *>(raw_stream)};
 
 #pragma omp parallel num_threads(num_threads)
     {
@@ -914,10 +912,9 @@ size_t ndzip::mt_cpu_encoder<T, Dims>::decompress(
         }
     }
 
-    auto stream_pos = file.file_header_length();
-    stream_pos += (stream.border() - stream.hypercube(0)) * sizeof(bits_type);
-    stream_pos += detail::unpack_border(data, stream.border(), side_length);
-    return stream_pos;
+    auto border_bytes = detail::unpack_border(data, stream.border(),
+                                              profile::hypercube_side_length);
+    return (stream.border() - stream.buffer) * sizeof(bits_type) + border_bytes;
 }
 
 #endif  // NDZIP_OPENMP_SUPPORT

@@ -66,11 +66,10 @@ constexpr Integer floor(Integer x, Integer multiple) {
 }
 
 template<typename T>
-constexpr inline size_t bitsof = CHAR_BIT * sizeof(T);
+constexpr inline index_type bits_of = static_cast<index_type>(CHAR_BIT * sizeof(T));
 
-// TODO change to uint32_t and ensure no implicit index_type -> size_t conversions happen anywhere.
-//  Be wary of things like sizeof and bitsof.
-using index_type = size_t;
+template<typename T>
+constexpr inline index_type bytes_of = static_cast<index_type>(sizeof(T));
 
 template<typename Fn, typename Index, typename T>
 [[gnu::always_inline]] void invoke_for_element(Fn &&fn, Index index, T &&value) {
@@ -193,7 +192,7 @@ template<typename DataType, unsigned Dims>
 pack_border(void *dest, const slice<DataType, Dims> &src, unsigned side_length) {
     static_assert(std::is_trivially_copyable_v<DataType>);
     size_t dest_offset = 0;
-    for_each_border_slice(src.size(), side_length, [&](size_t src_offset, size_t count) {
+    for_each_border_slice(src.size(), side_length, [&](index_type src_offset, index_type count) {
         memcpy(static_cast<char *>(dest) + dest_offset, src.data() + src_offset,
                 count * sizeof(DataType));
         dest_offset += count * sizeof(DataType);
@@ -206,7 +205,7 @@ template<typename DataType, unsigned Dims>
 unpack_border(const slice<DataType, Dims> &dest, const void *src, unsigned side_length) {
     static_assert(std::is_trivially_copyable_v<DataType>);
     size_t src_offset = 0;
-    for_each_border_slice(dest.size(), side_length, [&](size_t dest_offset, size_t count) {
+    for_each_border_slice(dest.size(), side_length, [&](index_type dest_offset, index_type count) {
         memcpy(dest.data() + dest_offset, static_cast<const char *>(src) + src_offset,
                 count * sizeof(DataType));
         src_offset += count * sizeof(DataType);
@@ -215,9 +214,9 @@ unpack_border(const slice<DataType, Dims> &dest, const void *src, unsigned side_
 }
 
 template<unsigned Dims>
-size_t border_element_count(const extent<Dims> &e, unsigned side_length) {
-    size_t n_cube_elems = 1;
-    size_t n_all_elems = 1;
+index_type border_element_count(const extent<Dims> &e, unsigned side_length) {
+    index_type n_cube_elems = 1;
+    index_type n_all_elems = 1;
     for (unsigned d = 0; d < Dims; ++d) {
         n_cube_elems *= e[d] / side_length * side_length;
         n_all_elems *= e[d];
@@ -227,7 +226,7 @@ size_t border_element_count(const extent<Dims> &e, unsigned side_length) {
 
 template<typename Profile, unsigned ThisDim, typename F>
 [[gnu::always_inline]] void iter_hypercubes(const extent<Profile::dimensions> &size,
-        extent<Profile::dimensions> &off, size_t &i, F &f) {
+        extent<Profile::dimensions> &off, index_type &i, F &f) {
     if constexpr (ThisDim == Profile::dimensions) {
         invoke_for_element(f, i, off);
         ++i;
@@ -239,21 +238,18 @@ template<typename Profile, unsigned ThisDim, typename F>
     }
 }
 
-
-// TODO this should be bits_type everywhere since sizeof(bits_type) >= sizeof(index_type) once
-//  index_type has been fixed to 32 bit
-using stream_align_t = uint64_t;
-
 template<typename Profile>
 struct stream {
     using bits_type = std::conditional_t<std::is_const_v<Profile>,
             const typename Profile::bits_type, typename Profile::bits_type>;
-    using atom_type
-            = std::conditional_t<std::is_const_v<Profile>, const stream_align_t, stream_align_t>;
     using offset_type = std::conditional_t<std::is_const_v<Profile>, const index_type, index_type>;
+    using byte_type = std::conditional_t<std::is_const_v<Profile>, const std::byte, std::byte>;
+
+    static_assert(sizeof(bits_type) >= sizeof(offset_type)
+                  && alignof(bits_type) >= alignof(offset_type));
 
     index_type num_hypercubes;
-    atom_type *buffer;
+    bits_type *buffer;
 
     offset_type *header() { return reinterpret_cast<offset_type *>(buffer); }
 
@@ -268,8 +264,9 @@ struct stream {
 
     // requires header() to be initialized
     bits_type *hypercube(index_type hc_index) {
+        auto base_byte_offset = ceil(num_hypercubes * bytes_of<offset_type>, bytes_of<bits_type>);
         auto *base = reinterpret_cast<bits_type *>(
-                static_cast<offset_type *>(buffer) + num_hypercubes);
+                reinterpret_cast<byte_type *>(buffer) + base_byte_offset);
         if (hc_index == 0) {
             return base;
         } else {
@@ -291,8 +288,8 @@ class file {
   public:
     explicit file(extent<Profile::dimensions> size) : _size(size) {}
 
-    size_t num_hypercubes() const {
-        size_t num = 1;
+    index_type num_hypercubes() const {
+        index_type num = 1;
         for (unsigned d = 0; d < Profile::dimensions; ++d) {
             num *= _size[d] / Profile::hypercube_side_length;
         }
@@ -301,7 +298,7 @@ class file {
 
     template<typename Fn>
     void for_each_hypercube(Fn &&f) const {
-        size_t i = 0;
+        index_type i = 0;
         extent<Profile::dimensions> off{};
         iter_hypercubes<Profile, 0>(_size, off, i, f);
     }
@@ -325,30 +322,30 @@ class profile {
     constexpr static unsigned dimensions = Dims;
     constexpr static unsigned hypercube_side_length = Dims == 1 ? 4096 : Dims == 2 ? 64 : 16;
     constexpr static size_t compressed_block_size_bound = detail::ipow(hypercube_side_length, Dims)
-            / bitsof<bits_type> * (bitsof<bits_type> + 1) * sizeof(bits_type);
+            / bits_of<bits_type> * (bits_of<bits_type> + 1) * sizeof(bits_type);
 };
 
 
 template<typename T>
 T rotate_left_1(T v) {
-    return (v << 1u) | (v >> (bitsof<T> - 1u));
+    return (v << 1u) | (v >> (bits_of<T> - 1u));
 }
 
 template<typename T>
 T rotate_right_1(T v) {
-    return (v >> 1u) | (v << (bitsof<T> - 1u));
+    return (v >> 1u) | (v << (bits_of<T> - 1u));
 }
 
 template<typename T>
 T complement_negative(T v) {
-    return v >> (bitsof<T> - 1u) ? v ^ (~T{} >> 1u) : v;
+    return v >> (bits_of<T> - 1u) ? v ^ (~T{} >> 1u) : v;
 }
 
 template<typename T>
-inline void block_transform_step(T *x, size_t n, size_t s) {
+inline void block_transform_step(T *x, index_type n, index_type s) {
     T a, b;
     b = x[0 * s];
-    for (size_t i = 1; i < n; ++i) {
+    for (index_type i = 1; i < n; ++i) {
         a = b;
         b = x[i * s];
         x[i * s] = b - a;
@@ -356,76 +353,76 @@ inline void block_transform_step(T *x, size_t n, size_t s) {
 }
 
 template<typename T>
-inline void inverse_block_transform_step(T *x, size_t n, size_t s) {
-    for (size_t i = 1; i < n; ++i) {
+inline void inverse_block_transform_step(T *x, index_type n, index_type s) {
+    for (index_type i = 1; i < n; ++i) {
         x[i * s] += x[(i - 1) * s];
     }
 }
 
 template<typename T>
-inline void block_transform(T *x, unsigned dims, size_t n) {
-    for (size_t i = 0; i < ipow(n, dims); ++i) {
+inline void block_transform(T *x, unsigned dims, index_type n) {
+    for (index_type i = 0; i < ipow(n, dims); ++i) {
         x[i] = rotate_left_1(x[i]);
     }
 
     if (dims == 1) {
         block_transform_step(x, n, 1);
     } else if (dims == 2) {
-        for (size_t i = 0; i < n * n; i += n) {
+        for (index_type i = 0; i < n * n; i += n) {
             block_transform_step(x + i, n, 1);
         }
-        for (size_t i = 0; i < n; ++i) {
+        for (index_type i = 0; i < n; ++i) {
             block_transform_step(x + i, n, n);
         }
     } else if (dims == 3) {
-        for (size_t i = 0; i < n * n * n; i += n * n) {
-            for (size_t j = 0; j < n; ++j) {
+        for (index_type i = 0; i < n * n * n; i += n * n) {
+            for (index_type j = 0; j < n; ++j) {
                 block_transform_step(x + i + j, n, n);
             }
         }
-        for (size_t i = 0; i < n * n * n; i += n) {
+        for (index_type i = 0; i < n * n * n; i += n) {
             block_transform_step(x + i, n, 1);
         }
-        for (size_t i = 0; i < n * n; ++i) {
+        for (index_type i = 0; i < n * n; ++i) {
             block_transform_step(x + i, n, n * n);
         }
     }
 
-    for (size_t i = 0; i < ipow(n, dims); ++i) {
+    for (index_type i = 0; i < ipow(n, dims); ++i) {
         x[i] = complement_negative(x[i]);
     }
 }
 
 template<typename T>
-inline void inverse_block_transform(T *x, unsigned dims, size_t n) {
-    for (size_t i = 0; i < ipow(n, dims); ++i) {
+inline void inverse_block_transform(T *x, unsigned dims, index_type n) {
+    for (index_type i = 0; i < ipow(n, dims); ++i) {
         x[i] = complement_negative(x[i]);
     }
 
     if (dims == 1) {
         inverse_block_transform_step(x, n, 1);
     } else if (dims == 2) {
-        for (size_t i = 0; i < n; ++i) {
+        for (index_type i = 0; i < n; ++i) {
             inverse_block_transform_step(x + i, n, n);
         }
-        for (size_t i = 0; i < n * n; i += n) {
+        for (index_type i = 0; i < n * n; i += n) {
             inverse_block_transform_step(x + i, n, 1);
         }
     } else if (dims == 3) {
-        for (size_t i = 0; i < n * n; ++i) {
+        for (index_type i = 0; i < n * n; ++i) {
             inverse_block_transform_step(x + i, n, n * n);
         }
-        for (size_t i = 0; i < n * n * n; i += n) {
+        for (index_type i = 0; i < n * n * n; i += n) {
             inverse_block_transform_step(x + i, n, 1);
         }
-        for (size_t i = 0; i < n * n * n; i += n * n) {
-            for (size_t j = 0; j < n; ++j) {
+        for (index_type i = 0; i < n * n * n; i += n * n) {
+            for (index_type j = 0; j < n; ++j) {
                 inverse_block_transform_step(x + i + j, n, n);
             }
         }
     }
 
-    for (size_t i = 0; i < ipow(n, dims); ++i) {
+    for (index_type i = 0; i < ipow(n, dims); ++i) {
         x[i] = rotate_right_1(x[i]);
     }
 }
@@ -441,7 +438,7 @@ template<typename Profile, typename SliceDataType, typename CubeDataType, typena
         f(slice_ptr, cube_ptr, side_length);
     } else if constexpr (Profile::dimensions == 2) {
         const auto stride = data.size()[1];
-        for (size_t i = 0; i < side_length; ++i) {
+        for (index_type i = 0; i < side_length; ++i) {
             f(slice_ptr, cube_ptr, side_length);
             slice_ptr += stride;
             cube_ptr += side_length;
@@ -449,9 +446,9 @@ template<typename Profile, typename SliceDataType, typename CubeDataType, typena
     } else if constexpr (Profile::dimensions == 3) {
         const auto stride0 = data.size()[1] * data.size()[2];
         const auto stride1 = data.size()[2];
-        for (size_t i = 0; i < side_length; ++i) {
+        for (index_type i = 0; i < side_length; ++i) {
             auto slice_ptr1 = slice_ptr;
-            for (size_t j = 0; j < side_length; ++j) {
+            for (index_type j = 0; j < side_length; ++j) {
                 f(slice_ptr1, cube_ptr, side_length);
                 slice_ptr1 += stride1;
                 cube_ptr += side_length;
@@ -464,7 +461,7 @@ template<typename Profile, typename SliceDataType, typename CubeDataType, typena
 }
 
 template<unsigned Dims>
-extent<Dims> extent_from_linear_id(size_t linear_id, const extent<Dims> &size) {
+extent<Dims> extent_from_linear_id(index_type linear_id, const extent<Dims> &size) {
     extent<Dims> ext;
     for (unsigned nd = 0; nd < Dims; ++nd) {
         auto d = Dims - 1 - nd;

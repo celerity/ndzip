@@ -1,7 +1,7 @@
-#define CATCH_CONFIG_MAIN
 #include <ndzip/gpu_bits.hh>
 #include <test/test_utils.hh>
 
+using namespace ndzip;
 using namespace ndzip::detail;
 using namespace ndzip::detail::gpu;
 using sam = sycl::access::mode;

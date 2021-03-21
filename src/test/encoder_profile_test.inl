@@ -39,12 +39,12 @@ TEMPLATE_TEST_CASE("decode(encode(input)) reproduces the input", "[encoder][de]"
 
     constexpr auto dims = profile::dimensions;
     constexpr auto side_length = profile::hypercube_side_length;
-    const size_t n = side_length * 4 - 1;
+    const index_type n = side_length * 4 - 1;
 
     auto input_data = make_random_vector<data_type>(ipow(n, dims));
 
     // Regression test: trigger bug in decoder optimization by ensuring first chunk = 0
-    std::fill(input_data.begin(), input_data.begin() + bitsof<data_type>, data_type{});
+    std::fill(input_data.begin(), input_data.begin() + bits_of<data_type>, data_type{});
 
     auto test_encoder_decoder_pair = [&](auto &&encoder, auto &&decoder) {
         slice<const data_type, dims> input(input_data.data(), extent<dims>::broadcast(n));
@@ -105,7 +105,7 @@ TEMPLATE_TEST_CASE("file headers from different encoders are identical", "[encod
 
     constexpr auto dims = profile::dimensions;
     constexpr auto side_length = profile::hypercube_side_length;
-    const size_t n = side_length * 4 - 1;
+    const index_type n = side_length * 4 - 1;
 
     auto input_data = make_random_vector<data_type>(ipow(n, dims));
     slice<const data_type, dims> input(input_data.data(), extent<dims>::broadcast(n));
@@ -140,7 +140,7 @@ using sycl::accessor, sycl::nd_range, sycl::buffer, sycl::nd_item, sycl::range, 
 template<typename Profile>
 static std::vector<typename Profile::bits_type>
 load_and_dump_hypercube(const slice<const typename Profile::data_type, Profile::dimensions> &in,
-        size_t hc_index, sycl::queue &q) {
+        index_type hc_index, sycl::queue &q) {
     using data_type = typename Profile::data_type;
     using bits_type = typename Profile::bits_type;
     using hc_layout = gpu::hypercube_layout<Profile::dimensions, gpu::forward_transform_tag>;
@@ -276,15 +276,15 @@ TEMPLATE_TEST_CASE("Flattening of hypercubes is identical between CPU and GPU", 
 
     constexpr auto dims = profile::dimensions;
     constexpr auto side_length = profile::hypercube_side_length;
-    const size_t hc_size = ipow(side_length, dims);
-    const size_t n = side_length * 4 - 1;
+    const index_type hc_size = ipow(side_length, dims);
+    const index_type n = side_length * 4 - 1;
 
     auto input_data = make_random_vector<data_type>(ipow(n, dims));
     slice<const data_type, dims> input(input_data.data(), extent<dims>::broadcast(n));
 
     extent<dims> hc_offset;
     hc_offset[dims - 1] = side_length;
-    size_t hc_index = 1;
+    index_type hc_index = 1;
 
     sycl::queue q{sycl::gpu_selector{}};
     auto gpu_dump = load_and_dump_hypercube<profile>(input, hc_index, q);
@@ -303,8 +303,8 @@ TEMPLATE_TEST_CASE(
 
     constexpr auto dims = TestType::dimensions;
     constexpr auto side_length = TestType::hypercube_side_length;
-    const size_t hc_size = ipow(side_length, dims);
-    const size_t n = side_length * 3;
+    const index_type hc_size = ipow(side_length, dims);
+    const index_type n = side_length * 3;
 
     auto input_data = make_random_vector<data_type>(ipow(n, dims));
     slice<const data_type, dims> input(input_data.data(), extent<dims>::broadcast(n));
@@ -454,11 +454,11 @@ TEMPLATE_TEST_CASE("GPU hypercube decoding works", "[gpu]", ALL_PROFILES) {
     using hc_layout = gpu::hypercube_layout<TestType::dimensions, gpu::inverse_transform_tag>;
 
     auto input = make_random_vector<bits_type>(hc_size);
-    for (size_t i = 0; i < hc_size; ++i) {
-        for (auto idx : {0, 12, 13, 29, static_cast<int>(bitsof<bits_type> - 2)}) {
-            input[i] &= ~(bits_type{1} << ((static_cast<unsigned>(idx) * (i / bitsof<bits_type>) )
-                                  % bitsof<bits_type>) );
-            input[floor(i, bitsof<bits_type>) + idx] = 0;
+    for (index_type i = 0; i < hc_size; ++i) {
+        for (auto idx : {0, 12, 13, 29, static_cast<int>(bits_of<bits_type> - 2)}) {
+            input[i] &= ~(bits_type{1} << ((static_cast<unsigned>(idx) * (i / bits_of<bits_type>) )
+                                  % bits_of<bits_type>) );
+            input[floor(i, bits_of<bits_type>) + idx] = 0;
         }
     }
 
@@ -509,17 +509,17 @@ TEMPLATE_TEST_CASE("CPU and GPU hypercube encodings are equivalent", "[gpu]", AL
     const auto hc_size = ipow(TestType::hypercube_side_length, TestType::dimensions);
     using hc_layout = gpu::hypercube_layout<TestType::dimensions, gpu::forward_transform_tag>;
 
-    constexpr index_type col_chunk_size = detail::bitsof<bits_type>;
+    constexpr index_type col_chunk_size = detail::bits_of<bits_type>;
     constexpr index_type header_chunk_size = hc_size / col_chunk_size;
     constexpr index_type hc_total_chunks_size = hc_size + header_chunk_size;
     constexpr index_type chunks_per_hc = 1 /* header */ + hc_size / col_chunk_size;
 
     auto input = make_random_vector<bits_type>(hc_size);
-    for (size_t i = 0; i < hc_size; ++i) {
-        for (auto idx : {0, 12, 13, 29, static_cast<int>(bitsof<bits_type> - 2)}) {
-            input[i] &= ~(bits_type{1} << ((static_cast<unsigned>(idx) * (i / bitsof<bits_type>) )
-                                  % bitsof<bits_type>) );
-            input[floor(i, bitsof<bits_type>) + idx] = 0;
+    for (index_type i = 0; i < hc_size; ++i) {
+        for (auto idx : {0, 12, 13, 29, static_cast<int>(bits_of<bits_type> - 2)}) {
+            input[i] &= ~(bits_type{1} << ((static_cast<unsigned>(idx) * (i / bits_of<bits_type>) )
+                                  % bits_of<bits_type>) );
+            input[floor(i, bits_of<bits_type>) + idx] = 0;
         }
     }
 

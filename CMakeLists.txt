@@ -144,6 +144,7 @@ endif ()
 if (NDZIP_BUILD_TEST AND Catch2_FOUND AND NDZIP_USE_HIPSYCL)
     add_executable(gpu_bits_test
             src/test/test_utils.hh
+            src/test/test_main.cc
             src/test/gpu_bits_test.cc)
     target_include_directories(gpu_bits_test PRIVATE src include)
     target_compile_options(gpu_bits_test PRIVATE ${NDZIP_COMPILE_FLAGS} -Werror=pass-failed ${NDZIP_GPU_COMPILE_FLAGS})

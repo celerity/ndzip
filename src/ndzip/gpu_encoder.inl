@@ -50,9 +50,9 @@ template<typename U, typename T>
 
 
 template<typename Profile>
-size_t global_offset(size_t local_offset, extent<Profile::dimensions> global_size) {
-    size_t global_offset = 0;
-    size_t global_stride = 1;
+index_type global_offset(index_type local_offset, extent<Profile::dimensions> global_size) {
+    index_type global_offset = 0;
+    index_type global_stride = 1;
     for (unsigned d = 0; d < Profile::dimensions; ++d) {
         global_offset += global_stride * (local_offset % Profile::hypercube_side_length);
         local_offset /= Profile::hypercube_side_length;
@@ -273,9 +273,9 @@ void for_hypercube_indices(
     const auto hc_offset
             = detail::extent_from_linear_id(hc_index, data_size / side_length) * side_length;
 
-    size_t initial_offset = linear_offset(hc_offset, data_size);
+    index_type initial_offset = linear_offset(hc_offset, data_size);
     grp.distribute_for(hc_size, [&](index_type local_idx) {
-        size_t global_idx = initial_offset + global_offset<Profile>(local_idx, data_size);
+        index_type global_idx = initial_offset + global_offset<Profile>(local_idx, data_size);
         f(global_idx, local_idx);
     });
 }
@@ -471,7 +471,7 @@ void write_transposed_chunks(hypercube_group grp, hypercube_ptr<Profile, forward
         typename Profile::bits_type *out_chunks, index_type *out_lengths) {
     using bits_type = typename Profile::bits_type;
     constexpr index_type hc_size = ipow(Profile::hypercube_side_length, Profile::dimensions);
-    constexpr index_type col_chunk_size = bitsof<bits_type>;
+    constexpr index_type col_chunk_size = bits_of<bits_type>;
     constexpr index_type num_col_chunks = hc_size / col_chunk_size;
     constexpr index_type header_chunk_size = num_col_chunks;
     constexpr index_type warps_per_col_chunk = col_chunk_size / warp_size;
@@ -510,7 +510,7 @@ void write_transposed_chunks(hypercube_group grp, hypercube_ptr<Profile, forward
                     compact_warp_offset[0] = 0;
 #pragma unroll
                     for (index_type w = 0; w < warps_per_col_chunk; ++w) {
-                        static_assert(warp_size == bitsof<uint32_t>);
+                        static_assert(warp_size == bits_of<uint32_t>);
                         compact_warp_offset[1 + w] = compact_warp_offset[w]
                                 + popcount(static_cast<uint32_t>(
                                         head >> ((warps_per_col_chunk - 1 - w) * warp_size)));
@@ -565,11 +565,11 @@ void read_transposed_chunks(hypercube_group grp, hypercube_ptr<Profile, inverse_
         const typename Profile::bits_type *stream) {
     using bits_type = typename Profile::bits_type;
     constexpr index_type hc_size = ipow(Profile::hypercube_side_length, Profile::dimensions);
-    constexpr index_type chunk_size = bitsof<bits_type>;
+    constexpr index_type chunk_size = bits_of<bits_type>;
     constexpr index_type num_chunks = hc_size / chunk_size;
 
     using word_type = uint32_t;
-    constexpr index_type word_size = bitsof<word_type>;
+    constexpr index_type word_size = bits_of<word_type>;
     constexpr index_type words_per_col = sizeof(bits_type) / sizeof(word_type);
     using row_type = sycl::vec<word_type, words_per_col>;
 
@@ -593,7 +593,7 @@ void read_transposed_chunks(hypercube_group grp, hypercube_ptr<Profile, inverse_
                     auto head_col = bit_cast<row_type>(head);
                     auto offset = chunk_offsets[chunk_index];
 
-                    // See write_transposed_chunks for the optimization of the 64-bit case
+            // See write_transposed_chunks for the optimization of the 64-bit case
 #pragma unroll
                     for (index_type i = 0; i < words_per_col; ++i) {
                         const auto ii = words_per_col - 1 - i;
@@ -620,7 +620,7 @@ void compact_chunks(hypercube_group grp, const typename Profile::bits_type *chun
         typename Profile::bits_type *stream_hc) {
     using bits_type = typename Profile::bits_type;
     constexpr index_type hc_size = ipow(Profile::hypercube_side_length, Profile::dimensions);
-    constexpr index_type col_chunk_size = bitsof<bits_type>;
+    constexpr index_type col_chunk_size = bits_of<bits_type>;
     constexpr index_type header_chunk_size = hc_size / col_chunk_size;
     constexpr index_type hc_total_chunks_size = hc_size + header_chunk_size;
     constexpr index_type chunks_per_hc = 1 /* header */ + hc_size / col_chunk_size;
@@ -694,7 +694,7 @@ ndzip::gpu_encoder<T, Dims>::~gpu_encoder() = default;
 
 template<typename T, unsigned Dims>
 size_t ndzip::gpu_encoder<T, Dims>::compress(const slice<const data_type, dimensions> &data,
-        void *stream, kernel_duration *out_kernel_duration) const {
+        void *raw_stream, kernel_duration *out_kernel_duration) const {
     using namespace detail;
     using namespace detail::gpu;
 
@@ -705,7 +705,7 @@ size_t ndzip::gpu_encoder<T, Dims>::compress(const slice<const data_type, dimens
 
     constexpr index_type hc_size
             = detail::ipow(profile::hypercube_side_length, profile::dimensions);
-    constexpr index_type col_chunk_size = detail::bitsof<bits_type>;
+    constexpr index_type col_chunk_size = detail::bits_of<bits_type>;
     constexpr index_type header_chunk_size = hc_size / col_chunk_size;
     constexpr index_type chunks_per_hc = 1 /* header */ + hc_size / col_chunk_size;
     constexpr index_type hc_total_chunks_size = hc_size + header_chunk_size;
@@ -715,7 +715,7 @@ size_t ndzip::gpu_encoder<T, Dims>::compress(const slice<const data_type, dimens
     detail::file<profile> file(data.size());
     const auto num_hypercubes = file.num_hypercubes();
     const auto num_chunks = num_hypercubes * (1 + hc_size / col_chunk_size);
-    if (verbose()) { printf("Have %zu hypercubes\n", num_hypercubes); }
+    if (verbose()) { printf("Have %u hypercubes\n", num_hypercubes); }
 
     sycl::buffer<data_type, dimensions> data_buffer{
             extent_cast<sycl::range<dimensions>>(data.size())};
@@ -781,44 +781,40 @@ size_t ndzip::gpu_encoder<T, Dims>::compress(const slice<const data_type, dimens
                 &num_compressed_words);
     });
 
-    sycl::buffer<stream_align_t> stream_buf(
-            (compressed_size_bound<data_type, dimensions>(data.size()) + sizeof(stream_align_t) - 1)
-            / sizeof(stream_align_t));
+    sycl::buffer<bits_type> stream_buf(
+            div_ceil(compressed_size_bound<data_type, dimensions>(data.size()), sizeof(bits_type)));
 
     auto compact_kernel = [&](sycl::handler &cgh) {
         auto chunks_acc = chunks_buf.template get_access<sam::read>(cgh);
         auto offsets_acc = chunk_lengths_buf.template get_access<sam::read>(cgh);
         auto stream_acc = stream_buf.template get_access<sam::discard_write>(cgh);
-        const size_t header_offset = file.file_header_length() / sizeof(stream_align_t);
         cgh.parallel<stream_compaction_kernel<T, Dims>>(sycl::range<1>{num_hypercubes},
                 sycl::range<1>{hypercube_group_size},
                 [=](hypercube_group grp, sycl::physical_item<1>) {
                     auto hc_index = static_cast<index_type>(grp.get_id(0));
+                    detail::stream<profile> stream{num_hypercubes, stream_acc.get_pointer()};
                     compact_chunks<profile>(grp,
                             &chunks_acc.get_pointer()[hc_index * hc_total_chunks_size],
                             &offsets_acc.get_pointer()[hc_index * chunks_per_hc],
-                            reinterpret_cast<index_type *>(&stream_acc.get_pointer()[0]) + hc_index,
-                            reinterpret_cast<bits_type *>(
-                                    &stream_acc.get_pointer()[0] + header_offset));
+                            stream.header() + hc_index, stream.hypercube(0));
                 });
     };
     auto compact_kernel_evt = submit_and_profile(_pimpl->q, "compact chunks", compact_kernel);
 
     num_compressed_words_available.wait();
-    auto stream_pos = file.file_header_length() + num_compressed_words * sizeof(bits_type);
 
-    auto n_aligned_words = (stream_pos + sizeof(stream_align_t) - 1) / sizeof(stream_align_t);
+    detail::stream<profile> stream{num_hypercubes, static_cast<bits_type *>(raw_stream)};
+    auto n_aligned_words = stream.hypercube(0) - stream.buffer + num_compressed_words;
     auto stream_transferred
             = submit_and_profile(_pimpl->q, "copy stream to host", [&](sycl::handler &cgh) {
-                  cgh.copy(stream_buf.get_access<sam::read>(cgh, n_aligned_words),
-                          static_cast<stream_align_t *>(stream));
+                  cgh.copy(stream_buf.template get_access<sam::read>(cgh, n_aligned_words),
+                          stream.buffer);
               });
 
     stream_transferred.wait();  // TODO I need to wait since I'm potentially overwriting the
     // border
     //  in the aligned copy
-    stream_pos += detail::pack_border(
-            static_cast<char *>(stream) + stream_pos, data, profile::hypercube_side_length);
+    auto border_bytes = detail::pack_border(stream.border(), data, profile::hypercube_side_length);
 
     _pimpl->q.wait();
 
@@ -826,7 +822,7 @@ size_t ndzip::gpu_encoder<T, Dims>::compress(const slice<const data_type, dimens
         // TODO incude border in measurement
         *out_kernel_duration = measure_duration(encode_kernel_evt, compact_kernel_evt);
     }
-    return stream_pos;
+    return n_aligned_words * sizeof(bits_type) + border_bytes;
 }
 
 
@@ -844,13 +840,12 @@ size_t ndzip::gpu_encoder<T, Dims>::decompress(const void *raw_stream, size_t by
     detail::file<profile> file(data.size());
 
     // TODO the range computation here is questionable at best
-    sycl::buffer<stream_align_t> stream_buffer{
-            sycl::range<1>{div_ceil(bytes, sizeof(stream_align_t))}};
+    sycl::buffer<bits_type> stream_buffer{div_ceil(bytes, sizeof(bits_type))};
     sycl::buffer<data_type, dimensions> data_buffer{
             detail::gpu::extent_cast<sycl::range<dimensions>>(data.size())};
 
     submit_and_profile(_pimpl->q, "copy stream to device", [&](sycl::handler &cgh) {
-        cgh.copy(static_cast<const stream_align_t *>(raw_stream),
+        cgh.copy(static_cast<const bits_type *>(raw_stream),
                 stream_buffer.template get_access<sam::discard_write>(cgh));
     });
 
@@ -866,7 +861,7 @@ size_t ndzip::gpu_encoder<T, Dims>::decompress(const void *raw_stream, size_t by
                     hypercube_memory<bits_type, hc_layout> lm{grp};
                     hypercube_ptr<profile, inverse_transform_tag> hc{lm()};
 
-                    index_type hc_index = grp.get_id(0);
+                    const auto hc_index = static_cast<index_type>(grp.get_id(0));
                     detail::stream<const profile> stream{num_hypercubes, stream_acc.get_pointer()};
                     read_transposed_chunks<profile>(grp, hc, stream.hypercube(hc_index));
                     inverse_block_transform<profile>(grp, hc);
@@ -880,23 +875,20 @@ size_t ndzip::gpu_encoder<T, Dims>::decompress(const void *raw_stream, size_t by
             });
 
     detail::stream<const profile> stream{
-            file.num_hypercubes(), static_cast<const detail::stream_align_t *>(raw_stream)};
-    auto stream_pos = file.file_header_length();
-    stream_pos += (stream.border() - stream.hypercube(0)) * sizeof(bits_type);
+            file.num_hypercubes(), static_cast<const bits_type *>(raw_stream)};
 
     data_copy_event.wait();
 
     // TODO GPU border handling!
-    stream_pos
-            += detail::unpack_border(data, static_cast<const std::byte *>(raw_stream) + stream_pos,
-                    profile::hypercube_side_length);
+    auto border_bytes
+            = detail::unpack_border(data, stream.border(), profile::hypercube_side_length);
 
     if (out_kernel_duration) {
         // TODO incude border in measurement
         *out_kernel_duration = measure_duration(kernel_evt, kernel_evt);
     }
 
-    return stream_pos;
+    return (stream.border() - stream.buffer) * sizeof(bits_type) + border_bytes;
 }
 
 

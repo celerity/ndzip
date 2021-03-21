@@ -6,22 +6,25 @@
 
 namespace ndzip {
 
+using index_type = uint32_t;
+using stream_size_type = size_t;
+
 template<unsigned Dims>
 class extent {
   public:
-    using const_iterator = const size_t *;
-    using iterator = size_t *;
+    using const_iterator = const index_type *;
+    using iterator = index_type *;
 
     constexpr extent() noexcept = default;
 
     template<typename... Init,
             std::enable_if_t<((sizeof...(Init) == Dims) && ...
-                                     && std::is_convertible_v<Init, size_t>),
+                                     && std::is_convertible_v<Init, index_type>),
                     int> = 0>
     constexpr extent(const Init &...components) noexcept
-        : _components{static_cast<size_t>(components)...} {}
+        : _components{static_cast<index_type>(components)...} {}
 
-    static extent broadcast(size_t scalar) {
+    static extent broadcast(index_type scalar) {
         extent e;
         for (unsigned d = 0; d < Dims; ++d) {
             e[d] = scalar;
@@ -29,9 +32,9 @@ class extent {
         return e;
     }
 
-    size_t &operator[](unsigned d) { return _components[d]; }
+    index_type &operator[](unsigned d) { return _components[d]; }
 
-    size_t operator[](unsigned d) const { return _components[d]; }
+    index_type operator[](unsigned d) const { return _components[d]; }
 
     extent &operator+=(const extent &other) {
         for (unsigned d = 0; d < Dims; ++d) {
@@ -59,33 +62,33 @@ class extent {
         return result;
     }
 
-    extent &operator*=(size_t other) {
+    extent &operator*=(index_type other) {
         for (unsigned d = 0; d < Dims; ++d) {
             _components[d] *= other;
         }
         return *this;
     }
 
-    friend extent operator*(const extent &left, size_t right) {
+    friend extent operator*(const extent &left, index_type right) {
         auto result = left;
         result *= right;
         return result;
     }
 
-    friend extent operator*(size_t left, const extent &right) {
+    friend extent operator*(index_type left, const extent &right) {
         auto result = right;
         result *= left;
         return result;
     }
 
-    extent &operator/=(size_t other) {
+    extent &operator/=(index_type other) {
         for (unsigned d = 0; d < Dims; ++d) {
             _components[d] /= other;
         }
         return *this;
     }
 
-    friend extent operator/(const extent &left, size_t right) {
+    friend extent operator/(const extent &left, index_type right) {
         auto result = left;
         result /= right;
         return result;
@@ -112,15 +115,15 @@ class extent {
     const_iterator end() const { return _components + Dims; }
 
   private:
-    size_t _components[Dims] = {};
+    index_type _components[Dims] = {};
 };
 
 template<typename... Init>
 extent(const Init &...) -> extent<sizeof...(Init)>;
 
 template<unsigned Dims>
-size_t num_elements(extent<Dims> size) {
-    size_t n = 1;
+index_type num_elements(extent<Dims> size) {
+    index_type n = 1;
     for (unsigned d = 0; d < Dims; ++d) {
         n *= size[d];
     }
@@ -128,9 +131,9 @@ size_t num_elements(extent<Dims> size) {
 }
 
 template<unsigned Dims>
-size_t linear_offset(extent<Dims> position, extent<Dims> space) {
-    size_t offset = 0;
-    size_t stride = 1;
+index_type linear_offset(extent<Dims> position, extent<Dims> space) {
+    index_type offset = 0;
+    index_type stride = 1;
     for (unsigned nd = 0; nd < Dims; ++nd) {
         auto d = Dims - 1 - nd;
         offset += stride * position[d];
@@ -144,8 +147,8 @@ size_t linear_offset(extent<Dims> position, extent<Dims> space) {
 namespace ndzip::detail {
 
 template<unsigned Dims>
-size_t linear_index(const ndzip::extent<Dims> &size, const ndzip::extent<Dims> &pos) {
-    size_t l = pos[0];
+index_type linear_index(const ndzip::extent<Dims> &size, const ndzip::extent<Dims> &pos) {
+    index_type l = pos[0];
     for (unsigned d = 1; d < Dims; ++d) {
         l = l * size[d] + pos[d];
     }
@@ -170,7 +173,7 @@ class slice {
 
     T *data() const { return _data; }
 
-    size_t linear_index(const ndzip::extent<Dims> &pos) const {
+    index_type linear_index(const ndzip::extent<Dims> &pos) const {
         return detail::linear_index(_size, pos);
     }
 
@@ -184,6 +187,6 @@ class slice {
 };
 
 template<typename T, unsigned Dims>
-size_t compressed_size_bound(const extent<Dims> &e);
+stream_size_type compressed_size_bound(const extent<Dims> &e);
 
 }  // namespace ndzip
