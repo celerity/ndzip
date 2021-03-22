@@ -471,10 +471,7 @@ TEMPLATE_TEST_CASE("GPU hypercube decoding works", "[gpu][decode]", ALL_PROFILES
 
     sycl::queue q{sycl::gpu_selector{}};
 
-    buffer<bits_type> stream_buf{cpu_length_bytes / sizeof(bits_type)};
-    q.submit([&](handler &cgh) {
-        cgh.copy(stream.data(), stream_buf.template get_access<sam::discard_write>());
-    });
+    buffer<bits_type> stream_buf{stream.data(), range<1>{cpu_length_bytes / sizeof(bits_type)}};
 
     buffer<bits_type> output_buf{range<1>{hc_size}};
     q.submit([&](handler &cgh) {
@@ -532,7 +529,7 @@ TEMPLATE_TEST_CASE("CPU and GPU hypercube encodings are equivalent", "[gpu]", AL
 
     sycl::queue q{sycl::gpu_selector{}};
 
-    buffer<bits_type> input_buf{range<1>{hc_size}};
+    buffer<bits_type> input_buf{hc_size};
     q.submit([&](handler &cgh) {
         cgh.copy(input.data(), input_buf.template get_access<sam::discard_write>(cgh));
     });
