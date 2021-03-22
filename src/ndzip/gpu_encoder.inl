@@ -564,53 +564,74 @@ template<typename Profile>
 void read_transposed_chunks(hypercube_group grp, hypercube_ptr<Profile, inverse_transform_tag> hc,
         const typename Profile::bits_type *stream) {
     using bits_type = typename Profile::bits_type;
-    constexpr index_type hc_size = ipow(Profile::hypercube_side_length, Profile::dimensions);
-    constexpr index_type chunk_size = bits_of<bits_type>;
-    constexpr index_type num_chunks = hc_size / chunk_size;
-
     using word_type = uint32_t;
+    constexpr index_type hc_size = ipow(Profile::hypercube_side_length, Profile::dimensions);
+    constexpr index_type col_chunk_size = bits_of<bits_type>;
+    constexpr index_type num_col_chunks = hc_size / col_chunk_size;
+    constexpr index_type warps_per_col_chunk = col_chunk_size / warp_size;
     constexpr index_type word_size = bits_of<word_type>;
     constexpr index_type words_per_col = sizeof(bits_type) / sizeof(word_type);
-    using row_type = sycl::vec<word_type, words_per_col>;
 
-    sycl::local_memory<index_type[1 + num_chunks]> chunk_offsets{grp};
-    grp.distribute_for(
-            num_chunks, [&](index_type item) { chunk_offsets[1 + item] = popcount(stream[item]); });
-    grp.single_item([&] { chunk_offsets[0] = num_chunks; });
-    inclusive_scan<num_chunks>(grp, chunk_offsets(), sycl::plus<index_type>());
+    sycl::local_memory<index_type[1 + num_col_chunks]> chunk_offsets{grp};
+    grp.single_item([&] { chunk_offsets[0] = num_col_chunks; });
+    grp.distribute_for(num_col_chunks,
+            [&](index_type item) { chunk_offsets[1 + item] = popcount(stream[item]); });
+    inclusive_scan<num_col_chunks + 1>(grp, chunk_offsets(), sycl::plus<index_type>());
 
-    grp.distribute_for(
-            hc_size, [&](index_type item, index_type, sycl::logical_item<1>, sycl::sub_group) {
-                auto chunk_index = item / chunk_size;
-                auto head = stream[chunk_index];
+    sycl::local_memory<index_type[hypercube_group_size * ipow(words_per_col, 2)]> stage_mem{grp};
 
-                row_type row;
-                if (head != 0) {
-                    const auto chunk_base = floor(item, chunk_size);
-                    const auto outer_cell = words_per_col - 1 - (item - chunk_base) / word_size;
-                    const auto inner_cell = word_size - 1 - (item - chunk_base) % word_size;
+    grp.distribute_for(num_col_chunks * warp_size, [&](index_type item0, index_type, sycl::logical_item<1> idx, sycl::sub_group sg) {
+        auto col_chunk_index = item0 / warp_size;
+        auto head = stream[col_chunk_index];
 
-                    auto head_col = bit_cast<row_type>(head);
-                    auto offset = chunk_offsets[chunk_index];
+        if (head != 0) {
+            word_type head_col[words_per_col];
+            __builtin_memcpy(head_col, &head, sizeof head_col);
+            auto offset = chunk_offsets[col_chunk_index];
 
-            // See write_transposed_chunks for the optimization of the 64-bit case
+            auto *stage = &stage_mem[ipow(words_per_col, 2) * floor(static_cast<index_type>(idx.get_local_linear_id()), warp_size)];
 #pragma unroll
-                    for (index_type i = 0; i < words_per_col; ++i) {
-                        const auto ii = words_per_col - 1 - i;
-                        for (index_type j = 0; j < word_size; ++j) {
-                            const auto jj = word_size - 1 - j;
-                            auto col_word = load_aligned<word_type>(
-                                    reinterpret_cast<const std::byte *>(stream + offset)
-                                    + sizeof(word_type) * outer_cell);
-                            if ((head_col[ii] >> jj) & word_type{1}) {
-                                row[ii] |= ((col_word >> inner_cell) & word_type{1}) << jj;
-                                offset += 1;
-                            }
+            for (index_type w = 0; w < ipow(words_per_col, 2); ++w) {
+                auto i = w * warp_size + item0 % warp_size;
+                if (offset + i / words_per_col < chunk_offsets[col_chunk_index+1]) {
+                    stage[i] = load_aligned<word_type>(
+                            reinterpret_cast<const word_type *>(stream + offset) + i);
+                }
+            }
+
+            for (index_type w = 0; w < warps_per_col_chunk; ++w) {
+                index_type item = floor(item0, warp_size) * warps_per_col_chunk + w * warp_size + item0 % warp_size;
+                const auto outer_cell = words_per_col - 1 - w;
+                const auto inner_cell = word_size - 1 - item0 % warp_size;
+
+                index_type local_offset = 0;
+
+                word_type row[words_per_col] = {0};
+                // See write_transposed_chunks for the optimization of the 64-bit case
+#pragma unroll
+                for (index_type i = 0; i < words_per_col; ++i) {
+                    const auto ii = words_per_col - 1 - i;
+                    for (index_type j = 0; j < word_size; ++j) {
+                        const auto jj = word_size - 1 - j;
+                        const auto stage_idx = words_per_col * local_offset + outer_cell;
+                        auto col_word = stage[stage_idx];
+                        if ((head_col[ii] >> jj) & word_type{1}) {
+                            row[ii] |= ((col_word >> inner_cell) & word_type{1}) << jj;
+                            local_offset += 1;
                         }
                     }
                 }
-                hc.store(item, bit_cast<bits_type>(row));
-            });
+                bits_type row_bits;
+                __builtin_memcpy(&row_bits, row, sizeof row_bits);
+                hc.store(item, row_bits);
+            }
+        } else {
+            for (index_type w = 0; w < warps_per_col_chunk; ++w) {
+                index_type item = floor(item0, warp_size) * warps_per_col_chunk + w * warp_size + item0 % warp_size;
+                hc.store(item, 0);
+            }
+        }
+    });
 }
 
 

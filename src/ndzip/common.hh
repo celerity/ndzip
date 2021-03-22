@@ -113,11 +113,7 @@ template<typename POD>
 template<size_t Align, typename POD, typename Memory>
 [[gnu::always_inline]] POD load_aligned(const Memory *src) {
     assert(reinterpret_cast<uintptr_t>(src) % Align == 0);
-    if constexpr (std::is_same_v<Memory, POD> && Align >= alignof(POD)) {
-        return *src;
-    } else {
-        return load_unaligned<POD>(__builtin_assume_aligned(src, Align));
-    }
+    return load_unaligned<POD>(__builtin_assume_aligned(src, Align));
 }
 
 template<typename POD, typename Memory>
@@ -134,11 +130,7 @@ template<typename POD>
 template<size_t Align, typename POD, typename Memory>
 [[gnu::always_inline]] void store_aligned(Memory *dest, POD a) {
     assert(reinterpret_cast<uintptr_t>(dest) % Align == 0);
-    if constexpr (std::is_same_v<Memory, POD> && Align >= alignof(POD)) {
-        *dest = a;
-    } else {
-        store_unaligned(__builtin_assume_aligned(dest, Align), a);
-    }
+    store_unaligned(__builtin_assume_aligned(dest, Align), a);
 }
 
 template<typename POD, typename Memory>
