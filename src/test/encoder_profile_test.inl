@@ -448,7 +448,7 @@ TEMPLATE_TEST_CASE("CPU and GPU inverse block transforms are identical", "[gpu]"
 template<typename>
 class gpu_hypercube_decode_test_kernel;
 
-TEMPLATE_TEST_CASE("GPU hypercube decoding works", "[gpu]", ALL_PROFILES) {
+TEMPLATE_TEST_CASE("GPU hypercube decoding works", "[gpu][decode]", ALL_PROFILES) {
     using bits_type = typename TestType::bits_type;
     const auto hc_size = ipow(TestType::hypercube_side_length, TestType::dimensions);
     using hc_layout = gpu::hypercube_layout<TestType::dimensions, gpu::inverse_transform_tag>;
@@ -465,12 +465,13 @@ TEMPLATE_TEST_CASE("GPU hypercube decoding works", "[gpu]", ALL_PROFILES) {
     cpu::simd_aligned_buffer<bits_type> cpu_cube(input.size());
     memcpy(cpu_cube.data(), input.data(), input.size() * sizeof(bits_type));
     std::vector<bits_type> stream(hc_size * 2);
-    auto cpu_length = cpu::zero_bit_encode(
+    auto cpu_length_bytes = cpu::zero_bit_encode(
             cpu_cube.data(), reinterpret_cast<std::byte *>(stream.data()), hc_size);
+    REQUIRE(cpu_length_bytes % sizeof(bits_type) == 0);
 
     sycl::queue q{sycl::gpu_selector{}};
 
-    buffer<bits_type> stream_buf{range<1>{cpu_length}};
+    buffer<bits_type> stream_buf{cpu_length_bytes / sizeof(bits_type)};
     q.submit([&](handler &cgh) {
         cgh.copy(stream.data(), stream_buf.template get_access<sam::discard_write>());
     });
@@ -526,7 +527,7 @@ TEMPLATE_TEST_CASE("CPU and GPU hypercube encodings are equivalent", "[gpu]", AL
     cpu::simd_aligned_buffer<bits_type> cpu_cube(input.size());
     memcpy(cpu_cube.data(), input.data(), input.size() * sizeof(bits_type));
     std::vector<bits_type> cpu_stream(hc_size * 2);
-    auto cpu_length = cpu::zero_bit_encode(
+    auto cpu_length_bytes = cpu::zero_bit_encode(
             cpu_cube.data(), reinterpret_cast<std::byte *>(cpu_stream.data()), hc_size);
 
     sycl::queue q{sycl::gpu_selector{}};
@@ -592,14 +593,14 @@ TEMPLATE_TEST_CASE("CPU and GPU hypercube encodings are equivalent", "[gpu]", AL
     q.submit([&](handler &cgh) {
          cgh.copy(length_buf.template get_access<sam::read>(cgh), &gpu_num_words);
      }).wait();
-    auto gpu_length = gpu_num_words * sizeof(bits_type);
+    auto gpu_length_bytes = gpu_num_words * sizeof(bits_type);
 
     std::vector<bits_type> gpu_stream(stream_buf.get_range()[0]);
     q.submit([&](handler &cgh) {
          cgh.copy(stream_buf.template get_access<sam::read>(cgh), gpu_stream.data());
      }).wait();
 
-    CHECK(gpu_length == cpu_length);
+    CHECK(gpu_length_bytes == cpu_length_bytes);
     check_for_vector_equality(gpu_stream, cpu_stream);
 }
 
