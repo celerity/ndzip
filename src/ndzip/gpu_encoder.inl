@@ -573,65 +573,80 @@ void read_transposed_chunks(hypercube_group grp, hypercube_ptr<Profile, inverse_
     constexpr index_type words_per_col = sizeof(bits_type) / sizeof(word_type);
 
     sycl::local_memory<index_type[1 + num_col_chunks]> chunk_offsets{grp};
-    grp.single_item([&] { chunk_offsets[0] = num_col_chunks; });
+    grp.single_item([&] { chunk_offsets[0] = num_col_chunks; });  // single_item has no barrier
     grp.distribute_for(num_col_chunks,
             [&](index_type item) { chunk_offsets[1 + item] = popcount(stream[item]); });
     inclusive_scan<num_col_chunks + 1>(grp, chunk_offsets(), sycl::plus<index_type>());
 
     sycl::local_memory<index_type[hypercube_group_size * ipow(words_per_col, 2)]> stage_mem{grp};
 
-    grp.distribute_for(num_col_chunks * warp_size, [&](index_type item0, index_type, sycl::logical_item<1> idx, sycl::sub_group sg) {
-        auto col_chunk_index = item0 / warp_size;
-        auto head = stream[col_chunk_index];
+    // See write_transposed_chunks for the optimization of the 64-bit case
+    grp.distribute_for(num_col_chunks * warp_size,
+            [&](index_type item0, index_type, sycl::logical_item<1> idx, sycl::sub_group sg) {
+                auto col_chunk_index = item0 / warp_size;
+                auto head = stream[col_chunk_index];
 
-        if (head != 0) {
-            word_type head_col[words_per_col];
-            __builtin_memcpy(head_col, &head, sizeof head_col);
-            auto offset = chunk_offsets[col_chunk_index];
+                if (head != 0) {
+                    word_type head_col[words_per_col];
+                    __builtin_memcpy(head_col, &head, sizeof head_col);
+                    auto offset = chunk_offsets[col_chunk_index];
 
-            auto *stage = &stage_mem[ipow(words_per_col, 2) * floor(static_cast<index_type>(idx.get_local_linear_id()), warp_size)];
+                    // TODO this can be hoisted out of the loop within distribute_for. Maybe
+                    //  write that loop explicitly for this purpose?
+                    auto *stage = &stage_mem[ipow(words_per_col, 2)
+                            * floor(static_cast<index_type>(idx.get_local_linear_id()), warp_size)];
+
+                    // TODO There is an excellent opportunity to hide global memory latencies by
+                    //  starting to read values for outer-loop iteration n+1 into registers and then
+                    //  just committing the reads to shared memory in the next iteration
 #pragma unroll
-            for (index_type w = 0; w < ipow(words_per_col, 2); ++w) {
-                auto i = w * warp_size + item0 % warp_size;
-                if (offset + i / words_per_col < chunk_offsets[col_chunk_index+1]) {
-                    stage[i] = load_aligned<word_type>(
-                            reinterpret_cast<const word_type *>(stream + offset) + i);
-                }
-            }
-
-            for (index_type w = 0; w < warps_per_col_chunk; ++w) {
-                index_type item = floor(item0, warp_size) * warps_per_col_chunk + w * warp_size + item0 % warp_size;
-                const auto outer_cell = words_per_col - 1 - w;
-                const auto inner_cell = word_size - 1 - item0 % warp_size;
-
-                index_type local_offset = 0;
-
-                word_type row[words_per_col] = {0};
-                // See write_transposed_chunks for the optimization of the 64-bit case
-#pragma unroll
-                for (index_type i = 0; i < words_per_col; ++i) {
-                    const auto ii = words_per_col - 1 - i;
-                    for (index_type j = 0; j < word_size; ++j) {
-                        const auto jj = word_size - 1 - j;
-                        const auto stage_idx = words_per_col * local_offset + outer_cell;
-                        auto col_word = stage[stage_idx];
-                        if ((head_col[ii] >> jj) & word_type{1}) {
-                            row[ii] |= ((col_word >> inner_cell) & word_type{1}) << jj;
-                            local_offset += 1;
+                    for (index_type w = 0; w < ipow(words_per_col, 2); ++w) {
+                        auto i = w * warp_size + item0 % warp_size;
+                        if (offset + i / words_per_col < chunk_offsets[col_chunk_index + 1]) {
+                            // TODO this load is uncoalesced since offsets are not warp-aligned
+                            stage[i] = load_aligned<word_type>(
+                                    reinterpret_cast<const word_type *>(stream + offset) + i);
                         }
                     }
+
+                    for (index_type w = 0; w < warps_per_col_chunk; ++w) {
+                        index_type item = floor(item0, warp_size) * warps_per_col_chunk
+                                + w * warp_size + item0 % warp_size;
+                        const auto outer_cell = words_per_col - 1 - w;
+                        const auto inner_cell = word_size - 1 - item0 % warp_size;
+
+                        index_type local_offset = 0;
+                        word_type row[words_per_col] = {0};
+#pragma unroll
+                        for (index_type i = 0; i < words_per_col; ++i) {
+                            const auto ii = words_per_col - 1 - i;
+#pragma unroll  // TODO this unroll significantly reduces the computational complexity of the loop,
+                //  but I'm uncomfortable with the increased instruction cache pressure. We might
+                //  resolve this by decoding in the opposite direction offsets[i+1] => offsets[i]
+                //  which should allow us to get rid of the repeated N-1-i terms here.
+                            for (index_type j = 0; j < word_size; ++j) {
+                                const auto jj = word_size - 1 - j;
+                                const auto stage_idx = words_per_col * local_offset + outer_cell;
+                                auto col_word = stage[stage_idx];
+                                if ((head_col[ii] >> jj) & word_type{1}) {
+                                    row[ii] |= ((col_word >> inner_cell) & word_type{1}) << jj;
+                                    local_offset += 1;
+                                }
+                            }
+                        }
+                        bits_type row_bits;
+                        __builtin_memcpy(&row_bits, row, sizeof row_bits);
+                        hc.store(item, row_bits);
+                    }
+                } else {
+                    // TODO duplication of the `item` calculation above. The term can be simplified!
+                    for (index_type w = 0; w < warps_per_col_chunk; ++w) {
+                        index_type item = floor(item0, warp_size) * warps_per_col_chunk
+                                + w * warp_size + item0 % warp_size;
+                        hc.store(item, 0);
+                    }
                 }
-                bits_type row_bits;
-                __builtin_memcpy(&row_bits, row, sizeof row_bits);
-                hc.store(item, row_bits);
-            }
-        } else {
-            for (index_type w = 0; w < warps_per_col_chunk; ++w) {
-                index_type item = floor(item0, warp_size) * warps_per_col_chunk + w * warp_size + item0 % warp_size;
-                hc.store(item, 0);
-            }
-        }
-    });
+            });
 }
 
 
