@@ -61,42 +61,48 @@ index_type global_offset(index_type local_offset, extent<Profile::dimensions> gl
     return global_offset;
 }
 
-// TODO for 64-bit, 512 or 1024 is probably better (we want enough threads to achieve max occupancy
-//  even though blocks/SM is limited by local memory size). Should be template<typename Profile>
-inline constexpr index_type hypercube_group_size = 256;
-using hypercube_group = known_size_group<hypercube_group_size>;
 
+// We want to maintain a fixed number of threads per SM to control occupancy. Occupancy is
+// primarily limited by local memory usage, so we adjust the group size to keep local memory
+// requirement constant -- 256 threads/group for 32 bit, 512 threads/group for 64 bit.
+template<typename Profile>
+inline constexpr index_type hypercube_group_size = bytes_of<typename Profile::bits_type> * 64;
+
+template<typename Profile>
+using hypercube_group = known_size_group<hypercube_group_size<Profile>>;
 
 struct forward_transform_tag;
 struct inverse_transform_tag;
 
-template<unsigned Dims, typename Transform>
+template<typename Profile, typename Transform>
 struct hypercube_layout;
 
-template<unsigned Direction, unsigned Dims, typename Transform>
+template<typename Profile, unsigned Direction, typename Transform>
 struct directional_accessor;
 
 // std::optional is not allowed in kernels
 inline constexpr index_type no_such_lane = ~index_type{};
 
-template<>
-struct hypercube_layout<1, forward_transform_tag> {
+template<typename T>
+struct hypercube_layout<profile<T, 1>, forward_transform_tag> {
     constexpr static index_type side_length = 4096;
     constexpr static index_type hc_size = 4096;
-    constexpr static index_type num_lanes = hypercube_group_size;
+    constexpr static index_type num_lanes = hypercube_group_size<profile<T, 1>>;
     constexpr static index_type lane_length = hc_size / num_lanes;
+    constexpr static index_type value_width = banks_of<typename profile<T, 1>::bits_type>;
 
-    constexpr static index_type pad(index_type i, index_type width) {
-        return width * i + width * i / warp_size;
+    constexpr static index_type pad(index_type i) {
+        return value_width * i + value_width * i / warp_size;
     }
 };
 
-template<>
-struct hypercube_layout<1, inverse_transform_tag> {
+template<typename T>
+struct hypercube_layout<profile<T, 1>, inverse_transform_tag> {
     constexpr static index_type side_length = 4096;
     constexpr static index_type hc_size = 4096;
-    constexpr static index_type num_lanes = hypercube_group_size;
+    constexpr static index_type num_lanes = hypercube_group_size<profile<T, 1>>;
     constexpr static index_type lane_length = hc_size / num_lanes;
+    constexpr static index_type value_width = banks_of<typename profile<T, 1>::bits_type>;
 
     // Special case: 1D inverse transform uses prefix sum, which is optimal without padding.
 };
@@ -105,9 +111,9 @@ struct hypercube_layout<1, inverse_transform_tag> {
 //  Is it faster to load the entire 1D hc into registers instead? It might not, since the lanes
 //  approach only requires one read and one write per element whereas the register variant needs
 //  one read and one read-write op.
-template<typename Transform>
-struct directional_accessor<0, 1, Transform> {
-    using layout = hypercube_layout<1, Transform>;
+template<typename T, typename Transform>
+struct directional_accessor<profile<T, 1>, 0, Transform> {
+    using layout = hypercube_layout<profile<T, 1>, Transform>;
 
     constexpr static index_type prev_lane_in_row(index_type lane) {
         return lane > 0 ? lane - 1 : no_such_lane;
@@ -120,21 +126,22 @@ struct directional_accessor<0, 1, Transform> {
     static inline const index_type stride = 1;
 };
 
-template<>
-struct hypercube_layout<2, forward_transform_tag> {
-    constexpr static index_type num_lanes = hypercube_group_size;
+template<typename T>
+struct hypercube_layout<profile<T, 2>, forward_transform_tag> {
+    constexpr static index_type num_lanes = hypercube_group_size<profile<T, 2>>;
     constexpr static index_type side_length = 64;
     constexpr static index_type hc_size = 64 * 64;
     constexpr static index_type lane_length = hc_size / num_lanes;
+    constexpr static index_type value_width = banks_of<typename profile<T, 2>::bits_type>;
 
-    constexpr static index_type pad(index_type i, index_type width) {
-        return width * i + width * i / warp_size;
+    constexpr static index_type pad(index_type i) {
+        return value_width * i + value_width * i / warp_size;
     }
 };
 
-template<>
-struct directional_accessor<0, 2, forward_transform_tag> {
-    using layout = hypercube_layout<2, forward_transform_tag>;
+template<typename T>
+struct directional_accessor<profile<T, 2>, 0, forward_transform_tag> {
+    using layout = hypercube_layout<profile<T, 2>, forward_transform_tag>;
 
     constexpr static index_type prev_lane_in_row(index_type lane) {
         if (lane % (layout::side_length / layout::lane_length) > 0) {
@@ -149,9 +156,9 @@ struct directional_accessor<0, 2, forward_transform_tag> {
     constexpr static index_type stride = 1;
 };
 
-template<>
-struct directional_accessor<1, 2, forward_transform_tag> {
-    using layout = hypercube_layout<2, forward_transform_tag>;
+template<typename T>
+struct directional_accessor<profile<T, 2>, 1, forward_transform_tag> {
+    using layout = hypercube_layout<profile<T, 2>, forward_transform_tag>;
 
     constexpr static index_type prev_lane_in_row(index_type lane) {
         if (lane >= layout::side_length) {
@@ -168,64 +175,66 @@ struct directional_accessor<1, 2, forward_transform_tag> {
     constexpr static index_type stride = layout::side_length;
 };
 
-template<>
-struct hypercube_layout<2, inverse_transform_tag> {
+template<typename T>
+struct hypercube_layout<profile<T, 2>, inverse_transform_tag> {
     constexpr static index_type side_length = 64;
     constexpr static index_type hc_size = 64 * 64;
     constexpr static index_type num_lanes = side_length;
     constexpr static index_type lane_length = hc_size / num_lanes;
+    constexpr static index_type value_width = banks_of<typename profile<T, 2>::bits_type>;
 
-    constexpr static index_type pad(index_type i, index_type width) {
-        if (width == 1) {
+    constexpr static index_type pad(index_type i) {
+        if constexpr (value_width == 1) {
             return i + i / side_length;
         } else {
-            return width * i + i / (warp_size / width) - i / side_length;
+            return value_width * i + i / (warp_size / value_width) - i / side_length;
         }
     }
 };
 
-template<>
-struct directional_accessor<0, 2, inverse_transform_tag> {
-    using layout = hypercube_layout<2, inverse_transform_tag>;
+template<typename T>
+struct directional_accessor<profile<T, 2>, 0, inverse_transform_tag> {
+    using layout = hypercube_layout<profile<T, 2>, inverse_transform_tag>;
     constexpr static index_type prev_lane_in_row(index_type) { return no_such_lane; }
     constexpr static index_type offset(index_type lane) { return lane * layout::side_length; }
     constexpr static index_type stride = 1;
 };
 
-template<>
-struct directional_accessor<1, 2, inverse_transform_tag> {
-    using layout = hypercube_layout<2, inverse_transform_tag>;
+template<typename T>
+struct directional_accessor<profile<T, 2>, 1, inverse_transform_tag> {
+    using layout = hypercube_layout<profile<T, 2>, inverse_transform_tag>;
     constexpr static index_type prev_lane_in_row(index_type) { return no_such_lane; }
     constexpr static index_type offset(index_type lane) { return lane % layout::side_length; }
     constexpr static index_type stride = layout::side_length;
 };
 
-template<typename Transform>
-struct hypercube_layout<3, Transform> {
+template<typename T, typename Transform>
+struct hypercube_layout<profile<T, 3>, Transform> {
     constexpr static index_type side_length = 16;
     constexpr static index_type hc_size = ipow(side_length, 3);
-    // TODO implement support for forward_transform with > 256 lanes
+    // TODO implement support for forward_transform with > 256 lanes (group size for doubles is 512)
     constexpr static index_type num_lanes = ipow(side_length, 2);
     constexpr static index_type lane_length = hc_size / num_lanes;
+    constexpr static index_type value_width = banks_of<typename profile<T, 3>::bits_type>;
 
-    constexpr static index_type pad(index_type i, index_type width) {
-        auto padded = width * i + width * i / warp_size;
-        if (width == 2) { padded -= i / (width * num_lanes); }
+    constexpr static index_type pad(index_type i) {
+        auto padded = value_width * i + value_width * i / warp_size;
+        if (value_width == 2) { padded -= i / (value_width * num_lanes); }
         return padded;
     }
 };
 
-template<typename Transform>
-struct directional_accessor<0, 3, Transform> {
-    using layout = hypercube_layout<3, Transform>;
+template<typename T, typename Transform>
+struct directional_accessor<profile<T, 3>, 0, Transform> {
+    using layout = hypercube_layout<profile<T, 3>, Transform>;
     constexpr static index_type prev_lane_in_row(index_type) { return no_such_lane; }
     constexpr static index_type offset(index_type lane) { return lane * layout::side_length; }
     constexpr static index_type stride = 1;
 };
 
-template<typename Transform>
-struct directional_accessor<1, 3, Transform> {
-    using layout = hypercube_layout<3, Transform>;
+template<typename T, typename Transform>
+struct directional_accessor<profile<T, 3>, 1, Transform> {
+    using layout = hypercube_layout<profile<T, 3>, Transform>;
 
     constexpr static index_type prev_lane_in_row(index_type) { return no_such_lane; }
     constexpr static index_type offset(index_type lane) {
@@ -237,37 +246,37 @@ struct directional_accessor<1, 3, Transform> {
     constexpr static index_type stride = layout::side_length;
 };
 
-template<typename Transform>
-struct directional_accessor<2, 3, Transform> {
-    using layout = hypercube_layout<3, Transform>;
+template<typename T, typename Transform>
+struct directional_accessor<profile<T, 3>, 2, Transform> {
+    using layout = hypercube_layout<profile<T, 3>, Transform>;
     constexpr static index_type prev_lane_in_row(index_type) { return no_such_lane; }
     constexpr static index_type offset(index_type lane) { return lane; }
     constexpr static index_type stride = layout::side_length * layout::side_length;
 };
 
 
-template<typename Bits, typename Layout>
+template<typename Layout>
 struct hypercube_allocation {
     using backing_type = uint_bank_t;
+    constexpr static index_type size = ceil(Layout::pad(Layout::hc_size), Layout::value_width);
+};
+
+template<typename T>
+struct hypercube_allocation<hypercube_layout<profile<T, 1>, inverse_transform_tag>> {
+    using backing_type = typename profile<T, 1>::bits_type;
     constexpr static index_type size
-            = ceil(Layout::pad(Layout::hc_size, sizeof(Bits) / sizeof(uint_bank_t)),
-                    static_cast<index_type>(sizeof(Bits) / sizeof(uint_bank_t)));
+            = hypercube_layout<profile<T, 1>, inverse_transform_tag>::hc_size;
 };
 
-template<typename Bits>
-struct hypercube_allocation<Bits, hypercube_layout<1, inverse_transform_tag>> {
-    using backing_type = Bits;
-    constexpr static index_type size = hypercube_layout<1, inverse_transform_tag>::hc_size;
-};
-
-template<typename Bits, typename Layout>
-using hypercube_memory = sycl::local_memory<typename hypercube_allocation<Bits,
-        Layout>::backing_type[hypercube_allocation<Bits, Layout>::size]>;
+template<typename Profile, typename Transform>
+using hypercube_memory = sycl::local_memory<
+        typename hypercube_allocation<hypercube_layout<Profile, Transform>>::backing_type
+                [hypercube_allocation<hypercube_layout<Profile, Transform>>::size]>;
 
 
 template<typename Profile, typename F>
-void for_hypercube_indices(
-        hypercube_group grp, index_type hc_index, extent<Profile::dimensions> data_size, F &&f) {
+void for_hypercube_indices(hypercube_group<Profile> grp, index_type hc_index,
+        extent<Profile::dimensions> data_size, F &&f) {
     const auto side_length = Profile::hypercube_side_length;
     const auto hc_size = ipow(side_length, Profile::dimensions);
     const auto hc_offset
@@ -283,22 +292,20 @@ void for_hypercube_indices(
 template<typename Profile, typename Transform>
 struct hypercube_ptr {
     using bits_type = typename Profile::bits_type;
-    using layout = hypercube_layout<Profile::dimensions, Transform>;
+    using layout = hypercube_layout<Profile, Transform>;
 
     uint_bank_t *memory;
 
     template<typename T = bits_type>
     T load(index_type i) const {
         static_assert(sizeof(T) == sizeof(bits_type));
-        return load_aligned<alignof(uint_bank_t), T>(
-                memory + layout::pad(i, sizeof(T) / sizeof(uint_bank_t)));
+        return load_aligned<alignof(uint_bank_t), T>(memory + layout::pad(i));
     }
 
     template<typename T = bits_type>
     void store(index_type i, std::common_type_t<T> bits) {
         static_assert(sizeof(T) == sizeof(bits_type));
-        store_aligned<alignof(uint_bank_t), T>(
-                memory + layout::pad(i, sizeof(T) / sizeof(uint_bank_t)), bits);
+        store_aligned<alignof(uint_bank_t), T>(memory + layout::pad(i), bits);
     }
 };
 
@@ -307,7 +314,7 @@ struct hypercube_ptr {
 template<typename Data>
 struct hypercube_ptr<profile<Data, 1>, inverse_transform_tag> {
     using bits_type = typename profile<Data, 1>::bits_type;
-    using layout = hypercube_layout<1, inverse_transform_tag>;
+    using layout = hypercube_layout<profile<bits_type, 1>, inverse_transform_tag>;
 
     bits_type *memory;
 
@@ -344,23 +351,24 @@ void store_hypercube(sycl::group<1> grp, index_type hc_index,
 
 template<unsigned Direction, typename Profile>
 void forward_transform_lanes(
-        hypercube_group grp, hypercube_ptr<Profile, forward_transform_tag> hc) {
-    using accessor = directional_accessor<Direction, Profile::dimensions, forward_transform_tag>;
-    using layout = typename accessor::layout;
+        hypercube_group<Profile> grp, hypercube_ptr<Profile, forward_transform_tag> hc) {
     using bits_type = typename Profile::bits_type;
+    using accessor = directional_accessor<Profile, Direction, forward_transform_tag>;
+    using layout = typename accessor::layout;
 
     // 1D and 2D transforms have multiple lanes per row, so a barrier is required to synchronize
     // the read of the last element from (lane-1) with the write to the last element of (lane)
     constexpr bool needs_carry = layout::side_length > layout::lane_length;
     // std::max: size might be zero if !needs_carry, but that is not a valid type
     sycl::private_memory<
-            bits_type[std::max(index_type{1}, layout::num_lanes / hypercube_group_size)]>
+            bits_type[std::max(index_type{1}, layout::num_lanes / hypercube_group_size<Profile>)]>
             carry{grp};
 
     if constexpr (needs_carry) {
-        grp.distribute_for<layout::num_lanes>([&](index_type lane, index_type iteration,
-                                                      sycl::logical_item<1> idx) {
+        grp.template distribute_for<layout::num_lanes>([&](index_type lane, index_type iteration,
+                                                               sycl::logical_item<1> idx) {
             if (auto prev_lane = accessor::prev_lane_in_row(lane); prev_lane != no_such_lane) {
+                // TODO this load causes a bank conflict in the 1-dimensional case. Why?
                 carry(idx)[iteration] = hc.load(
                         accessor::offset(prev_lane) + (layout::lane_length - 1) * accessor::stride);
             } else {
@@ -369,7 +377,7 @@ void forward_transform_lanes(
         });
     }
 
-    grp.distribute_for<layout::num_lanes>(
+    grp.template distribute_for<layout::num_lanes>(
             [&](index_type lane, index_type iteration, sycl::logical_item<1> idx) {
                 bits_type a = needs_carry ? carry(idx)[iteration] : 0;
                 index_type index = accessor::offset(lane);
@@ -385,7 +393,7 @@ void forward_transform_lanes(
 
 template<typename Profile>
 void forward_block_transform(
-        hypercube_group grp, hypercube_ptr<Profile, forward_transform_tag> hc) {
+        hypercube_group<Profile> grp, hypercube_ptr<Profile, forward_transform_tag> hc) {
     constexpr auto dims = Profile::dimensions;
     constexpr index_type hc_size = ipow(Profile::hypercube_side_length, dims);
 
@@ -402,12 +410,12 @@ void forward_block_transform(
 
 template<unsigned Direction, typename Profile>
 void inverse_transform_lanes(
-        hypercube_group grp, hypercube_ptr<Profile, inverse_transform_tag> hc) {
-    using accessor = directional_accessor<Direction, Profile::dimensions, inverse_transform_tag>;
-    using layout = typename accessor::layout;
+        hypercube_group<Profile> grp, hypercube_ptr<Profile, inverse_transform_tag> hc) {
     using bits_type = typename Profile::bits_type;
+    using accessor = directional_accessor<Profile, Direction, inverse_transform_tag>;
+    using layout = typename accessor::layout;
 
-    grp.distribute_for<layout::num_lanes>([&](index_type lane) {
+    grp.template distribute_for<layout::num_lanes>([&](index_type lane) {
         index_type index = accessor::offset(lane);
         bits_type a = hc.load(index);
         for (index_type i = 1; i < layout::lane_length; ++i) {
@@ -434,7 +442,7 @@ inline unsigned popcount(unsigned long long x) {
 
 template<typename Profile>
 void inverse_block_transform(
-        hypercube_group grp, hypercube_ptr<Profile, inverse_transform_tag> hc) {
+        hypercube_group<Profile> grp, hypercube_ptr<Profile, inverse_transform_tag> hc) {
     using bits_type = typename Profile::bits_type;
     constexpr auto dims = Profile::dimensions;
     constexpr index_type hc_size = ipow(Profile::hypercube_side_length, dims);
@@ -467,8 +475,9 @@ void inverse_block_transform(
 }
 
 template<typename Profile>
-void write_transposed_chunks(hypercube_group grp, hypercube_ptr<Profile, forward_transform_tag> hc,
-        typename Profile::bits_type *out_chunks, index_type *out_lengths) {
+void write_transposed_chunks(hypercube_group<Profile> grp,
+        hypercube_ptr<Profile, forward_transform_tag> hc, typename Profile::bits_type *out_chunks,
+        index_type *out_lengths) {
     using bits_type = typename Profile::bits_type;
     constexpr index_type hc_size = ipow(Profile::hypercube_side_length, Profile::dimensions);
     constexpr index_type col_chunk_size = bits_of<bits_type>;
@@ -561,7 +570,8 @@ void write_transposed_chunks(hypercube_group grp, hypercube_ptr<Profile, forward
 
 
 template<typename Profile>
-void read_transposed_chunks(hypercube_group grp, hypercube_ptr<Profile, inverse_transform_tag> hc,
+void read_transposed_chunks(hypercube_group<Profile> grp,
+        hypercube_ptr<Profile, inverse_transform_tag> hc,
         const typename Profile::bits_type *stream) {
     using bits_type = typename Profile::bits_type;
     using word_type = uint32_t;
@@ -578,7 +588,8 @@ void read_transposed_chunks(hypercube_group grp, hypercube_ptr<Profile, inverse_
             [&](index_type item) { chunk_offsets[1 + item] = popcount(stream[item]); });
     inclusive_scan<num_col_chunks + 1>(grp, chunk_offsets(), sycl::plus<index_type>());
 
-    sycl::local_memory<index_type[hypercube_group_size * ipow(words_per_col, 2)]> stage_mem{grp};
+    sycl::local_memory<index_type[hypercube_group_size<Profile> * ipow(words_per_col, 2)]>
+            stage_mem{grp};
 
     // See write_transposed_chunks for the optimization of the 64-bit case
     grp.distribute_for(num_col_chunks * warp_size,
@@ -596,9 +607,9 @@ void read_transposed_chunks(hypercube_group grp, hypercube_ptr<Profile, inverse_
                     auto *stage = &stage_mem[ipow(words_per_col, 2)
                             * floor(static_cast<index_type>(idx.get_local_linear_id()), warp_size)];
 
-                    // TODO There is an excellent opportunity to hide global memory latencies by
-                    //  starting to read values for outer-loop iteration n+1 into registers and then
-                    //  just committing the reads to shared memory in the next iteration
+            // TODO There is an excellent opportunity to hide global memory latencies by
+            //  starting to read values for outer-loop iteration n+1 into registers and then
+            //  just committing the reads to shared memory in the next iteration
 #pragma unroll
                     for (index_type w = 0; w < ipow(words_per_col, 2); ++w) {
                         auto i = w * warp_size + item0 % warp_size;
@@ -651,7 +662,7 @@ void read_transposed_chunks(hypercube_group grp, hypercube_ptr<Profile, inverse_
 
 
 template<typename Profile>
-void compact_chunks(hypercube_group grp, const typename Profile::bits_type *chunks,
+void compact_chunks(hypercube_group<Profile> grp, const typename Profile::bits_type *chunks,
         const index_type *offsets, index_type *stream_header_entry,
         typename Profile::bits_type *stream_hc) {
     using bits_type = typename Profile::bits_type;
@@ -737,7 +748,6 @@ size_t ndzip::gpu_encoder<T, Dims>::compress(const slice<const data_type, dimens
     using profile = detail::profile<T, Dims>;
     using bits_type = typename profile::bits_type;
     using sam = sycl::access::mode;
-    using hc_layout = hypercube_layout<profile::dimensions, forward_transform_tag>;
 
     constexpr index_type hc_size
             = detail::ipow(profile::hypercube_side_length, profile::dimensions);
@@ -770,10 +780,10 @@ size_t ndzip::gpu_encoder<T, Dims>::compress(const slice<const data_type, dimens
         auto chunk_lengths_acc = chunk_lengths_buf.get_access<sam::discard_write>(cgh);
         auto data_size = data.size();
         cgh.parallel<block_compression_kernel<T, Dims>>(sycl::range<1>{file.num_hypercubes()},
-                sycl::range<1>{hypercube_group_size},
-                [=](hypercube_group grp, sycl::physical_item<1> phys_idx) {
+                sycl::range<1>{hypercube_group_size<profile>},
+                [=](hypercube_group<profile> grp, sycl::physical_item<1> phys_idx) {
                     slice<const data_type, dimensions> data{data_acc.get_pointer(), data_size};
-                    hypercube_memory<bits_type, hc_layout> lm{grp};
+                    hypercube_memory<profile, forward_transform_tag> lm{grp};
                     hypercube_ptr<profile, forward_transform_tag> hc{&lm[0]};
 
                     auto hc_index = static_cast<index_type>(grp.get_id(0));
@@ -825,8 +835,8 @@ size_t ndzip::gpu_encoder<T, Dims>::compress(const slice<const data_type, dimens
         auto offsets_acc = chunk_lengths_buf.template get_access<sam::read>(cgh);
         auto stream_acc = stream_buf.template get_access<sam::discard_write>(cgh);
         cgh.parallel<stream_compaction_kernel<T, Dims>>(sycl::range<1>{num_hypercubes},
-                sycl::range<1>{hypercube_group_size},
-                [=](hypercube_group grp, sycl::physical_item<1>) {
+                sycl::range<1>{hypercube_group_size<profile>},
+                [=](hypercube_group<profile> grp, sycl::physical_item<1>) {
                     auto hc_index = static_cast<index_type>(grp.get_id(0));
                     detail::stream<profile> stream{num_hypercubes, stream_acc.get_pointer()};
                     compact_chunks<profile>(grp,
@@ -871,7 +881,6 @@ size_t ndzip::gpu_encoder<T, Dims>::decompress(const void *raw_stream, size_t by
     using profile = detail::profile<T, Dims>;
     using bits_type = typename profile::bits_type;
     using sam = sycl::access::mode;
-    using hc_layout = hypercube_layout<profile::dimensions, inverse_transform_tag>;
 
     detail::file<profile> file(data.size());
 
@@ -891,10 +900,10 @@ size_t ndzip::gpu_encoder<T, Dims>::decompress(const void *raw_stream, size_t by
         auto data_size = data.size();
         auto num_hypercubes = file.num_hypercubes();
         cgh.parallel<stream_decompression_kernel<T, Dims>>(sycl::range<1>{num_hypercubes},
-                sycl::range<1>{hypercube_group_size},
-                [=](hypercube_group grp, sycl::physical_item<1>) {
+                sycl::range<1>{hypercube_group_size<profile>},
+                [=](hypercube_group<profile> grp, sycl::physical_item<1>) {
                     slice<data_type, dimensions> data{data_acc.get_pointer(), data_size};
-                    hypercube_memory<bits_type, hc_layout> lm{grp};
+                    hypercube_memory<profile, inverse_transform_tag> lm{grp};
                     hypercube_ptr<profile, inverse_transform_tag> hc{lm()};
 
                     const auto hc_index = static_cast<index_type>(grp.get_id(0));

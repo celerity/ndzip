@@ -237,17 +237,15 @@ struct stream {
     using offset_type = std::conditional_t<std::is_const_v<Profile>, const index_type, index_type>;
     using byte_type = std::conditional_t<std::is_const_v<Profile>, const std::byte, std::byte>;
 
-    static_assert(sizeof(bits_type) >= sizeof(offset_type)
-                  && alignof(bits_type) >= alignof(offset_type));
+    static_assert(
+            sizeof(bits_type) >= sizeof(offset_type) && alignof(bits_type) >= alignof(offset_type));
 
     index_type num_hypercubes;
     bits_type *buffer;
 
     offset_type *header() { return reinterpret_cast<offset_type *>(buffer); }
 
-    index_type offset_after(index_type hc_index) {
-        return header()[hc_index];
-    }
+    index_type offset_after(index_type hc_index) { return header()[hc_index]; }
 
     void set_offset_after(index_type hc_index, index_type position) {
         // TODO memcpy this, else potential aliasing UB!
@@ -295,9 +293,7 @@ class file {
         iter_hypercubes<Profile, 0>(_size, off, i, f);
     }
 
-    constexpr size_t file_header_length() const {
-        return num_hypercubes() * sizeof(index_type);
-    }
+    constexpr size_t file_header_length() const { return num_hypercubes() * sizeof(index_type); }
 
     const extent<Profile::dimensions> &size() const { return _size; };
 
@@ -461,6 +457,13 @@ extent<Dims> extent_from_linear_id(index_type linear_id, const extent<Dims> &siz
         linear_id /= size[d];
     }
     return ext;
+}
+
+
+// static_assert as an expression for use in variable template definitions
+template<bool Assertion>
+constexpr void static_check() {
+    static_assert(Assertion);
 }
 
 }  // namespace ndzip::detail

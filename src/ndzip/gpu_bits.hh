@@ -44,12 +44,8 @@ inline constexpr index_type warp_size = 32;
 // Hypercube layouts for 64-bit values need to introduce misalignment to pad shared memory accesses.
 using uint_bank_t = uint32_t;
 
-template<typename T>
-using global_read = sycl::accessor<T, 1, sycl::access::mode::read>;
-template<typename T>
-using global_write = sycl::accessor<T, 1, sycl::access::mode::write>;
-template<typename T>
-using global_read_write = sycl::accessor<T, 1, sycl::access::mode::read_write>;
+template<typename Bits>
+inline constexpr index_type banks_of = bytes_of<Bits> / bytes_of<uint_bank_t>;
 
 
 template<index_type LocalSize>

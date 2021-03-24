@@ -143,7 +143,6 @@ load_and_dump_hypercube(const slice<const typename Profile::data_type, Profile::
         index_type hc_index, sycl::queue &q) {
     using data_type = typename Profile::data_type;
     using bits_type = typename Profile::bits_type;
-    using hc_layout = gpu::hypercube_layout<Profile::dimensions, gpu::forward_transform_tag>;
 
     auto hc_size = ipow(Profile::hypercube_side_length, Profile::dimensions);
     buffer<data_type> load_buf{in.data(), range<1>{num_elements(in.size())}};
@@ -158,16 +157,16 @@ load_and_dump_hypercube(const slice<const typename Profile::data_type, Profile::
         auto data_acc = load_buf.template get_access<sam::read>(cgh);
         auto result_acc = store_buf.template get_access<sam::discard_write>(cgh);
         const auto data_size = in.size();
-        cgh.parallel(range<1>{1}, range<1>{gpu::hypercube_group_size},
-                [=](gpu::hypercube_group grp, physical_item<1>) {
+        cgh.parallel(range<1>{1}, range<1>{gpu::hypercube_group_size<Profile>},
+                [=](gpu::hypercube_group<Profile> grp, physical_item<1>) {
                     slice<const data_type, Profile::dimensions> data_in{
                             data_acc.get_pointer(), data_size};
-                    gpu::hypercube_memory<bits_type, hc_layout> lm{grp};
+                    gpu::hypercube_memory<Profile, gpu::forward_transform_tag> lm{grp};
                     gpu::hypercube_ptr<Profile, gpu::forward_transform_tag> hc{lm()};
                     gpu::load_hypercube(grp, hc_index, data_in, hc);
                     // TODO rotate should probaly happen during CPU load_hypercube as well to hide
                     //  memory access latencies
-                    grp.distribute_for(hc_layout::hc_size, [&](index_type item) {
+                    grp.distribute_for(hc_size, [&](index_type item) {
                         result_acc[item] = gpu::bit_cast<data_type>(rotate_right_1(hc.load(item)));
                     });
                 });
@@ -320,16 +319,15 @@ TEMPLATE_TEST_CASE(
         cgh.fill(output_buf.template get_access<sam::discard_write>(cgh), data_type{0});
     });
     q.submit([&](handler &cgh) {
-        using hc_layout = gpu::hypercube_layout<TestType::dimensions, gpu::forward_transform_tag>;
         auto input_acc = input_buf.template get_access<sam::read>(cgh);
         auto temp_acc = temp_buf.template get_access<sam::discard_write>(cgh);
         const auto data_size = input.size();
-        cgh.parallel(range<1>{file.num_hypercubes()}, range<1>{gpu::hypercube_group_size},
-                [=](gpu::hypercube_group grp, physical_item<1>) {
+        cgh.parallel(range<1>{file.num_hypercubes()}, range<1>{gpu::hypercube_group_size<TestType>},
+                [=](gpu::hypercube_group<TestType> grp, physical_item<1>) {
                     auto hc_index = grp.get_id(0);
                     slice<const data_type, TestType::dimensions> input{
                             input_acc.get_pointer(), data_size};
-                    gpu::hypercube_memory<bits_type, hc_layout> lm{grp};
+                    gpu::hypercube_memory<TestType, gpu::forward_transform_tag> lm{grp};
                     gpu::hypercube_ptr<TestType, gpu::forward_transform_tag> hc{lm()};
                     gpu::load_hypercube(grp, hc_index, input, hc);
                     grp.distribute_for(hc_size,
@@ -337,16 +335,15 @@ TEMPLATE_TEST_CASE(
                 });
     });
     q.submit([&](handler &cgh) {
-        using hc_layout = gpu::hypercube_layout<TestType::dimensions, gpu::inverse_transform_tag>;
         auto temp_acc = temp_buf.template get_access<sam::read>(cgh);
         auto output_acc = output_buf.template get_access<sam::discard_write>(cgh);
         const auto data_size = input.size();
-        cgh.parallel(range<1>{file.num_hypercubes()}, range<1>{gpu::hypercube_group_size},
-                [=](gpu::hypercube_group grp, physical_item<1>) {
+        cgh.parallel(range<1>{file.num_hypercubes()}, range<1>{gpu::hypercube_group_size<TestType>},
+                [=](gpu::hypercube_group<TestType> grp, physical_item<1>) {
                     auto hc_index = grp.get_id(0);
                     slice<data_type, TestType::dimensions> output{
                             output_acc.get_pointer(), data_size};
-                    gpu::hypercube_memory<bits_type, hc_layout> lm{grp};
+                    gpu::hypercube_memory<TestType, gpu::inverse_transform_tag> lm{grp};
                     gpu::hypercube_ptr<TestType, gpu::inverse_transform_tag> hc{lm()};
                     grp.distribute_for(hc_size,
                             [&](index_type i) { hc.store(i, temp_acc[hc_index * hc_size + i]); });
@@ -370,7 +367,6 @@ template<typename Profile, typename Tag, typename CPUTransform, typename GPUTran
 static void test_cpu_gpu_transform_equality(
         const CPUTransform &cpu_transform, const GPUTransform &gpu_transform) {
     using bits_type = typename Profile::bits_type;
-    using hc_layout = gpu::hypercube_layout<Profile::dimensions, Tag>;
     constexpr auto hc_size
             = static_cast<index_type>(ipow(Profile::hypercube_side_length, Profile::dimensions));
 
@@ -388,10 +384,10 @@ static void test_cpu_gpu_transform_equality(
     q.submit([&](handler &cgh) {
         auto global_acc = io_buf.template get_access<sam::read_write>(cgh);
         cgh.parallel<gpu_transform_test_kernel<Profile, Tag>>(range<1>{1},
-                range<1>{gpu::hypercube_group_size},
+                range<1>{gpu::hypercube_group_size<Profile>},
                 [global_acc, hc_size = hc_size, gpu_transform](
-                        gpu::hypercube_group grp, physical_item<1>) {
-                    gpu::hypercube_memory<bits_type, hc_layout> lm{grp};
+                        gpu::hypercube_group<Profile> grp, physical_item<1>) {
+                    gpu::hypercube_memory<Profile, Tag> lm{grp};
                     gpu::hypercube_ptr<Profile, Tag> hc{lm()};
                     grp.distribute_for(hc_size, [&](index_type i) { hc.store(i, global_acc[i]); });
                     gpu_transform(grp, hc);
@@ -417,7 +413,7 @@ TEMPLATE_TEST_CASE("CPU and GPU forward block transforms are identical", "[gpu]"
             },
             // Use lambda instead of the function name, otherwise a host function pointer will
             // be passed into the device kernel
-            [](gpu::hypercube_group grp,
+            [](gpu::hypercube_group<TestType> grp,
                     gpu::hypercube_ptr<TestType, gpu::forward_transform_tag> hc) {
                 const auto hc_size = ipow(TestType::hypercube_side_length, TestType::dimensions);
                 grp.distribute_for(
@@ -435,7 +431,7 @@ TEMPLATE_TEST_CASE("CPU and GPU inverse block transforms are identical", "[gpu]"
             },
             // Use lambda instead of the function name, otherwise a host function pointer will
             // be passed into the device kernel
-            [](gpu::hypercube_group grp,
+            [](gpu::hypercube_group<TestType> grp,
                     gpu::hypercube_ptr<TestType, gpu::inverse_transform_tag> hc) {
                 gpu::inverse_block_transform<TestType>(grp, hc);
                 const auto hc_size = ipow(TestType::hypercube_side_length, TestType::dimensions);
@@ -451,7 +447,6 @@ class gpu_hypercube_decode_test_kernel;
 TEMPLATE_TEST_CASE("GPU hypercube decoding works", "[gpu][decode]", ALL_PROFILES) {
     using bits_type = typename TestType::bits_type;
     const auto hc_size = ipow(TestType::hypercube_side_length, TestType::dimensions);
-    using hc_layout = gpu::hypercube_layout<TestType::dimensions, gpu::inverse_transform_tag>;
 
     auto input = make_random_vector<bits_type>(hc_size);
     for (index_type i = 0; i < hc_size; ++i) {
@@ -478,9 +473,10 @@ TEMPLATE_TEST_CASE("GPU hypercube decoding works", "[gpu][decode]", ALL_PROFILES
         auto stream_acc = stream_buf.template get_access<sam::read>(cgh);
         auto output_acc = output_buf.template get_access<sam::discard_write>(cgh);
         cgh.parallel<gpu_hypercube_decode_test_kernel<TestType>>(sycl::range{1},
-                sycl::range<1>{gpu::hypercube_group_size},
-                [stream_acc, output_acc](gpu::hypercube_group grp, sycl::physical_item<1>) {
-                    gpu::hypercube_memory<bits_type, hc_layout> lm{grp};
+                sycl::range<1>{gpu::hypercube_group_size<TestType>},
+                [stream_acc, output_acc](
+                        gpu::hypercube_group<TestType> grp, sycl::physical_item<1>) {
+                    gpu::hypercube_memory<TestType, gpu::inverse_transform_tag> lm{grp};
                     gpu::hypercube_ptr<TestType, gpu::inverse_transform_tag> hc{lm()};
                     gpu::read_transposed_chunks<TestType>(grp, hc, stream_acc.get_pointer());
                     grp.distribute_for(hc_size, [&](index_type i) { output_acc[i] = hc.load(i); });
@@ -505,7 +501,6 @@ class gpu_hypercube_compact_test_kernel;
 TEMPLATE_TEST_CASE("CPU and GPU hypercube encodings are equivalent", "[gpu]", ALL_PROFILES) {
     using bits_type = typename TestType::bits_type;
     const auto hc_size = ipow(TestType::hypercube_side_length, TestType::dimensions);
-    using hc_layout = gpu::hypercube_layout<TestType::dimensions, gpu::forward_transform_tag>;
 
     constexpr index_type col_chunk_size = detail::bits_of<bits_type>;
     constexpr index_type header_chunk_size = hc_size / col_chunk_size;
@@ -544,9 +539,9 @@ TEMPLATE_TEST_CASE("CPU and GPU hypercube encodings are equivalent", "[gpu]", AL
         auto columns_acc = chunks_buf.template get_access<sam::discard_write>(cgh);
         auto chunk_lengths_acc = chunk_lengths_buf.get_access<sam::discard_write>(cgh);
         cgh.parallel<gpu_hypercube_transpose_test_kernel<TestType>>(sycl::range<1>{1},
-                sycl::range<1>{gpu::hypercube_group_size},
-                [=](gpu::hypercube_group grp, sycl::physical_item<1> phys_idx) {
-                    gpu::hypercube_memory<bits_type, hc_layout> lm{grp};
+                sycl::range<1>{gpu::hypercube_group_size<TestType>},
+                [=](gpu::hypercube_group<TestType> grp, sycl::physical_item<1> phys_idx) {
+                    gpu::hypercube_memory<TestType, gpu::forward_transform_tag> lm{grp};
                     gpu::hypercube_ptr<TestType, gpu::forward_transform_tag> hc{lm()};
                     grp.distribute_for(hc_size, [&](index_type i) { hc.store(i, input_acc[i]); });
                     gpu::write_transposed_chunks(grp, hc, &columns_acc[0], &chunk_lengths_acc[1]);
@@ -576,8 +571,9 @@ TEMPLATE_TEST_CASE("CPU and GPU hypercube encodings are equivalent", "[gpu]", AL
         auto stream_acc = stream_buf.template get_access<sam::discard_write>(cgh);
         auto length_acc = length_buf.template get_access<sam::discard_write>(cgh);
         cgh.parallel<gpu_hypercube_compact_test_kernel<TestType>>(
-                sycl::range<1>{1 /* num_hypercubes */}, sycl::range<1>{gpu::hypercube_group_size},
-                [=](gpu::hypercube_group grp, sycl::physical_item<1> phys_idx) {
+                sycl::range<1>{1 /* num_hypercubes */},
+                sycl::range<1>{gpu::hypercube_group_size<TestType>},
+                [=](gpu::hypercube_group<TestType> grp, sycl::physical_item<1> phys_idx) {
                     const auto hc_index = grp.get_id(0);
                     gpu::compact_chunks<TestType>(grp,
                             &chunks_acc.get_pointer()[hc_index * hc_total_chunks_size],
