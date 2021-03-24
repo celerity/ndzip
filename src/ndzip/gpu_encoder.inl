@@ -694,18 +694,89 @@ void compact_chunks(hypercube_group<Profile> grp, const typename Profile::bits_t
 }
 
 
+template<typename Profile>
+class border_map {
+  public:
+    constexpr static index_type dimensions = Profile::dimensions;
+
+    constexpr explicit border_map(extent<dimensions> outer) {
+        index_type outer_acc = 1, inner_acc = 1, edge_acc = 1;
+        for (unsigned d = 0; d < dimensions; ++d) {
+            unsigned dd = dimensions - 1 - d;
+            _inner[dd] = floor(outer[dd], Profile::hypercube_side_length);
+            _stride[dd] = outer_acc;
+            _edge[dd] = _inner[dd] * edge_acc;
+            outer_acc *= outer[dd];
+            inner_acc *= _inner[dd];
+            edge_acc = _border[dd] = outer_acc - inner_acc;
+        }
+    }
+
+    constexpr extent<dimensions> operator[](index_type i) const { return index<dimensions>(i); }
+
+    constexpr index_type size() const { return _border[0]; }
+
+  private:
+    extent<dimensions> _inner;
+    extent<dimensions> _border;
+    extent<dimensions> _edge;
+    extent<dimensions> _stride;
+
+    template<unsigned D>
+    constexpr extent<D> index(index_type i) const;
+
+    template<>
+    constexpr extent<1> index<1>(index_type i) const {
+        return {_edge[dimensions - 1] + i};
+    }
+
+    template<>
+    constexpr extent<2> index<2>(index_type i) const {
+        if (i >= _edge[dimensions - 2]) {
+            i -= _edge[dimensions - 2];
+            auto y = _inner[dimensions - 2] + i / _stride[dimensions - 2];
+            auto x = i % _stride[dimensions - 2];
+            return {y, x};
+        } else {
+            auto y = i / _border[dimensions - 1];
+            auto e_x = index<1>(i % _border[dimensions - 1]);
+            return {y, e_x[0]};
+        }
+    }
+
+    template<>
+    constexpr extent<3> index<3>(index_type i) const {
+        if (i >= _edge[dimensions - 3]) {
+            i -= _edge[dimensions - 3];
+            auto z = _inner[dimensions - 3] + i / _stride[dimensions - 3];
+            i %= _stride[dimensions - 3];
+            auto y = i / _stride[dimensions - 2];
+            auto x = i % _stride[dimensions - 2];
+            return {z, y, x};
+        } else {
+            auto z = i / _border[dimensions - 2];
+            auto e_yx = index<2>(i % _border[dimensions - 2]);
+            return {z, e_yx[0], e_yx[1]};
+        }
+    }
+};
+
+
 // SYCL kernel names
 template<typename, unsigned>
 class block_compression_kernel;
 
 template<typename, unsigned>
-class header_encoding_kernel;
+class chunk_compaction_kernel;
 
 template<typename, unsigned>
-class stream_compaction_kernel;
+class border_compaction_kernel;
 
 template<typename, unsigned>
-class stream_decompression_kernel;
+class block_decompression_kernel;
+
+template<typename, unsigned>
+class border_expansion_kernel;
 
 }  // namespace ndzip::detail::gpu
 
@@ -820,21 +891,21 @@ size_t ndzip::gpu_encoder<T, Dims>::compress(const slice<const data_type, dimens
             .wait();
             */
 
-    index_type num_compressed_words;
-    auto num_compressed_words_available = _pimpl->q.submit([&](sycl::handler &cgh) {
+    index_type num_compressed_chunk_words;
+    auto num_compressed_chunk_words_available = _pimpl->q.submit([&](sycl::handler &cgh) {
         cgh.copy(chunk_lengths_buf.template get_access<sam::read>(
                          cgh, sycl::range<1>{1}, sycl::id<1>{num_hypercubes * chunks_per_hc}),
-                &num_compressed_words);
+                &num_compressed_chunk_words);
     });
 
     sycl::buffer<bits_type> stream_buf(
             div_ceil(compressed_size_bound<data_type, dimensions>(data.size()), sizeof(bits_type)));
 
-    auto compact_kernel = [&](sycl::handler &cgh) {
+    submit_and_profile(_pimpl->q, "compact chunks", [&](sycl::handler &cgh) {
         auto chunks_acc = chunks_buf.template get_access<sam::read>(cgh);
         auto offsets_acc = chunk_lengths_buf.template get_access<sam::read>(cgh);
         auto stream_acc = stream_buf.template get_access<sam::discard_write>(cgh);
-        cgh.parallel<stream_compaction_kernel<T, Dims>>(sycl::range<1>{num_hypercubes},
+        cgh.parallel<chunk_compaction_kernel<T, Dims>>(sycl::range<1>{num_hypercubes},
                 sycl::range<1>{hypercube_group_size<profile>},
                 [=](hypercube_group<profile> grp, sycl::physical_item<1>) {
                     auto hc_index = static_cast<index_type>(grp.get_id(0));
@@ -844,31 +915,42 @@ size_t ndzip::gpu_encoder<T, Dims>::compress(const slice<const data_type, dimens
                             &offsets_acc.get_pointer()[hc_index * chunks_per_hc],
                             stream.header() + hc_index, stream.hypercube(0));
                 });
-    };
-    auto compact_kernel_evt = submit_and_profile(_pimpl->q, "compact chunks", compact_kernel);
+    });
 
-    num_compressed_words_available.wait();
+    const auto border_map = gpu::border_map<profile>{data.size()};
+    const auto num_border_words = border_map.size();
 
     detail::stream<profile> stream{num_hypercubes, static_cast<bits_type *>(raw_stream)};
-    auto n_aligned_words = stream.hypercube(0) - stream.buffer + num_compressed_words;
-    auto stream_transferred
-            = submit_and_profile(_pimpl->q, "copy stream to host", [&](sycl::handler &cgh) {
-                  cgh.copy(stream_buf.template get_access<sam::read>(cgh, n_aligned_words),
-                          stream.buffer);
-              });
+    const auto num_header_words = stream.hypercube(0) - stream.buffer;
 
-    stream_transferred.wait();  // TODO I need to wait since I'm potentially overwriting the
-    // border
-    //  in the aligned copy
-    auto border_bytes = detail::pack_border(stream.border(), data, profile::hypercube_side_length);
+    num_compressed_chunk_words_available.wait();
 
-    _pimpl->q.wait();
+    const auto border_offset = num_header_words + num_compressed_chunk_words;
+    const auto num_stream_words = border_offset + num_border_words;
+
+    auto compact_border_kernel = [&](sycl::handler &cgh) {
+        auto data_acc = data_buffer.template get_access<sam::read>(cgh);
+        auto stream_acc = stream_buf.template get_access<sam::discard_write>(cgh);
+        const auto data_size = data.size();
+        cgh.parallel_for<border_compaction_kernel<T, Dims>>(  // TODO leverage ILP
+                sycl::range<1>{num_border_words}, [=](sycl::item<1> item) {
+                    slice<const data_type, dimensions> data{data_acc.get_pointer(), data_size};
+                    auto i = static_cast<index_type>(item.get_linear_id());
+                    stream_acc[border_offset + i] = bit_cast<bits_type>(data[border_map[i]]);
+                });
+    };
+    auto compact_border_evt
+            = submit_and_profile(_pimpl->q, "compact border", compact_border_kernel);
+
+    submit_and_profile(_pimpl->q, "copy stream to host", [&](sycl::handler &cgh) {
+        cgh.copy(stream_buf.template get_access<sam::read>(cgh, num_stream_words), stream.buffer);
+    }).wait();
 
     if (out_kernel_duration) {
         // TODO incude border in measurement
-        *out_kernel_duration = measure_duration(encode_kernel_evt, compact_kernel_evt);
+        *out_kernel_duration = measure_duration(encode_kernel_evt, compact_border_evt);
     }
-    return n_aligned_words * sizeof(bits_type) + border_bytes;
+    return num_stream_words * sizeof(bits_type);
 }
 
 
@@ -885,21 +967,21 @@ size_t ndzip::gpu_encoder<T, Dims>::decompress(const void *raw_stream, size_t by
     detail::file<profile> file(data.size());
 
     // TODO the range computation here is questionable at best
-    sycl::buffer<bits_type> stream_buffer{div_ceil(bytes, sizeof(bits_type))};
-    sycl::buffer<data_type, dimensions> data_buffer{
+    sycl::buffer<bits_type> stream_buf{div_ceil(bytes, sizeof(bits_type))};
+    sycl::buffer<data_type, dimensions> data_buf{
             detail::gpu::extent_cast<sycl::range<dimensions>>(data.size())};
 
     submit_and_profile(_pimpl->q, "copy stream to device", [&](sycl::handler &cgh) {
         cgh.copy(static_cast<const bits_type *>(raw_stream),
-                stream_buffer.template get_access<sam::discard_write>(cgh));
+                stream_buf.template get_access<sam::discard_write>(cgh));
     });
 
     auto kernel_evt = submit_and_profile(_pimpl->q, "decompress blocks", [&](sycl::handler &cgh) {
-        auto stream_acc = stream_buffer.template get_access<sam::read>(cgh);
-        auto data_acc = data_buffer.template get_access<sam::discard_write>(cgh);
+        auto stream_acc = stream_buf.template get_access<sam::read>(cgh);
+        auto data_acc = data_buf.template get_access<sam::discard_write>(cgh);
         auto data_size = data.size();
         auto num_hypercubes = file.num_hypercubes();
-        cgh.parallel<stream_decompression_kernel<T, Dims>>(sycl::range<1>{num_hypercubes},
+        cgh.parallel<block_decompression_kernel<T, Dims>>(sycl::range<1>{num_hypercubes},
                 sycl::range<1>{hypercube_group_size<profile>},
                 [=](hypercube_group<profile> grp, sycl::physical_item<1>) {
                     slice<data_type, dimensions> data{data_acc.get_pointer(), data_size};
@@ -914,26 +996,36 @@ size_t ndzip::gpu_encoder<T, Dims>::decompress(const void *raw_stream, size_t by
                 });
     });
 
-    auto data_copy_event = detail::gpu::submit_and_profile(
-            _pimpl->q, "copy output to host", [&](sycl::handler &cgh) {
-                cgh.copy(data_buffer.template get_access<sam::read>(cgh), data.data());
-            });
+    const auto border_map = gpu::border_map<profile>{data.size()};
+    const auto num_border_words = border_map.size();
 
     detail::stream<const profile> stream{
             file.num_hypercubes(), static_cast<const bits_type *>(raw_stream)};
+    const auto border_offset = static_cast<index_type>(stream.border() - stream.buffer);
+    const auto num_stream_words = border_offset + num_border_words;
 
-    data_copy_event.wait();
+    auto expand_border_kernel = [&](sycl::handler &cgh) {
+        auto stream_acc = stream_buf.template get_access<sam::read>(cgh);
+        auto data_acc = data_buf.template get_access<sam::discard_write>(cgh);
+        const auto data_size = data.size();
+        cgh.parallel_for<border_expansion_kernel<T, Dims>>(  // TODO leverage ILP
+                sycl::range<1>{num_border_words}, [=](sycl::item<1> item) {
+                    slice<data_type, dimensions> data{data_acc.get_pointer(), data_size};
+                    auto i = static_cast<index_type>(item.get_linear_id());
+                    data[border_map[i]] = bit_cast<data_type>(stream_acc[border_offset + i]);
+                });
+    };
+    auto expand_border_evt = submit_and_profile(_pimpl->q, "expand border", expand_border_kernel);
 
-    // TODO GPU border handling!
-    auto border_bytes
-            = detail::unpack_border(data, stream.border(), profile::hypercube_side_length);
+    detail::gpu::submit_and_profile(_pimpl->q, "copy output to host", [&](sycl::handler &cgh) {
+        cgh.copy(data_buf.template get_access<sam::read>(cgh), data.data());
+    }).wait();
 
     if (out_kernel_duration) {
-        // TODO incude border in measurement
-        *out_kernel_duration = measure_duration(kernel_evt, kernel_evt);
+        *out_kernel_duration = measure_duration(kernel_evt, expand_border_evt);
     }
 
-    return (stream.border() - stream.buffer) * sizeof(bits_type) + border_bytes;
+    return num_stream_words * sizeof(bits_type);
 }
 
 
