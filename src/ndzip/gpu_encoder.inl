@@ -595,7 +595,7 @@ void read_transposed_chunks(hypercube_group<Profile> grp,
     grp.distribute_for(num_col_chunks * warp_size,
             [&](index_type item0, index_type, sycl::logical_item<1> idx, sycl::sub_group sg) {
                 auto col_chunk_index = item0 / warp_size;
-                auto head = stream[col_chunk_index];
+                auto head = stream[col_chunk_index]; // TODO this has been read before, stage?
 
                 if (head != 0) {
                     word_type head_col[words_per_col];
@@ -619,6 +619,7 @@ void read_transposed_chunks(hypercube_group<Profile> grp,
                                     reinterpret_cast<const word_type *>(stream + offset) + i);
                         }
                     }
+                    group_barrier(sg);
 
                     for (index_type w = 0; w < warps_per_col_chunk; ++w) {
                         index_type item = floor(item0, warp_size) * warps_per_col_chunk
