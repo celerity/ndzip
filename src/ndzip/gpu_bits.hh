@@ -16,18 +16,21 @@ inline bool verbose()
     return env && *env;
 }
 
-inline kernel_duration measure_duration(const sycl::event &start, const sycl::event &end) {
-    auto ns = end.template get_profiling_info<sycl::info::event_profiling::command_end>()
-              - start.template get_profiling_info<sycl::info::event_profiling::command_start>();
-    return kernel_duration{ns};
+template<typename ...Events>
+std::tuple<uint64_t, uint64_t, kernel_duration> measure_duration(const Events &...events) {
+    auto early = std::min<uint64_t>({events.template get_profiling_info<
+            sycl::info::event_profiling::command_start>()...});
+    auto late = std::max<uint64_t>({events.template get_profiling_info<
+            sycl::info::event_profiling::command_end>()}...);
+    return {early, late, kernel_duration{late - early}};
 }
 
 template<typename CGF>
 auto submit_and_profile(sycl::queue &q, const char *label, CGF &&cgf) {
     if (verbose()) {
         auto evt = q.submit(std::forward<CGF>(cgf));
-        auto duration = measure_duration(evt, evt);
-        printf("[profile] %s: %.3fms\n", label, duration.count() * 1e-6);
+        auto [early, late, duration] = measure_duration(evt, evt);
+        printf("[profile] %8lu %8lu %s: %.3fms\n", early, late, label, duration.count() * 1e-6);
         return evt;
     } else {
         return q.submit(std::forward<CGF>(cgf));
@@ -161,7 +164,7 @@ class hierarchical_inclusive_scan_expansion_kernel;
 inline constexpr index_type hierarchical_inclusive_scan_granularity = 512;
 
 template<typename Scalar, typename BinaryOp>
-void hierarchical_inclusive_scan(
+auto hierarchical_inclusive_scan(
         sycl::queue &queue, sycl::buffer<Scalar> &in_out_buffer, BinaryOp op = {}) {
     using sam = sycl::access::mode;
 
@@ -231,6 +234,10 @@ void hierarchical_inclusive_scan(
                     });
         });
     }
+
+    // (optionally) keep buffers alive so that cudaFree does not mess up profiling
+    // TODO keep state in `scanner` type to avoid delayed allocation
+    return intermediate_bufs;
 }
 
 }  // namespace ndzip::detail::gpu
