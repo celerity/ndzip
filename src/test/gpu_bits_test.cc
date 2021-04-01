@@ -7,6 +7,20 @@ using namespace ndzip::detail::gpu;
 using sam = sycl::access::mode;
 
 
+// std::inclusive_scan is not available on all platforms
+template< typename InputIt, typename OutputIt, typename BinaryOperation = std::plus<>,
+        typename T = typename std::iterator_traits<OutputIt>::value_type>
+constexpr OutputIt iter_inclusive_scan( InputIt first, InputIt last, OutputIt d_first,
+                                   BinaryOperation binary_op = {}, T init = {}) {
+    while (first != last) {
+        *d_first = init = binary_op(init, *first);
+        ++first;
+        ++d_first;
+    }
+    return d_first;
+}
+
+
 TEMPLATE_TEST_CASE(
         "Subgroup hierarchical inclusive scan works", "[gpu][scan]", uint32_t, uint64_t) {
     constexpr index_type group_size = 1024;
@@ -32,7 +46,7 @@ TEMPLATE_TEST_CASE(
 
     std::vector<TestType> cpu_input(range, TestType{1});
     std::vector<TestType> cpu_result(range);
-    std::inclusive_scan(cpu_input.begin(), cpu_input.end(), cpu_result.begin());
+    iter_inclusive_scan(cpu_input.begin(), cpu_input.end(), cpu_result.begin());
 
     gpu_result_available.wait();
     check_for_vector_equality(cpu_result, gpu_result);
@@ -45,7 +59,7 @@ TEMPLATE_TEST_CASE("hierarchical_inclusive_scan produces the expected results", 
     std::iota(input.begin(), input.end(), uint32_t{});
 
     std::vector<uint32_t> cpu_prefix_sum(input.size());
-    std::inclusive_scan(input.begin(), input.end(), cpu_prefix_sum.begin(), TestType{});
+    iter_inclusive_scan(input.begin(), input.end(), cpu_prefix_sum.begin(), TestType{});
 
     sycl::queue q{sycl::gpu_selector{}};
     sycl::buffer<uint32_t> prefix_sum_buffer(sycl::range<1>(input.size()));
