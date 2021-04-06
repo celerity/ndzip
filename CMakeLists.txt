@@ -169,7 +169,7 @@ endif ()
 
 if (NDZIP_BUILD_BENCHMARK)
     find_package(CUDAToolkit)
-    find_library(STD_CPP_FS stdc++fs REQUIRED)
+    find_library(STD_CPP_FS stdc++fs)
 
     if (FPZIP_FOUND)
         set(BUILD_UTILITIES OFF CACHE BOOL "Build command-line utilities for fpzip")
@@ -196,7 +196,10 @@ if (NDZIP_BUILD_BENCHMARK)
 
     add_executable(benchmark src/benchmark/benchmark.cc)
     target_compile_options(benchmark PRIVATE ${NDZIP_COMPILE_FLAGS})
-    target_link_libraries(benchmark PRIVATE ndzip io Boost::program_options fpc pfpc spdp ${STD_CPP_FS})
+    target_link_libraries(benchmark PRIVATE ndzip io Boost::program_options fpc pfpc spdp)
+    if (STD_CPP_FS)
+        target_link_libraries(benchmark PRIVATE ${STD_CPP_FS})
+    endif ()
     target_compile_definitions(benchmark PRIVATE
         "-DNDZIP_BENCHMARK_HAVE_ZLIB=$<BOOL:${ZLIB_FOUND}>"
         "-DNDZIP_BENCHMARK_HAVE_LZ4=$<BOOL:${LZ4_FOUND}>"
