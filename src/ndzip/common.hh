@@ -71,6 +71,14 @@ constexpr inline index_type bits_of = static_cast<index_type>(CHAR_BIT * sizeof(
 template<typename T>
 constexpr inline index_type bytes_of = static_cast<index_type>(sizeof(T));
 
+template<typename Integer>
+constexpr Integer floor_power_of_two(Integer x) {
+    for (index_type s = 1; s < bits_of<Integer>; ++s) {
+        x &= ~(x >> s);
+    }
+    return (x + 1) / 2;
+}
+
 template<typename Fn, typename Index, typename T>
 [[gnu::always_inline]] void invoke_for_element(Fn &&fn, Index index, T &&value) {
     if constexpr (std::is_invocable_v<Fn, T, Index>) {

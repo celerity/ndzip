@@ -87,7 +87,7 @@ template<typename T>
 struct hypercube_layout<profile<T, 1>, forward_transform_tag> {
     constexpr static index_type side_length = 4096;
     constexpr static index_type hc_size = 4096;
-    constexpr static index_type num_lanes = hypercube_group_size<profile<T, 1>>;
+    constexpr static index_type num_lanes = floor_power_of_two(hypercube_group_size<profile<T, 1>>);
     constexpr static index_type lane_length = hc_size / num_lanes;
     constexpr static index_type value_width = banks_of<typename profile<T, 1>::bits_type>;
 
@@ -100,20 +100,16 @@ template<typename T>
 struct hypercube_layout<profile<T, 1>, inverse_transform_tag> {
     constexpr static index_type side_length = 4096;
     constexpr static index_type hc_size = 4096;
-    constexpr static index_type num_lanes = hypercube_group_size<profile<T, 1>>;
-    constexpr static index_type lane_length = hc_size / num_lanes;
+    constexpr static index_type num_lanes = 1;
+    constexpr static index_type lane_length = hc_size;
     constexpr static index_type value_width = banks_of<typename profile<T, 1>::bits_type>;
 
     // Special case: 1D inverse transform uses prefix sum, which is optimal without padding.
 };
 
-// TODO directional access is not really useful for 1D, and the "lanes" logic requires padding.
-//  Is it faster to load the entire 1D hc into registers instead? It might not, since the lanes
-//  approach only requires one read and one write per element whereas the register variant needs
-//  one read and one read-write op.
-template<typename T, typename Transform>
-struct directional_accessor<profile<T, 1>, 0, Transform> {
-    using layout = hypercube_layout<profile<T, 1>, Transform>;
+template<typename T>
+struct directional_accessor<profile<T, 1>, 0, forward_transform_tag> {
+    using layout = hypercube_layout<profile<T, 1>, forward_transform_tag>;
 
     constexpr static index_type prev_lane_in_row(index_type lane) {
         return lane > 0 ? lane - 1 : no_such_lane;
@@ -126,9 +122,11 @@ struct directional_accessor<profile<T, 1>, 0, Transform> {
     static inline const index_type stride = 1;
 };
 
+// 1D inverse transform is a parallel scan, so no directional accessor is implemented.
+
 template<typename T>
 struct hypercube_layout<profile<T, 2>, forward_transform_tag> {
-    constexpr static index_type num_lanes = hypercube_group_size<profile<T, 2>>;
+    constexpr static index_type num_lanes = floor_power_of_two(hypercube_group_size<profile<T, 2>>);
     constexpr static index_type side_length = 64;
     constexpr static index_type hc_size = 64 * 64;
     constexpr static index_type lane_length = hc_size / num_lanes;
