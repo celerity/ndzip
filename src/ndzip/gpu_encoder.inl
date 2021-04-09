@@ -66,7 +66,11 @@ index_type global_offset(index_type local_offset, extent<Profile::dimensions> gl
 // primarily limited by local memory usage, so we adjust the group size to keep local memory
 // requirement constant -- 256 threads/group for 32 bit, 512 threads/group for 64 bit.
 template<typename Profile>
-inline constexpr index_type hypercube_group_size = bytes_of<typename Profile::bits_type> * 64;
+#ifdef NDZIP_GPU_GROUP_SIZE
+inline constexpr index_type hypercube_group_size = NDZIP_GPU_GROUP_SIZE;
+#else
+inline constexpr index_type hypercube_group_size = bytes_of<typename Profile::bits_type> == 4 ? 256 : 384;
+#endif
 
 template<typename Profile>
 using hypercube_group = known_size_group<hypercube_group_size<Profile>>;
