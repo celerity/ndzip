@@ -1,284 +1,31 @@
 #pragma once
 
-#include "common.hh"
-#include "gpu_bits.hh"
+#include "gpu_common.hh"
+#include "sycl_bits.hh"
 
 #include <numeric>
 #include <stdexcept>
 #include <vector>
 
-#include <ndzip/gpu_encoder.hh>
+#include <ndzip/sycl_encoder.hh>
 
 
-namespace ndzip::detail::gpu {
+namespace ndzip::detail::gpu_sycl {
 
-template<typename T>
-using local_accessor
-        = sycl::accessor<T, 1, sycl::access::mode::read_write, sycl::access::target::local>;
-
-template<unsigned Dims, typename U, typename T>
-U extent_cast(const T &e) {
-    U v;
-    for (unsigned i = 0; i < Dims; ++i) {
-        v[i] = e[i];
-    }
-    return v;
-}
-
-template<typename U, unsigned Dims>
-U extent_cast(const extent<Dims> &e) {
-    return extent_cast<Dims, U>(e);
-}
-
-template<typename T, int Dims>
-T extent_cast(const sycl::range<Dims> &r) {
-    return extent_cast<static_cast<unsigned>(Dims), T>(r);
-}
-
-template<typename T, int Dims>
-T extent_cast(const sycl::id<Dims> &r) {
-    return extent_cast<static_cast<unsigned>(Dims), T>(r);
-}
-
-template<typename U, typename T>
-[[gnu::always_inline]] U bit_cast(T v) {
-    static_assert(std::is_trivially_copy_constructible_v<U> && sizeof(U) == sizeof(T));
-    U cast;
-    __builtin_memcpy(&cast, &v, sizeof cast);
-    return cast;
-}
-
-
-template<typename Profile>
-index_type global_offset(index_type local_offset, extent<Profile::dimensions> global_size) {
-    index_type global_offset = 0;
-    index_type global_stride = 1;
-    for (unsigned d = 0; d < Profile::dimensions; ++d) {
-        global_offset += global_stride * (local_offset % Profile::hypercube_side_length);
-        local_offset /= Profile::hypercube_side_length;
-        global_stride *= global_size[Profile::dimensions - 1 - d];
-    }
-    return global_offset;
-}
-
-
-// We want to maintain a fixed number of threads per SM to control occupancy. Occupancy is
-// primarily limited by local memory usage, so we adjust the group size to keep local memory
-// requirement constant -- 256 threads/group for 32 bit, 512 threads/group for 64 bit.
-template<typename Profile>
-#ifdef NDZIP_GPU_GROUP_SIZE
-inline constexpr index_type hypercube_group_size = NDZIP_GPU_GROUP_SIZE;
-#else
-inline constexpr index_type hypercube_group_size = bytes_of<typename Profile::bits_type> == 4 ? 256 : 512;
-#endif
+using namespace ndzip::detail::gpu;
 
 template<typename Profile>
 using hypercube_group = known_size_group<hypercube_group_size<Profile>>;
 
-struct forward_transform_tag;
-struct inverse_transform_tag;
-
-template<typename Profile, typename Transform>
-struct hypercube_layout;
-
-template<typename Profile, unsigned Direction, typename Transform>
-struct directional_accessor;
-
-// std::optional is not allowed in kernels
-inline constexpr index_type no_such_lane = ~index_type{};
-
-template<typename T>
-struct hypercube_layout<profile<T, 1>, forward_transform_tag> {
-    constexpr static index_type side_length = 4096;
-    constexpr static index_type hc_size = 4096;
-    constexpr static index_type num_lanes = floor_power_of_two(hypercube_group_size<profile<T, 1>>);
-    constexpr static index_type lane_length = hc_size / num_lanes;
-    constexpr static index_type value_width = banks_of<typename profile<T, 1>::bits_type>;
-
-    constexpr static index_type pad(index_type i) {
-        return value_width * i + value_width * i / warp_size;
-    }
-};
-
-template<typename T>
-struct hypercube_layout<profile<T, 1>, inverse_transform_tag> {
-    constexpr static index_type side_length = 4096;
-    constexpr static index_type hc_size = 4096;
-    constexpr static index_type num_lanes = 1;
-    constexpr static index_type lane_length = hc_size;
-    constexpr static index_type value_width = banks_of<typename profile<T, 1>::bits_type>;
-
-    // Special case: 1D inverse transform uses prefix sum, which is optimal without padding.
-};
-
-template<typename T>
-struct directional_accessor<profile<T, 1>, 0, forward_transform_tag> {
-    using layout = hypercube_layout<profile<T, 1>, forward_transform_tag>;
-
-    constexpr static index_type prev_lane_in_row(index_type lane) {
-        return lane > 0 ? lane - 1 : no_such_lane;
-    }
-
-    constexpr static index_type offset(index_type lane) {
-        return lane * layout::hc_size / layout::num_lanes;
-    }
-
-    static inline const index_type stride = 1;
-};
-
-// 1D inverse transform is a parallel scan, so no directional accessor is implemented.
-
-template<typename T>
-struct hypercube_layout<profile<T, 2>, forward_transform_tag> {
-    constexpr static index_type num_lanes = floor_power_of_two(hypercube_group_size<profile<T, 2>>);
-    constexpr static index_type side_length = 64;
-    constexpr static index_type hc_size = 64 * 64;
-    constexpr static index_type lane_length = hc_size / num_lanes;
-    constexpr static index_type value_width = banks_of<typename profile<T, 2>::bits_type>;
-
-    constexpr static index_type pad(index_type i) {
-        return value_width * i + value_width * i / warp_size;
-    }
-};
-
-template<typename T>
-struct directional_accessor<profile<T, 2>, 0, forward_transform_tag> {
-    using layout = hypercube_layout<profile<T, 2>, forward_transform_tag>;
-
-    constexpr static index_type prev_lane_in_row(index_type lane) {
-        if (lane % (layout::side_length / layout::lane_length) > 0) {
-            return lane - 1;
-        } else {
-            return no_such_lane;
-        }
-    }
-    constexpr static index_type offset(index_type lane) {
-        return lane * (layout::hc_size / layout::num_lanes);
-    }
-    constexpr static index_type stride = 1;
-};
-
-template<typename T>
-struct directional_accessor<profile<T, 2>, 1, forward_transform_tag> {
-    using layout = hypercube_layout<profile<T, 2>, forward_transform_tag>;
-
-    constexpr static index_type prev_lane_in_row(index_type lane) {
-        if (lane >= layout::side_length) {
-            return lane - layout::side_length;
-        } else {
-            return no_such_lane;
-        }
-    }
-    constexpr static index_type offset(index_type lane) {
-        return (lane / layout::side_length)
-                * (layout::hc_size / layout::num_lanes * layout::side_length)
-                + lane % layout::side_length;
-    }
-    constexpr static index_type stride = layout::side_length;
-};
-
-template<typename T>
-struct hypercube_layout<profile<T, 2>, inverse_transform_tag> {
-    constexpr static index_type side_length = 64;
-    constexpr static index_type hc_size = 64 * 64;
-    constexpr static index_type num_lanes = side_length;
-    constexpr static index_type lane_length = hc_size / num_lanes;
-    constexpr static index_type value_width = banks_of<typename profile<T, 2>::bits_type>;
-
-    constexpr static index_type pad(index_type i) {
-        if constexpr (value_width == 1) {
-            return i + i / side_length;
-        } else {
-            return value_width * i + i / (warp_size / value_width) - i / side_length;
-        }
-    }
-};
-
-template<typename T>
-struct directional_accessor<profile<T, 2>, 0, inverse_transform_tag> {
-    using layout = hypercube_layout<profile<T, 2>, inverse_transform_tag>;
-    constexpr static index_type prev_lane_in_row(index_type) { return no_such_lane; }
-    constexpr static index_type offset(index_type lane) { return lane * layout::side_length; }
-    constexpr static index_type stride = 1;
-};
-
-template<typename T>
-struct directional_accessor<profile<T, 2>, 1, inverse_transform_tag> {
-    using layout = hypercube_layout<profile<T, 2>, inverse_transform_tag>;
-    constexpr static index_type prev_lane_in_row(index_type) { return no_such_lane; }
-    constexpr static index_type offset(index_type lane) { return lane % layout::side_length; }
-    constexpr static index_type stride = layout::side_length;
-};
-
-template<typename T, typename Transform>
-struct hypercube_layout<profile<T, 3>, Transform> {
-    constexpr static index_type side_length = 16;
-    constexpr static index_type hc_size = ipow(side_length, 3);
-    // TODO implement support for forward_transform with > 256 lanes (group size for doubles is 512)
-    constexpr static index_type num_lanes = ipow(side_length, 2);
-    constexpr static index_type lane_length = hc_size / num_lanes;
-    constexpr static index_type value_width = banks_of<typename profile<T, 3>::bits_type>;
-
-    constexpr static index_type pad(index_type i) {
-        auto padded = value_width * i + value_width * i / warp_size;
-        if (value_width == 2) { padded -= i / (value_width * num_lanes); }
-        return padded;
-    }
-};
-
-template<typename T, typename Transform>
-struct directional_accessor<profile<T, 3>, 0, Transform> {
-    using layout = hypercube_layout<profile<T, 3>, Transform>;
-    constexpr static index_type prev_lane_in_row(index_type) { return no_such_lane; }
-    constexpr static index_type offset(index_type lane) { return lane * layout::side_length; }
-    constexpr static index_type stride = 1;
-};
-
-template<typename T, typename Transform>
-struct directional_accessor<profile<T, 3>, 1, Transform> {
-    using layout = hypercube_layout<profile<T, 3>, Transform>;
-
-    constexpr static index_type prev_lane_in_row(index_type) { return no_such_lane; }
-    constexpr static index_type offset(index_type lane) {
-        return (lane / layout::side_length) * 2 * layout::num_lanes
-                - (lane / (layout::num_lanes / 2))
-                * (layout::hc_size - ipow(layout::side_length, 2))
-                + lane % layout::side_length;
-    }
-    constexpr static index_type stride = layout::side_length;
-};
-
-template<typename T, typename Transform>
-struct directional_accessor<profile<T, 3>, 2, Transform> {
-    using layout = hypercube_layout<profile<T, 3>, Transform>;
-    constexpr static index_type prev_lane_in_row(index_type) { return no_such_lane; }
-    constexpr static index_type offset(index_type lane) { return lane; }
-    constexpr static index_type stride = layout::side_length * layout::side_length;
-};
-
-
-template<typename Layout>
-struct hypercube_allocation {
-    using backing_type = uint_bank_t;
-    constexpr static index_type size = ceil(Layout::pad(Layout::hc_size), Layout::value_width);
-};
-
-template<typename T>
-struct hypercube_allocation<hypercube_layout<profile<T, 1>, inverse_transform_tag>> {
-    using backing_type = typename profile<T, 1>::bits_type;
-    constexpr static index_type size
-            = hypercube_layout<profile<T, 1>, inverse_transform_tag>::hc_size;
-};
-
 template<typename Profile, typename Transform>
 using hypercube_memory = sycl::local_memory<
         typename hypercube_allocation<hypercube_layout<Profile, Transform>>::backing_type
-                [hypercube_allocation<hypercube_layout<Profile, Transform>>::size]>;
+        [hypercube_allocation<hypercube_layout<Profile, Transform>>::size]>;
 
 
 template<typename Profile, typename F>
 void for_hypercube_indices(hypercube_group<Profile> grp, index_type hc_index,
-        extent<Profile::dimensions> data_size, F &&f) {
+                           extent<Profile::dimensions> data_size, F &&f) {
     const auto side_length = Profile::hypercube_side_length;
     const auto hc_size = ipow(side_length, Profile::dimensions);
     const auto hc_offset
@@ -286,44 +33,11 @@ void for_hypercube_indices(hypercube_group<Profile> grp, index_type hc_index,
 
     index_type initial_offset = linear_offset(hc_offset, data_size);
     grp.distribute_for(hc_size, [&](index_type local_idx) {
-        index_type global_idx = initial_offset + global_offset<Profile>(local_idx, data_size);
-        f(global_idx, local_idx);
+      index_type global_idx = initial_offset + global_offset<Profile>(local_idx, data_size);
+      f(global_idx, local_idx);
     });
 }
 
-template<typename Profile, typename Transform>
-struct hypercube_ptr {
-    using bits_type = typename Profile::bits_type;
-    using layout = hypercube_layout<Profile, Transform>;
-
-    uint_bank_t *memory;
-
-    template<typename T = bits_type>
-    T load(index_type i) const {
-        static_assert(sizeof(T) == sizeof(bits_type));
-        return load_aligned<alignof(uint_bank_t), T>(memory + layout::pad(i));
-    }
-
-    template<typename T = bits_type>
-    void store(index_type i, std::common_type_t<T> bits) {
-        static_assert(sizeof(T) == sizeof(bits_type));
-        store_aligned<alignof(uint_bank_t), T>(memory + layout::pad(i), bits);
-    }
-};
-
-// We guarantee that memory is laid out sequentially for 1D inverse transform, which is implemented
-// using gpu_bits prefix_sum
-template<typename Data>
-struct hypercube_ptr<profile<Data, 1>, inverse_transform_tag> {
-    using bits_type = typename profile<Data, 1>::bits_type;
-    using layout = hypercube_layout<profile<bits_type, 1>, inverse_transform_tag>;
-
-    bits_type *memory;
-
-    bits_type load(index_type i) const { return memory[i]; }
-
-    void store(index_type i, bits_type bits) { memory[i] = bits; }
-};
 
 template<typename Profile>
 void load_hypercube(sycl::group<1> grp, index_type hc_index,
@@ -426,19 +140,6 @@ void inverse_transform_lanes(
             hc.store(index, a);
         }
     });
-}
-
-
-inline unsigned popcount(unsigned int x) {
-    return __builtin_popcount(x);
-}
-
-inline unsigned popcount(unsigned long x) {
-    return __builtin_popcountl(x);
-}
-
-inline unsigned popcount(unsigned long long x) {
-    return __builtin_popcountll(x);
 }
 
 
@@ -707,74 +408,6 @@ void compact_chunks(hypercube_group<Profile> grp, const typename Profile::bits_t
 }
 
 
-template<typename Profile>
-class border_map {
-  public:
-    constexpr static index_type dimensions = Profile::dimensions;
-
-    constexpr explicit border_map(extent<dimensions> outer) {
-        index_type outer_acc = 1, inner_acc = 1, edge_acc = 1;
-        for (unsigned d = 0; d < dimensions; ++d) {
-            unsigned dd = dimensions - 1 - d;
-            _inner[dd] = floor(outer[dd], Profile::hypercube_side_length);
-            _stride[dd] = outer_acc;
-            _edge[dd] = _inner[dd] * edge_acc;
-            outer_acc *= outer[dd];
-            inner_acc *= _inner[dd];
-            edge_acc = _border[dd] = outer_acc - inner_acc;
-        }
-    }
-
-    constexpr extent<dimensions> operator[](index_type i) const { return index<dimensions>(i); }
-
-    constexpr index_type size() const { return _border[0]; }
-
-  private:
-    extent<dimensions> _inner;
-    extent<dimensions> _border;
-    extent<dimensions> _edge;
-    extent<dimensions> _stride;
-
-    template<unsigned D>
-    constexpr extent<D> index(index_type i) const;
-
-    template<>
-    constexpr extent<1> index<1>(index_type i) const {
-        return {_edge[dimensions - 1] + i};
-    }
-
-    template<>
-    constexpr extent<2> index<2>(index_type i) const {
-        if (i >= _edge[dimensions - 2]) {
-            i -= _edge[dimensions - 2];
-            auto y = _inner[dimensions - 2] + i / _stride[dimensions - 2];
-            auto x = i % _stride[dimensions - 2];
-            return {y, x};
-        } else {
-            auto y = i / _border[dimensions - 1];
-            auto e_x = index<1>(i % _border[dimensions - 1]);
-            return {y, e_x[0]};
-        }
-    }
-
-    template<>
-    constexpr extent<3> index<3>(index_type i) const {
-        if (i >= _edge[dimensions - 3]) {
-            i -= _edge[dimensions - 3];
-            auto z = _inner[dimensions - 3] + i / _stride[dimensions - 3];
-            i %= _stride[dimensions - 3];
-            auto y = i / _stride[dimensions - 2];
-            auto x = i % _stride[dimensions - 2];
-            return {z, y, x};
-        } else {
-            auto z = i / _border[dimensions - 2];
-            auto e_yx = index<2>(i % _border[dimensions - 2]);
-            return {z, e_yx[0], e_yx[1]};
-        }
-    }
-};
-
-
 // SYCL kernel names
 template<typename, unsigned>
 class block_compression_kernel;
@@ -795,7 +428,7 @@ class border_expansion_kernel;
 
 
 template<typename T, unsigned Dims>
-struct ndzip::gpu_encoder<T, Dims>::impl {
+struct ndzip::sycl_encoder<T, Dims>::impl {
     bool profiling_enabled;
     sycl::queue q;
 
@@ -818,27 +451,26 @@ struct ndzip::gpu_encoder<T, Dims>::impl {
 };
 
 template<typename T, unsigned Dims>
-ndzip::gpu_encoder<T, Dims>::gpu_encoder(bool report_kernel_duration)
-    : _pimpl(std::make_unique<impl>(report_kernel_duration, detail::gpu::verbose())) {
+ndzip::sycl_encoder<T, Dims>::sycl_encoder(bool report_kernel_duration)
+    : _pimpl(std::make_unique<impl>(report_kernel_duration, detail::verbose())) {
 }
 
 template<typename T, unsigned Dims>
-ndzip::gpu_encoder<T, Dims>::~gpu_encoder() = default;
+ndzip::sycl_encoder<T, Dims>::~sycl_encoder() = default;
 
 
 template<typename T, unsigned Dims>
-size_t ndzip::gpu_encoder<T, Dims>::compress(const slice<const data_type, dimensions> &data,
+size_t ndzip::sycl_encoder<T, Dims>::compress(const slice<const data_type, dimensions> &data,
         void *raw_stream, kernel_duration *out_kernel_duration) const {
     using namespace detail;
-    using namespace detail::gpu;
+    using namespace detail::gpu_sycl;
 
     using profile = detail::profile<T, Dims>;
     using bits_type = typename profile::bits_type;
     using sam = sycl::access::mode;
 
-    constexpr index_type hc_size
-            = detail::ipow(profile::hypercube_side_length, profile::dimensions);
-    constexpr index_type col_chunk_size = detail::bits_of<bits_type>;
+    constexpr index_type hc_size = ipow(profile::hypercube_side_length, profile::dimensions);
+    constexpr index_type col_chunk_size = bits_of<bits_type>;
     constexpr index_type header_chunk_size = hc_size / col_chunk_size;
     constexpr index_type chunks_per_hc = 1 /* header */ + hc_size / col_chunk_size;
     constexpr index_type hc_total_chunks_size = hc_size + header_chunk_size;
@@ -892,25 +524,7 @@ size_t ndzip::gpu_encoder<T, Dims>::compress(const slice<const data_type, dimens
     auto encode_kernel_evt
             = submit_and_profile(_pimpl->q, "transform + chunk encode", encode_kernel);
 
-    /*
-    std::vector<index_type> dbg_lengths(chunk_lengths_buf.get_range()[0]);
-    _pimpl->q
-            .submit([&](sycl::handler &cgh) {
-                cgh.copy(chunk_lengths_buf.get_access<sam::read>(cgh), dbg_lengths.data());
-            })
-            .wait();
-            */
-
     auto intermediate_bufs_keepalive = hierarchical_inclusive_scan(_pimpl->q, chunk_lengths_buf, sycl::plus<index_type>{});
-
-    /*
-    std::vector<index_type> dbg_offsets(chunk_lengths_buf.get_range()[0]);
-    _pimpl->q
-            .submit([&](sycl::handler &cgh) {
-                cgh.copy(chunk_lengths_buf.get_access<sam::read>(cgh), dbg_offsets.data());
-            })
-            .wait();
-            */
 
     auto num_compressed_words_offset = sycl::id<1>{num_hypercubes * chunks_per_hc};
 
@@ -991,10 +605,10 @@ size_t ndzip::gpu_encoder<T, Dims>::compress(const slice<const data_type, dimens
 
 
 template<typename T, unsigned Dims>
-size_t ndzip::gpu_encoder<T, Dims>::decompress(const void *raw_stream, size_t bytes,
+size_t ndzip::sycl_encoder<T, Dims>::decompress(const void *raw_stream, size_t bytes,
         const slice<data_type, dimensions> &data, kernel_duration *out_kernel_duration) const {
     using namespace detail;
-    using namespace detail::gpu;
+    using namespace detail::gpu_sycl;
 
     using profile = detail::profile<T, Dims>;
     using bits_type = typename profile::bits_type;
@@ -1004,8 +618,7 @@ size_t ndzip::gpu_encoder<T, Dims>::decompress(const void *raw_stream, size_t by
 
     // TODO the range computation here is questionable at best
     sycl::buffer<bits_type> stream_buf{div_ceil(bytes, sizeof(bits_type))};
-    sycl::buffer<data_type, dimensions> data_buf{
-            detail::gpu::extent_cast<sycl::range<dimensions>>(data.size())};
+    sycl::buffer<data_type, dimensions> data_buf{extent_cast<sycl::range<dimensions>>(data.size())};
 
     submit_and_profile(_pimpl->q, "copy stream to device", [&](sycl::handler &cgh) {
         cgh.copy(static_cast<const bits_type *>(raw_stream),
@@ -1054,7 +667,7 @@ size_t ndzip::gpu_encoder<T, Dims>::decompress(const void *raw_stream, size_t by
     auto expand_border_evt = submit_and_profile(_pimpl->q, "expand border", expand_border_kernel);
     expand_border_evt.wait();
 
-    detail::gpu::submit_and_profile(_pimpl->q, "copy output to host", [&](sycl::handler &cgh) {
+    submit_and_profile(_pimpl->q, "copy output to host", [&](sycl::handler &cgh) {
         cgh.copy(data_buf.template get_access<sam::read>(cgh), data.data());
     }).wait();
 
@@ -1076,15 +689,15 @@ size_t ndzip::gpu_encoder<T, Dims>::decompress(const void *raw_stream, size_t by
 
 namespace ndzip {
 
-extern template class gpu_encoder<float, 1>;
-extern template class gpu_encoder<float, 2>;
-extern template class gpu_encoder<float, 3>;
-extern template class gpu_encoder<double, 1>;
-extern template class gpu_encoder<double, 2>;
-extern template class gpu_encoder<double, 3>;
+extern template class sycl_encoder<float, 1>;
+extern template class sycl_encoder<float, 2>;
+extern template class sycl_encoder<float, 3>;
+extern template class sycl_encoder<double, 1>;
+extern template class sycl_encoder<double, 2>;
+extern template class sycl_encoder<double, 3>;
 
-#ifdef SPLIT_CONFIGURATION_gpu_encoder
-template class gpu_encoder<DATA_TYPE, DIMENSIONS>;
+#ifdef SPLIT_CONFIGURATION_sycl_encoder
+template class sycl_encoder<DATA_TYPE, DIMENSIONS>;
 #endif
 
 }  // namespace ndzip

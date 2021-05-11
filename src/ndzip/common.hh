@@ -474,4 +474,32 @@ constexpr void static_check() {
     static_assert(Assertion);
 }
 
+
+inline unsigned popcount(unsigned int x) {
+    return __builtin_popcount(x);
+}
+
+inline unsigned popcount(unsigned long x) {
+    return __builtin_popcountl(x);
+}
+
+inline unsigned popcount(unsigned long long x) {
+    return __builtin_popcountll(x);
+}
+
+
+template<typename U, typename T>
+[[gnu::always_inline]] U bit_cast(T v) {
+    static_assert(std::is_trivially_copy_constructible_v<U> && sizeof(U) == sizeof(T));
+    U cast;
+    __builtin_memcpy(&cast, &v, sizeof cast);
+    return cast;
+}
+
+inline bool verbose()
+{
+    auto env = getenv("NDZIP_VERBOSE");
+    return env && *env;
+}
+
 }  // namespace ndzip::detail

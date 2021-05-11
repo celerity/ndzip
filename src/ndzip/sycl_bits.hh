@@ -1,20 +1,16 @@
 #pragma once
 
-#include <ndzip/gpu_encoder.hh>
-#include "common.hh"
+#include "gpu_common.hh"
 
 #include <type_traits>
 
 #include <SYCL/sycl.hpp>
+#include <ndzip/sycl_encoder.hh>
 
 
-namespace ndzip::detail::gpu {
+namespace ndzip::detail::gpu_sycl {
 
-inline bool verbose()
-{
-    auto env = getenv("NDZIP_VERBOSE");
-    return env && *env;
-}
+using namespace ndzip::detail::gpu;
 
 template<typename ...Events>
 std::tuple<uint64_t, uint64_t, kernel_duration> measure_duration(const Events &...events) {
@@ -36,19 +32,6 @@ auto submit_and_profile(sycl::queue &q, const char *label, CGF &&cgf) {
         return q.submit(std::forward<CGF>(cgf));
     }
 }
-
-
-// TODO _should_ be a template parameter with selection based on queue (/device?) properties.
-//  However a lot of code currently assumes that bitsof<uint32_t> == warp_size (e.g. we want to
-//  use subgroup reductions for length-32 chunks of residuals)
-inline constexpr index_type warp_size = 32;
-
-// A memory bank on CUDA is 32-bit. This used to be configurable but is not any more.
-// Hypercube layouts for 64-bit values need to introduce misalignment to pad shared memory accesses.
-using uint_bank_t = uint32_t;
-
-template<typename Bits>
-inline constexpr index_type banks_of = bytes_of<Bits> / bytes_of<uint_bank_t>;
 
 
 template<index_type LocalSize>
@@ -238,6 +221,30 @@ auto hierarchical_inclusive_scan(
     // (optionally) keep buffers alive so that cudaFree does not mess up profiling
     // TODO keep state in `scanner` type to avoid delayed allocation
     return intermediate_bufs;
+}
+
+template<unsigned Dims, typename U, typename T>
+U extent_cast(const T &e) {
+    U v;
+    for (unsigned i = 0; i < Dims; ++i) {
+        v[i] = e[i];
+    }
+    return v;
+}
+
+template<typename U, unsigned Dims>
+U extent_cast(const extent<Dims> &e) {
+    return extent_cast<Dims, U>(e);
+}
+
+template<typename T, int Dims>
+T extent_cast(const sycl::range<Dims> &r) {
+    return extent_cast<static_cast<unsigned>(Dims), T>(r);
+}
+
+template<typename T, int Dims>
+T extent_cast(const sycl::id<Dims> &r) {
+    return extent_cast<static_cast<unsigned>(Dims), T>(r);
 }
 
 }  // namespace ndzip::detail::gpu

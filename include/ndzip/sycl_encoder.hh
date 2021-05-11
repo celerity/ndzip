@@ -10,15 +10,15 @@ namespace ndzip {
 using kernel_duration = std::chrono::duration<uint64_t, std::nano>;
 
 template<typename T, unsigned Dims>
-class gpu_encoder {
+class sycl_encoder {
   public:
     using data_type = T;
     constexpr static unsigned dimensions = Dims;
 
-    explicit gpu_encoder(bool report_kernel_duration = false);
-    ~gpu_encoder();
-    gpu_encoder(gpu_encoder &&) noexcept = default;
-    gpu_encoder &operator=(gpu_encoder &&) noexcept = default;
+    explicit sycl_encoder(bool report_kernel_duration = false);
+    ~sycl_encoder();
+    sycl_encoder(sycl_encoder &&) noexcept = default;
+    sycl_encoder &operator=(sycl_encoder &&) noexcept = default;
 
     size_t compress(const slice<const data_type, dimensions> &item, void *stream,
             kernel_duration *out_kernel_duration = nullptr) const;

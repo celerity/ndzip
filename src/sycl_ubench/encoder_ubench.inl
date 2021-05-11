@@ -1,11 +1,11 @@
 #include "ubench.hh"
 
-#include <ndzip/gpu_encoder.inl>
+#include <ndzip/sycl_encoder.inl>
 #include <test/test_utils.hh>
 
 using namespace ndzip;
 using namespace ndzip::detail;
-using namespace ndzip::detail::gpu;
+using namespace ndzip::detail::gpu_sycl;
 using sam = sycl::access::mode;
 
 
@@ -79,7 +79,6 @@ TEMPLATE_TEST_CASE("Loading", "[load]", ALL_PROFILES) {
 
 
 TEMPLATE_TEST_CASE("Block transform", "[transform]", ALL_PROFILES) {
-    using bits_type = typename TestType::bits_type;
     constexpr index_type n_blocks = 16384;
 
     SYCL_BENCHMARK("Reference: rotate only")(sycl::queue & q) {
@@ -156,7 +155,7 @@ TEMPLATE_TEST_CASE("Chunk encoding", "[encode]", ALL_PROFILES) {
 
     sycl::buffer<bits_type> chunks(n_blocks * hc_total_chunks_size);
     sycl::buffer<index_type> lengths(
-            ceil(1 + n_blocks * chunks_per_hc, gpu::hierarchical_inclusive_scan_granularity));
+            ceil(1 + n_blocks * chunks_per_hc, hierarchical_inclusive_scan_granularity));
 
     SYCL_BENCHMARK("Transpose chunks")(sycl::queue & q) {
         return q.submit([&](sycl::handler &cgh) {
@@ -183,7 +182,7 @@ TEMPLATE_TEST_CASE("Chunk encoding", "[encode]", ALL_PROFILES) {
 
     {
         sycl::queue q;
-        gpu::hierarchical_inclusive_scan(q, lengths, sycl::plus<index_type>{});
+        hierarchical_inclusive_scan(q, lengths, sycl::plus<index_type>{});
     }
 
     sycl::buffer<bits_type> stream(n_blocks * hc_total_chunks_size);

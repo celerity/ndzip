@@ -1,11 +1,11 @@
 #include "ubench.hh"
 
-#include <ndzip/gpu_bits.hh>
+#include <ndzip/sycl_bits.hh>
 #include <test/test_utils.hh>
 
 using namespace ndzip;
 using namespace ndzip::detail;
-using namespace ndzip::detail::gpu;
+using namespace ndzip::detail::gpu_sycl;
 using sam = sycl::access::mode;
 
 // Kernel names (for profiler)

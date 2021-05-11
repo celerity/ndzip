@@ -124,9 +124,9 @@ void process_stream(bool decompress, const std::vector<size_t> &size_components,
     } else if (encoder == "cpu-mt") {
         process_stream<ndzip::mt_cpu_encoder, Data>(decompress, size_components, in, out, io);
 #endif
-#if NDZIP_GPU_SUPPORT
-    } else if (encoder == "gpu") {
-        process_stream<ndzip::gpu_encoder, Data>(decompress, size_components, in, out, io);
+#if NDZIP_HIPSYCL_SUPPORT
+    } else if (encoder == "sycl") {
+        process_stream<ndzip::sycl_encoder, Data>(decompress, size_components, in, out, io);
 #endif
     } else {
         throw opts::error("Invalid encoder \"" + encoder + "\" in option -e / --encoder");
@@ -173,8 +173,8 @@ int main(int argc, char **argv) {
 #if NDZIP_OPENMP_SUPPORT
                                              "|cpu-mt"
 #endif
-#if NDZIP_GPU_SUPPORT
-                                             "|gpu"
+#if NDZIP_HIPSYCL_SUPPORT
+                                             "|sycl"
 #endif
                                              " (default cpu)")
         ("input,i", opts::value(&input), "input file (default '-' is stdin)")
