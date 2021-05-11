@@ -6,6 +6,7 @@ option(NDZIP_BUILD_TEST "Build unit tests" OFF)
 option(NDZIP_BUILD_BENCHMARK "Build benchmarks against other algorithms" OFF)
 option(NDZIP_WITH_MT "Enable parallel CPU implementation through OpenMP if available " ON)
 option(NDZIP_WITH_HIPSYCL "Enable GPU implementation through hipSYCL if available" ON)
+option(NDZIP_WITH_CUDA "Enable GPU implementation through CUDA if available" ON)
 option(NDZIP_WITH_3RDPARTY_BENCHMARKS "Build third-party libraries for benchmarking" ON)
 
 set(CMAKE_MODULE_PATH "${PROJECT_SOURCE_DIR}/cmake")
@@ -20,6 +21,13 @@ endif ()
 if (NDZIP_WITH_HIPSYCL)
     find_package(hipSYCL CONFIG)
     set(NDZIP_USE_HIPSYCL "${hipSYCL_FOUND}")
+endif ()
+if (NDZIP_WITH_CUDA)
+    find_package(CUDAToolkit)
+    set(NDZIP_USE_CUDA "${CUDAToolkit_FOUND}")
+    if (CUDAToolkit_FOUND)
+        enable_language(CUDA)
+    endif ()
 endif ()
 
 if (NDZIP_BUILD_TEST)
@@ -77,6 +85,7 @@ set(NDZIP_COMPILE_FLAGS
 
 # Aggressive inlining avoids GPU call stack allocation == global memory access bottleneck
 set(NDZIP_HIPSYCL_COMPILE_FLAGS -mllvm -inline-threshold=2000 -Xarch_device -DNDEBUG=1)
+set(NDZIP_CUDA_COMPILE_FLAGS -Xarch_device -DNDEBUG=1)
 
 set(NDZIP_PROFILE_CONFIGURATIONS
     VARIABLE DATA_TYPE VALUES float double
@@ -88,7 +97,7 @@ add_library(ndzip SHARED
     include/ndzip/array.hh
     include/ndzip/cpu_encoder.hh
     include/ndzip/mt_cpu_encoder.hh
-        include/ndzip/sycl_encoder.hh
+    include/ndzip/sycl_encoder.hh
     src/ndzip/common.hh
     src/ndzip/common.cc
     src/ndzip/cpu_encoder.inl
@@ -101,6 +110,7 @@ target_split_configured_sources(ndzip PRIVATE
 target_include_directories(ndzip PUBLIC include)
 target_compile_definitions(ndzip PUBLIC
     -DNDZIP_HIPSYCL_SUPPORT=$<BOOL:${NDZIP_USE_HIPSYCL}>
+    -DNDZIP_CUDA_SUPPORT=$<BOOL:${NDZIP_USE_CUDA}>
     -DNDZIP_OPENMP_SUPPORT=$<BOOL:${OpenMP_FOUND}>
 )
 target_compile_options(ndzip PRIVATE ${NDZIP_COMPILE_FLAGS})
@@ -160,31 +170,45 @@ if (NDZIP_BUILD_TEST AND Catch2_FOUND)
         add_sycl_to_target(TARGET encoder_test)
         target_link_libraries(encoder_test PRIVATE ndzip-sycl)
     endif ()
-endif ()
 
-if (NDZIP_BUILD_TEST AND Catch2_FOUND AND NDZIP_USE_HIPSYCL)
-    add_executable(sycl_bits_test
-            src/test/test_utils.hh
-            src/test/test_main.cc
-            src/test/sycl_bits_test.cc)
-    target_include_directories(sycl_bits_test PRIVATE src include)
-    target_compile_options(sycl_bits_test PRIVATE ${NDZIP_COMPILE_FLAGS} -Werror=pass-failed ${NDZIP_HIPSYCL_COMPILE_FLAGS})
-    target_link_libraries(sycl_bits_test PRIVATE Catch2::Catch2)
-    add_sycl_to_target(TARGET sycl_bits_test)
+    if (NDZIP_USE_HIPSYCL)
+        add_executable(sycl_bits_test
+                src/test/test_utils.hh
+                src/test/test_main.cc
+                src/test/sycl_bits_test.cc)
+        target_include_directories(sycl_bits_test PRIVATE src include)
+        target_compile_options(sycl_bits_test PRIVATE
+                ${NDZIP_COMPILE_FLAGS} -Werror=pass-failed ${NDZIP_HIPSYCL_COMPILE_FLAGS})
+        target_link_libraries(sycl_bits_test PRIVATE Catch2::Catch2)
+        add_sycl_to_target(TARGET sycl_bits_test)
 
-    add_executable(sycl_ubench
-        src/sycl_ubench/ubench.hh
-        src/sycl_ubench/encoder_ubench.inl
-        src/sycl_ubench/sycl_bits_ubench.cc
-        src/sycl_ubench/ubench_main.cc)
-    target_split_configured_sources(sycl_ubench PRIVATE
-        GENERATE encoder_ubench.cc FROM src/sycl_ubench/encoder_ubench.inl
-        ${NDZIP_PROFILE_CONFIGURATIONS}
-    )
-    target_include_directories(sycl_ubench PRIVATE src include)
-    target_compile_options(sycl_ubench PRIVATE ${NDZIP_COMPILE_FLAGS} ${NDZIP_HIPSYCL_COMPILE_FLAGS})
-    target_link_libraries(sycl_ubench PRIVATE ndzip-sycl Catch2::Catch2)
-    add_sycl_to_target(TARGET sycl_ubench)
+        add_executable(sycl_ubench
+                src/sycl_ubench/ubench.hh
+                src/sycl_ubench/encoder_ubench.inl
+                src/sycl_ubench/sycl_bits_ubench.cc
+                src/sycl_ubench/ubench_main.cc)
+        target_split_configured_sources(sycl_ubench PRIVATE
+                GENERATE encoder_ubench.cc FROM src/sycl_ubench/encoder_ubench.inl
+                ${NDZIP_PROFILE_CONFIGURATIONS}
+                )
+        target_include_directories(sycl_ubench PRIVATE src include)
+        target_compile_options(sycl_ubench PRIVATE ${NDZIP_COMPILE_FLAGS} ${NDZIP_HIPSYCL_COMPILE_FLAGS})
+        target_link_libraries(sycl_ubench PRIVATE ndzip-sycl Catch2::Catch2)
+        add_sycl_to_target(TARGET sycl_ubench)
+    endif ()
+
+    if (NDZIP_USE_CUDA)
+        add_executable(cuda_bits_test
+                src/ndzip/cuda_bits.cuh  # TODO move to ndzip-cuda lib
+                src/test/test_utils.hh
+                src/test/test_main.cc
+                src/test/cuda_bits_test.cu)
+        target_include_directories(cuda_bits_test PRIVATE src include)
+        target_compile_options(cuda_bits_test PRIVATE
+                ${NDZIP_COMPILE_FLAGS} -Werror=pass-failed ${NDZIP_CUDA_COMPILE_FLAGS})
+        target_link_libraries(cuda_bits_test PRIVATE Catch2::Catch2)
+        add_sycl_to_target(TARGET cuda_bits_test)
+    endif ()
 endif ()
 
 

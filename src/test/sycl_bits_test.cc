@@ -9,20 +9,6 @@ using namespace ndzip::detail::gpu_sycl;
 using sam = sycl::access::mode;
 
 
-// std::inclusive_scan is not available on all platforms
-template< typename InputIt, typename OutputIt, typename BinaryOperation = std::plus<>,
-        typename T = typename std::iterator_traits<OutputIt>::value_type>
-constexpr OutputIt iter_inclusive_scan( InputIt first, InputIt last, OutputIt d_first,
-                                   BinaryOperation binary_op = {}, T init = {}) {
-    while (first != last) {
-        *d_first = init = binary_op(init, *first);
-        ++first;
-        ++d_first;
-    }
-    return d_first;
-}
-
-
 TEMPLATE_TEST_CASE(
         "Subgroup hierarchical inclusive scan works", "[gpu][scan]", uint32_t, uint64_t) {
     constexpr index_type group_size = 1024;

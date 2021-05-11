@@ -2,9 +2,9 @@
 
 #include <complex>  // we don't use <complex>, but not including it triggers a CUDA error
 #include <algorithm>
-#include <vector>
 #include <random>
 #include <sstream>
+#include <vector>
 
 #include <catch2/catch.hpp>
 
@@ -60,8 +60,8 @@ void check_for_vector_equality(const T *lhs, const T *rhs, size_t size) {
 template<typename T>
 void check_for_vector_equality(const std::vector<T> &lhs, const std::vector<T> &rhs) {
     if (lhs.size() != rhs.size()) {
-        FAIL_CHECK("vectors differ in size: " << lhs.size() << " vs. " << rhs.size()
-                                              << " elements\n");
+        FAIL_CHECK(
+                "vectors differ in size: " << lhs.size() << " vs. " << rhs.size() << " elements\n");
     } else {
         check_for_vector_equality(lhs.data(), rhs.data(), lhs.size());
     }
@@ -70,5 +70,19 @@ void check_for_vector_equality(const std::vector<T> &lhs, const std::vector<T> &
 
 template<class T>
 void black_hole(T *datum) {
-    __asm__ __volatile__("" :: "m"(datum));
+    __asm__ __volatile__("" ::"m"(datum));
+}
+
+
+// std::inclusive_scan is not available on all platforms
+template<typename InputIt, typename OutputIt, typename BinaryOperation = std::plus<>,
+        typename T = typename std::iterator_traits<OutputIt>::value_type>
+constexpr OutputIt iter_inclusive_scan(InputIt first, InputIt last, OutputIt d_first,
+        BinaryOperation binary_op = {}, T init = {}) {
+    while (first != last) {
+        *d_first = init = binary_op(init, *first);
+        ++first;
+        ++d_first;
+    }
+    return d_first;
 }
