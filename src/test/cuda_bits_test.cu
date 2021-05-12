@@ -22,7 +22,7 @@ __global__ void test_inclusive_scan(T *out) {
 
 
 TEMPLATE_TEST_CASE(
-        "Subgroup hierarchical inclusive scan works", "[gpu][scan]", uint32_t, uint64_t) {
+        "Subgroup hierarchical inclusive scan works", "[cuda][scan]", uint32_t, uint64_t) {
     constexpr index_type group_size = 1024;
     constexpr index_type n_groups = 9;
     constexpr index_type range = group_size * n_groups;
@@ -42,7 +42,7 @@ TEMPLATE_TEST_CASE(
 }
 
 
-TEMPLATE_TEST_CASE("hierarchical_inclusive_scan produces the expected results", "[gpu][scan]",
+TEMPLATE_TEST_CASE("hierarchical_inclusive_scan produces the expected results", "[cuda][scan]",
         plus<uint32_t>, logical_or<uint32_t>) {
     std::vector<uint32_t> input(size_t{1} << 24u);
     std::iota(input.begin(), input.end(), uint32_t{});
@@ -53,7 +53,8 @@ TEMPLATE_TEST_CASE("hierarchical_inclusive_scan produces the expected results", 
     cuda_buffer<uint32_t> prefix_sum_buf(input.size());
     CHECKED_CUDA_CALL(cudaMemcpy, prefix_sum_buf.get(), input.data(),
             prefix_sum_buf.size() * sizeof(uint32_t), cudaMemcpyHostToDevice);
-    auto keepalive = hierarchical_inclusive_scan(prefix_sum_buf.get(), prefix_sum_buf.size(), TestType{});
+    auto keepalive
+            = hierarchical_inclusive_scan(prefix_sum_buf.get(), prefix_sum_buf.size(), TestType{});
 
     std::vector<uint32_t> gpu_prefix_sum(input.size());
     CHECKED_CUDA_CALL(cudaMemcpy, gpu_prefix_sum.data(), prefix_sum_buf.get(),

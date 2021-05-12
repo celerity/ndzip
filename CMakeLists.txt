@@ -164,6 +164,9 @@ target_link_libraries(compress PRIVATE ndzip io Boost::program_options)
 if (NDZIP_USE_HIPSYCL)
     target_link_libraries(compress PRIVATE ndzip-sycl)
 endif ()
+if (NDZIP_USE_CUDA)
+    target_link_libraries(compress PRIVATE ndzip-cuda)
+endif ()
 
 
 if (NDZIP_BUILD_TEST AND Catch2_FOUND)
@@ -175,7 +178,7 @@ if (NDZIP_BUILD_TEST AND Catch2_FOUND)
     target_split_configured_sources(encoder_test PRIVATE
         GENERATE encoder_profile_test.cc FROM src/test/encoder_profile_test.inl
         ${NDZIP_PROFILE_CONFIGURATIONS}
-    )
+        )
     target_include_directories(encoder_test PRIVATE src)
     target_compile_options(encoder_test PRIVATE ${NDZIP_COMPILE_FLAGS} ${NDZIP_HIPSYCL_COMPILE_FLAGS})
     target_link_libraries(encoder_test PRIVATE ndzip Catch2::Catch2 Boost::thread)
@@ -183,15 +186,18 @@ if (NDZIP_BUILD_TEST AND Catch2_FOUND)
         add_sycl_to_target(TARGET encoder_test)
         target_link_libraries(encoder_test PRIVATE ndzip-sycl)
     endif ()
+    if (NDZIP_USE_CUDA)
+        target_link_libraries(encoder_test PRIVATE ndzip-cuda)
+    endif ()
 
     if (NDZIP_USE_HIPSYCL)
         add_executable(sycl_bits_test
-                src/test/test_utils.hh
-                src/test/test_main.cc
-                src/test/sycl_bits_test.cc)
+            src/test/test_utils.hh
+            src/test/test_main.cc
+            src/test/sycl_bits_test.cc)
         target_include_directories(sycl_bits_test PRIVATE src include)
         target_compile_options(sycl_bits_test PRIVATE
-                ${NDZIP_COMPILE_FLAGS} -Werror=pass-failed ${NDZIP_HIPSYCL_COMPILE_FLAGS})
+            ${NDZIP_COMPILE_FLAGS} -Werror=pass-failed ${NDZIP_HIPSYCL_COMPILE_FLAGS})
         target_link_libraries(sycl_bits_test PRIVATE Catch2::Catch2)
         add_sycl_to_target(TARGET sycl_bits_test)
 
@@ -283,6 +289,9 @@ if (NDZIP_BUILD_BENCHMARK)
     endif ()
     if (NDZIP_USE_HIPSYCL)
         target_link_libraries(benchmark PRIVATE ndzip-sycl)
+    endif ()
+    if (NDZIP_USE_CUDA)
+        target_link_libraries(benchmark PRIVATE ndzip-cuda)
     endif ()
 endif ()
 

@@ -7,6 +7,10 @@
 #include <ndzip/sycl_encoder.inl>
 #endif
 
+#if NDZIP_CUDA_SUPPORT
+#include <ndzip/cuda_encoder.inl>
+#endif
+
 #include <iostream>
 
 #define ALL_PROFILES (profile<DATA_TYPE, DIMENSIONS>)
@@ -85,19 +89,32 @@ TEMPLATE_TEST_CASE("decode(encode(input)) reproduces the input", "[encoder][de]"
         test_encoder_decoder_pair(sycl_encoder<data_type, dims>{}, cpu_encoder<data_type, dims>{});
     }
 #endif
+
+#if NDZIP_CUDA_SUPPORT
+    SECTION("cpu_encoder::encode() => cuda_encoder::decode()") {
+        test_encoder_decoder_pair(cpu_encoder<data_type, dims>{}, cuda_encoder<data_type, dims>{});
+    }
+
+    SECTION("cuda_encoder::encode() => cpu_encoder::decode()") {
+        test_encoder_decoder_pair(cuda_encoder<data_type, dims>{}, cpu_encoder<data_type, dims>{});
+    }
+#endif
 }
 
 
 #if NDZIP_OPENMP_SUPPORT || NDZIP_HIPSYCL_SUPPORT
-TEMPLATE_TEST_CASE("file headers from different encoders are identical", "[encoder][header]",
+TEMPLATE_TEST_CASE("file headers from different encoders are identical", "[encoder][header]"
 #if NDZIP_OPENMP_SUPPORT
+        ,
         (mt_cpu_encoder<DATA_TYPE, DIMENSIONS>)
+#endif
 #if NDZIP_HIPSYCL_SUPPORT
                 ,
-#endif
-#endif
-#if NDZIP_HIPSYCL_SUPPORT
         (sycl_encoder<DATA_TYPE, DIMENSIONS>)
+#endif
+#if NDZIP_CUDA_SUPPORT
+                ,
+        (cuda_encoder<DATA_TYPE, DIMENSIONS>)
 #endif
 ) {
     using data_type = typename TestType::data_type;
@@ -138,8 +155,8 @@ using sycl::accessor, sycl::nd_range, sycl::buffer, sycl::nd_item, sycl::range, 
         sycl::local_memory;
 
 template<typename Profile>
-static std::vector<typename Profile::bits_type>
-load_and_dump_hypercube(const slice<const typename Profile::data_type, Profile::dimensions> &in,
+static std::vector<typename Profile::bits_type> sycl_load_and_dump_hypercube(
+        const slice<const typename Profile::data_type, Profile::dimensions> &in,
         index_type hc_index, sycl::queue &q) {
     using data_type = typename Profile::data_type;
     using bits_type = typename Profile::bits_type;
@@ -267,7 +284,7 @@ TEMPLATE_TEST_CASE(
 #endif
 
 
-TEMPLATE_TEST_CASE("Flattening of hypercubes is identical between CPU and GPU", "[gpu][load]",
+TEMPLATE_TEST_CASE("Flattening of hypercubes is identical between CPU and SYCL", "[sycl][load]",
         (sycl_encoder<DATA_TYPE, DIMENSIONS>) ) {
     using data_type = typename TestType::data_type;
     using profile = detail::profile<data_type, TestType::dimensions>;
@@ -286,7 +303,7 @@ TEMPLATE_TEST_CASE("Flattening of hypercubes is identical between CPU and GPU", 
     index_type hc_index = 1;
 
     sycl::queue q{sycl::gpu_selector{}};
-    auto gpu_dump = load_and_dump_hypercube<profile>(input, hc_index, q);
+    auto gpu_dump = sycl_load_and_dump_hypercube<profile>(input, hc_index, q);
 
     cpu::simd_aligned_buffer<bits_type> cpu_dump(hc_size);
     cpu::load_hypercube<profile>(hc_offset, input, cpu_dump.data());
@@ -296,7 +313,7 @@ TEMPLATE_TEST_CASE("Flattening of hypercubes is identical between CPU and GPU", 
 
 
 TEMPLATE_TEST_CASE(
-        "GPU store_hypercube is the inverse of load_hypercube", "[gpu][load]", ALL_PROFILES) {
+        "SYCL store_hypercube is the inverse of load_hypercube", "[sycl][load]", ALL_PROFILES) {
     using data_type = typename TestType::data_type;
     using bits_type = typename TestType::bits_type;
 
@@ -404,7 +421,7 @@ static void test_cpu_gpu_transform_equality(
     check_for_vector_equality(gpu_transformed, cpu_transformed);
 }
 
-TEMPLATE_TEST_CASE("CPU and GPU forward block transforms are identical", "[gpu]", ALL_PROFILES) {
+TEMPLATE_TEST_CASE("CPU and SYCL forward block transforms are identical", "[sycl]", ALL_PROFILES) {
     using bits_type = typename TestType::bits_type;
     test_cpu_gpu_transform_equality<TestType, gpu::forward_transform_tag>(
             [](bits_type *block) {
@@ -422,7 +439,7 @@ TEMPLATE_TEST_CASE("CPU and GPU forward block transforms are identical", "[gpu]"
             });
 }
 
-TEMPLATE_TEST_CASE("CPU and GPU inverse block transforms are identical", "[gpu]", ALL_PROFILES) {
+TEMPLATE_TEST_CASE("CPU and SYCL inverse block transforms are identical", "[sycl]", ALL_PROFILES) {
     using bits_type = typename TestType::bits_type;
     test_cpu_gpu_transform_equality<TestType, gpu::inverse_transform_tag>(
             [](bits_type *block) {
@@ -444,7 +461,7 @@ TEMPLATE_TEST_CASE("CPU and GPU inverse block transforms are identical", "[gpu]"
 template<typename>
 class gpu_hypercube_decode_test_kernel;
 
-TEMPLATE_TEST_CASE("GPU hypercube decoding works", "[gpu][decode]", ALL_PROFILES) {
+TEMPLATE_TEST_CASE("SYCL hypercube decoding works", "[sycl][decode]", ALL_PROFILES) {
     using bits_type = typename TestType::bits_type;
     const auto hc_size = ipow(TestType::hypercube_side_length, TestType::dimensions);
 
@@ -498,7 +515,7 @@ class gpu_hypercube_transpose_test_kernel;
 template<typename>
 class gpu_hypercube_compact_test_kernel;
 
-TEMPLATE_TEST_CASE("CPU and GPU hypercube encodings are equivalent", "[gpu]", ALL_PROFILES) {
+TEMPLATE_TEST_CASE("CPU and SYCL hypercube encodings are equivalent", "[sycl]", ALL_PROFILES) {
     using bits_type = typename TestType::bits_type;
     const auto hc_size = ipow(TestType::hypercube_side_length, TestType::dimensions);
 

@@ -10,7 +10,7 @@ using sam = sycl::access::mode;
 
 
 TEMPLATE_TEST_CASE(
-        "Subgroup hierarchical inclusive scan works", "[gpu][scan]", uint32_t, uint64_t) {
+        "Subgroup hierarchical inclusive scan works", "[sycl][scan]", uint32_t, uint64_t) {
     constexpr index_type group_size = 1024;
     constexpr index_type n_groups = 9;
     constexpr index_type range = group_size * n_groups;
@@ -41,7 +41,7 @@ TEMPLATE_TEST_CASE(
 }
 
 
-TEMPLATE_TEST_CASE("hierarchical_inclusive_scan produces the expected results", "[gpu][scan]",
+TEMPLATE_TEST_CASE("hierarchical_inclusive_scan produces the expected results", "[sycl][scan]",
         sycl::plus<uint32_t>, sycl::logical_or<uint32_t>) {
     std::vector<uint32_t> input(size_t{1} << 24u);
     std::iota(input.begin(), input.end(), uint32_t{});
