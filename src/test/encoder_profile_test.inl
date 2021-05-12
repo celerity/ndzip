@@ -284,34 +284,6 @@ TEMPLATE_TEST_CASE(
 #endif
 
 
-TEMPLATE_TEST_CASE("Flattening of hypercubes is identical between CPU and SYCL", "[sycl][load]",
-        (sycl_encoder<DATA_TYPE, DIMENSIONS>) ) {
-    using data_type = typename TestType::data_type;
-    using profile = detail::profile<data_type, TestType::dimensions>;
-    using bits_type = typename profile::bits_type;
-
-    constexpr auto dims = profile::dimensions;
-    constexpr auto side_length = profile::hypercube_side_length;
-    const index_type hc_size = ipow(side_length, dims);
-    const index_type n = side_length * 4 - 1;
-
-    auto input_data = make_random_vector<data_type>(ipow(n, dims));
-    slice<const data_type, dims> input(input_data.data(), extent<dims>::broadcast(n));
-
-    extent<dims> hc_offset;
-    hc_offset[dims - 1] = side_length;
-    index_type hc_index = 1;
-
-    sycl::queue q{sycl::gpu_selector{}};
-    auto gpu_dump = sycl_load_and_dump_hypercube<profile>(input, hc_index, q);
-
-    cpu::simd_aligned_buffer<bits_type> cpu_dump(hc_size);
-    cpu::load_hypercube<profile>(hc_offset, input, cpu_dump.data());
-
-    check_for_vector_equality(gpu_dump.data(), cpu_dump.data(), hc_size);
-}
-
-
 TEMPLATE_TEST_CASE(
         "SYCL store_hypercube is the inverse of load_hypercube", "[sycl][load]", ALL_PROFILES) {
     using data_type = typename TestType::data_type;
@@ -561,8 +533,8 @@ TEMPLATE_TEST_CASE("CPU and SYCL hypercube encodings are equivalent", "[sycl]", 
                     gpu_sycl::hypercube_memory<TestType, gpu::forward_transform_tag> lm{grp};
                     gpu::hypercube_ptr<TestType, gpu::forward_transform_tag> hc{lm()};
                     grp.distribute_for(hc_size, [&](index_type i) { hc.store(i, input_acc[i]); });
-                    gpu_sycl::write_transposed_chunks(grp, hc, &columns_acc[0],
-                            &chunk_lengths_acc[1]);
+                    gpu_sycl::write_transposed_chunks(
+                            grp, hc, &columns_acc[0], &chunk_lengths_acc[1]);
                     // hack
                     if (phys_idx.get_global_linear_id() == 0) {
                         grp.single_item([&] { chunk_lengths_acc[0] = 0; });
@@ -616,3 +588,172 @@ TEMPLATE_TEST_CASE("CPU and SYCL hypercube encodings are equivalent", "[sycl]", 
 }
 
 #endif
+
+
+#if NDZIP_CUDA_SUPPORT
+
+using namespace ndzip::detail::gpu_cuda;
+
+template<typename T>
+static __global__ void cuda_fill_kernel(T *dest, T value, index_type count) {
+    const auto i = static_cast<index_type>(blockIdx.x * blockDim.x + threadIdx.x);
+    if (i < count) { dest[i] = 0; }
+}
+
+template<typename T>
+static void cuda_fill(T *dest, T value, index_type count) {
+    constexpr index_type threads_per_block = 256;
+    cuda_fill_kernel<<<div_ceil(count, threads_per_block), threads_per_block>>>(dest, value, count);
+}
+
+template<typename Profile>
+static __global__ void
+cuda_load_and_dump_kernel(slice<const typename Profile::data_type, Profile::dimensions> data,
+        index_type hc_index, typename Profile::data_type *result) {
+    using data_type = typename Profile::data_type;
+    constexpr auto hc_size = ipow(Profile::hypercube_side_length, Profile::dimensions);
+
+    gpu_cuda::hypercube_memory<Profile, gpu::forward_transform_tag> lm;
+    auto *lmp = lm;  // workaround for https://bugs.llvm.org/show_bug.cgi?id=50316
+    gpu_cuda::hypercube_ptr<Profile, gpu::forward_transform_tag> hc{lmp};
+
+    auto block = hypercube_block<Profile>{};
+    gpu_cuda::load_hypercube(block, hc_index, data, hc);
+    __syncthreads();
+    // TODO rotate should probaly happen during CPU load_hypercube as well to hide
+    //  memory access latencies
+    distribute_for(hc_size, block, [&](index_type item) {
+        result[item] = bit_cast<data_type>(rotate_right_1(hc.load(item)));
+    });
+}
+
+template<typename Profile>
+static std::vector<typename Profile::bits_type> cuda_load_and_dump_hypercube(
+        const slice<const typename Profile::data_type, Profile::dimensions> &in,
+        index_type hc_index) {
+    using data_type = typename Profile::data_type;
+    using bits_type = typename Profile::bits_type;
+
+    auto hc_size = ipow(Profile::hypercube_side_length, Profile::dimensions);
+    cuda_buffer<data_type> load_buf(num_elements(in.size()));
+    std::vector<bits_type> out(hc_size * 2);
+    cuda_buffer<data_type> store_buf(out.size());
+    detail::file<Profile> file(in.size());
+
+    CHECKED_CUDA_CALL(cudaMemcpy, load_buf.get(), in.data(), load_buf.size() * sizeof(data_type),
+            cudaMemcpyHostToDevice);
+    cuda_fill(store_buf.get(), data_type{0}, store_buf.size());
+    cuda_load_and_dump_kernel<Profile><<<file.num_hypercubes(), (hypercube_group_size<Profile>)>>>(
+            slice{load_buf.get(), in.size()}, hc_index, store_buf.get());
+    CHECKED_CUDA_CALL(cudaMemcpy, out.data(), store_buf.get(), out.size() * sizeof(data_type),
+            cudaMemcpyDeviceToHost);
+    return out;
+}
+
+template<typename Profile>
+static __global__ void
+cuda_load_hypercube_kernel(slice<const typename Profile::data_type, Profile::dimensions> input,
+        typename Profile::bits_type *temp) {
+    constexpr index_type hc_size = ipow(Profile::hypercube_side_length, Profile::dimensions);
+    auto hc_index = static_cast<index_type>(blockIdx.x);
+
+    gpu_cuda::hypercube_memory<Profile, gpu::forward_transform_tag> lm;
+    auto *lmp = lm;  // workaround for https://bugs.llvm.org/show_bug.cgi?id=50316
+    gpu::hypercube_ptr<Profile, gpu::forward_transform_tag> hc{lmp};
+
+    auto block = hypercube_block<Profile>{};
+    gpu_cuda::load_hypercube(block, hc_index, input, hc);
+    __syncthreads();
+    distribute_for(
+            hc_size, block, [&](index_type i) { temp[hc_index * hc_size + i] = hc.load(i); });
+}
+
+template<typename Profile>
+static __global__ void cuda_store_hypercube_kernel(const typename Profile::bits_type *temp,
+        slice<typename Profile::data_type, Profile::dimensions> output) {
+    constexpr index_type hc_size = ipow(Profile::hypercube_side_length, Profile::dimensions);
+    auto hc_index = static_cast<index_type>(blockIdx.x);
+
+    gpu_cuda::hypercube_memory<Profile, gpu::inverse_transform_tag> lm;
+    auto *lmp = lm;  // workaround for https://bugs.llvm.org/show_bug.cgi?id=50316
+    gpu::hypercube_ptr<Profile, gpu::inverse_transform_tag> hc{lmp};
+
+    auto block = hypercube_block<Profile>{};
+    distribute_for(
+            hc_size, block, [&](index_type i) { hc.store(i, temp[hc_index * hc_size + i]); });
+    __syncthreads();
+    gpu_cuda::store_hypercube(block, hc_index, output, hc);
+}
+
+TEMPLATE_TEST_CASE(
+        "CUDA store_hypercube is the inverse of load_hypercube", "[cuda][load]", ALL_PROFILES) {
+    using data_type = typename TestType::data_type;
+    using bits_type = typename TestType::bits_type;
+
+    constexpr auto dims = TestType::dimensions;
+    constexpr auto side_length = TestType::hypercube_side_length;
+    const index_type n = side_length * 3;
+
+    auto input_data = make_random_vector<data_type>(ipow(n, dims));
+    slice<const data_type, dims> input(input_data.data(), extent<dims>::broadcast(n));
+
+    cuda_buffer<data_type> input_buf(num_elements(input.size()));
+    // buffer needed for hypercube_ptr forward_transform_tag => inverse_transform_tag translation
+    cuda_buffer<bits_type> temp_buf(input_buf.size());
+    cuda_buffer<data_type> output_buf(input_buf.size());
+    detail::file<TestType> file(input.size());
+
+    CHECKED_CUDA_CALL(cudaMemcpy, input_buf.get(), input.data(),
+            input_buf.size() * sizeof(data_type), cudaMemcpyHostToDevice);
+
+    cuda_fill(output_buf.get(), data_type{0}, output_buf.size());
+
+    cuda_load_hypercube_kernel<TestType>
+            <<<file.num_hypercubes(), (hypercube_group_size<TestType>)>>>(
+                    slice{input_buf.get(), input.size()}, temp_buf.get());
+    cuda_store_hypercube_kernel<TestType>
+            <<<file.num_hypercubes(), (hypercube_group_size<TestType>)>>>(
+                    temp_buf.get(), slice{output_buf.get(), input.size()});
+
+    std::vector<data_type> output_data(input_data.size());
+    CHECKED_CUDA_CALL(cudaMemcpy, output_data.data(), output_buf.get(),
+            output_buf.size() * sizeof(data_type), cudaMemcpyDeviceToHost);
+
+    check_for_vector_equality(input_data, output_data);
+}
+
+#endif
+
+
+TEMPLATE_TEST_CASE("Flattening of hypercubes is identical between encoders", "[sycl][cuda][load]",
+        (sycl_encoder<DATA_TYPE, DIMENSIONS>) ) {
+    using data_type = typename TestType::data_type;
+    using profile = detail::profile<data_type, TestType::dimensions>;
+    using bits_type = typename profile::bits_type;
+
+    constexpr auto dims = profile::dimensions;
+    constexpr auto side_length = profile::hypercube_side_length;
+    const index_type hc_size = ipow(side_length, dims);
+    const index_type n = side_length * 4 - 1;
+
+    auto input_data = make_random_vector<data_type>(ipow(n, dims));
+    slice<const data_type, dims> input(input_data.data(), extent<dims>::broadcast(n));
+
+    extent<dims> hc_offset;
+    hc_offset[dims - 1] = side_length;
+    index_type hc_index = 1;
+
+    cpu::simd_aligned_buffer<bits_type> cpu_dump(hc_size);
+    cpu::load_hypercube<profile>(hc_offset, input, cpu_dump.data());
+
+#if NDZIP_HIPSYCL_SUPPORT
+    sycl::queue sycl_q{sycl::gpu_selector{}};
+    auto sycl_dump = sycl_load_and_dump_hypercube<profile>(input, hc_index, sycl_q);
+    check_for_vector_equality(sycl_dump.data(), cpu_dump.data(), hc_size);
+#endif
+
+#if NDZIP_CUDA_SUPPORT
+    auto cuda_dump = cuda_load_and_dump_hypercube<profile>(input, hc_index);
+    check_for_vector_equality(cuda_dump.data(), cpu_dump.data(), hc_size);
+#endif
+}
