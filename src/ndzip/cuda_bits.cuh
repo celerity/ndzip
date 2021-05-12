@@ -14,6 +14,17 @@ namespace ndzip::detail::gpu_cuda {
 using namespace ndzip::detail::gpu;
 
 
+template<typename T>
+struct plus {
+    __host__ __device__ T operator()(T a, T b) const { return a + b; }
+};
+
+template<typename T>
+struct bit_or {
+    __host__ __device__ T operator()(T a, T b) const { return a | b; }
+};
+
+
 template<index_type ThreadsPerBlock>
 class known_size_block {
   public:
@@ -81,6 +92,18 @@ distribute_for(known_size_block<ThreadsPerBlock> block, F &&f) {
 }
 
 
+template<typename T, typename BinaryOperation>
+__device__ T warp_reduce(T x, BinaryOperation op) {
+    auto warp_thread_id = threadIdx.x % warp_size;
+
+    for (size_t i = warp_size / 2; i > 0; i /= 2) {
+        auto y = __shfl_sync(0xffff'ffff, x, warp_thread_id + i);
+        if (warp_thread_id < i) { x = op(x, y); }
+    }
+    return __shfl_sync(0xffff'ffff, x, 0);
+}
+
+
 template<typename T, typename BinaryOp>
 __device__ T warp_inclusive_scan(T x, BinaryOp op) {
     auto warp_thread_id = threadIdx.x % warp_size;
@@ -94,6 +117,27 @@ __device__ T warp_inclusive_scan(T x, BinaryOp op) {
     }
 
     return x;
+}
+
+
+template<typename T, typename BinaryOp>
+__device__ T warp_exclusive_scan(T x, T init, BinaryOp binary_op) {
+    auto warp_thread_id = threadIdx.x % warp_size;
+
+    for (size_t i = 1; i < warp_size; i *= 2) {
+        size_t next_id = warp_thread_id - i;
+        if (i > warp_thread_id) {
+            next_id = 0;
+        }
+
+        auto y = __shfl_sync(0xffff'ffff, x, next_id);
+        if (i <= warp_thread_id && warp_thread_id < warp_size) {
+            x = binary_op(x, y);
+        }
+    }
+
+    auto scan = __shfl_sync(0xffff'ffff, x, warp_thread_id - 1);
+    return threadIdx.x == 0 ? init : binary_op(scan, init);
 }
 
 
@@ -166,9 +210,7 @@ class cuda_buffer {
         return *this;
     }
 
-    ~cuda_buffer() {
-        reset();
-    }
+    ~cuda_buffer() { reset(); }
 
     void reset() {
         if (_memory) { CHECKED_CUDA_CALL(cudaFree, _memory); }

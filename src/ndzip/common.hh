@@ -34,7 +34,7 @@
 namespace ndzip::detail {
 
 template<typename Integer>
-constexpr inline Integer ipow(Integer base, unsigned exponent) {
+NDZIP_UNIVERSAL constexpr inline Integer ipow(Integer base, unsigned exponent) {
     Integer power{1};
     while (exponent) {
         if (exponent & 1u) { power *= base; }
@@ -51,17 +51,17 @@ using bits_type = std::conditional_t<sizeof(T) == 1, uint8_t,
                         std::conditional_t<sizeof(T) == 8, uint64_t, void>>>>;
 
 template<typename Integer>
-constexpr Integer div_ceil(Integer p, Integer q) {
+NDZIP_UNIVERSAL constexpr Integer div_ceil(Integer p, Integer q) {
     return (p + q - 1) / q;
 }
 
 template<typename Integer>
-constexpr Integer ceil(Integer x, Integer multiple) {
+NDZIP_UNIVERSAL constexpr Integer ceil(Integer x, Integer multiple) {
     return div_ceil(x, multiple) * multiple;
 }
 
 template<typename Integer>
-constexpr Integer floor(Integer x, Integer multiple) {
+NDZIP_UNIVERSAL constexpr Integer floor(Integer x, Integer multiple) {
     return x / multiple * multiple;
 }
 
@@ -72,7 +72,7 @@ template<typename T>
 constexpr inline index_type bytes_of = static_cast<index_type>(sizeof(T));
 
 template<typename Integer>
-constexpr Integer floor_power_of_two(Integer x) {
+NDZIP_UNIVERSAL constexpr Integer floor_power_of_two(Integer x) {
     for (index_type s = 1; s < bits_of<Integer>; ++s) {
         x &= ~(x >> s);
     }
@@ -111,7 +111,7 @@ Integer endian_transform(Integer value) {
 
 
 template<typename POD>
-[[gnu::always_inline]] POD load_unaligned(const void *src) {
+[[gnu::always_inline]] NDZIP_UNIVERSAL POD load_unaligned(const void *src) {
     static_assert(std::is_trivially_copyable_v<POD>);
     POD a;
     memcpy(&a, src, sizeof(POD));
@@ -119,30 +119,30 @@ template<typename POD>
 }
 
 template<size_t Align, typename POD, typename Memory>
-[[gnu::always_inline]] POD load_aligned(const Memory *src) {
+[[gnu::always_inline]] NDZIP_UNIVERSAL POD load_aligned(const Memory *src) {
     assert(reinterpret_cast<uintptr_t>(src) % Align == 0);
     return load_unaligned<POD>(__builtin_assume_aligned(src, Align));
 }
 
 template<typename POD, typename Memory>
-[[gnu::always_inline]] POD load_aligned(const Memory *src) {
+[[gnu::always_inline]] NDZIP_UNIVERSAL POD load_aligned(const Memory *src) {
     return load_aligned<alignof(POD), POD>(src);
 }
 
 template<typename POD>
-[[gnu::always_inline]] void store_unaligned(void *dest, POD a) {
+[[gnu::always_inline]] NDZIP_UNIVERSAL void store_unaligned(void *dest, POD a) {
     static_assert(std::is_trivially_copyable_v<POD>);
     memcpy(dest, &a, sizeof(POD));
 }
 
 template<size_t Align, typename POD, typename Memory>
-[[gnu::always_inline]] void store_aligned(Memory *dest, POD a) {
+[[gnu::always_inline]] NDZIP_UNIVERSAL void store_aligned(Memory *dest, POD a) {
     assert(reinterpret_cast<uintptr_t>(dest) % Align == 0);
     store_unaligned(__builtin_assume_aligned(dest, Align), a);
 }
 
 template<typename POD, typename Memory>
-[[gnu::always_inline]] void store_aligned(Memory *dest, POD a) {
+[[gnu::always_inline]] NDZIP_UNIVERSAL void store_aligned(Memory *dest, POD a) {
     store_aligned<alignof(POD), POD>(dest, a);
 }
 
@@ -251,17 +251,17 @@ struct stream {
     index_type num_hypercubes;
     bits_type *buffer;
 
-    offset_type *header() { return reinterpret_cast<offset_type *>(buffer); }
+    NDZIP_UNIVERSAL offset_type *header() { return reinterpret_cast<offset_type *>(buffer); }
 
-    index_type offset_after(index_type hc_index) { return header()[hc_index]; }
+    NDZIP_UNIVERSAL index_type offset_after(index_type hc_index) { return header()[hc_index]; }
 
-    void set_offset_after(index_type hc_index, index_type position) {
+    NDZIP_UNIVERSAL void set_offset_after(index_type hc_index, index_type position) {
         // TODO memcpy this, else potential aliasing UB!
         header()[hc_index] = position;
     }
 
     // requires header() to be initialized
-    bits_type *hypercube(index_type hc_index) {
+    NDZIP_UNIVERSAL bits_type *hypercube(index_type hc_index) {
         auto base_byte_offset = ceil(num_hypercubes * bytes_of<offset_type>, bytes_of<bits_type>);
         auto *base = reinterpret_cast<bits_type *>(
                 reinterpret_cast<byte_type *>(buffer) + base_byte_offset);
@@ -272,13 +272,13 @@ struct stream {
         }
     }
 
-    index_type hypercube_size(index_type hc_index) {
+    NDZIP_UNIVERSAL index_type hypercube_size(index_type hc_index) {
         return hc_index == 0 ? offset_after(0)
                              : offset_after(hc_index) - offset_after(hc_index - 1);
     }
 
     // requires header() to be initialized
-    bits_type *border() { return hypercube(num_hypercubes); }
+    NDZIP_UNIVERSAL bits_type *border() { return hypercube(num_hypercubes); }
 };
 
 template<typename Profile>
@@ -323,17 +323,17 @@ class profile {
 
 
 template<typename T>
-T rotate_left_1(T v) {
+NDZIP_UNIVERSAL T rotate_left_1(T v) {
     return (v << 1u) | (v >> (bits_of<T> - 1u));
 }
 
 template<typename T>
-T rotate_right_1(T v) {
+NDZIP_UNIVERSAL T rotate_right_1(T v) {
     return (v >> 1u) | (v << (bits_of<T> - 1u));
 }
 
 template<typename T>
-T complement_negative(T v) {
+NDZIP_UNIVERSAL T complement_negative(T v) {
     return v >> (bits_of<T> - 1u) ? v ^ (~T{} >> 1u) : v;
 }
 
@@ -457,7 +457,7 @@ template<typename Profile, typename SliceDataType, typename CubeDataType, typena
 }
 
 template<unsigned Dims>
-extent<Dims> extent_from_linear_id(index_type linear_id, const extent<Dims> &size) {
+NDZIP_UNIVERSAL extent<Dims> extent_from_linear_id(index_type linear_id, const extent<Dims> &size) {
     extent<Dims> ext;
     for (unsigned nd = 0; nd < Dims; ++nd) {
         auto d = Dims - 1 - nd;
@@ -470,26 +470,26 @@ extent<Dims> extent_from_linear_id(index_type linear_id, const extent<Dims> &siz
 
 // static_assert as an expression for use in variable template definitions
 template<bool Assertion>
-constexpr void static_check() {
+NDZIP_UNIVERSAL constexpr void static_check() {
     static_assert(Assertion);
 }
 
 
-inline unsigned popcount(unsigned int x) {
+NDZIP_UNIVERSAL inline unsigned popcount(unsigned int x) {
     return __builtin_popcount(x);
 }
 
-inline unsigned popcount(unsigned long x) {
+NDZIP_UNIVERSAL inline unsigned popcount(unsigned long x) {
     return __builtin_popcountl(x);
 }
 
-inline unsigned popcount(unsigned long long x) {
+NDZIP_UNIVERSAL inline unsigned popcount(unsigned long long x) {
     return __builtin_popcountll(x);
 }
 
 
 template<typename U, typename T>
-[[gnu::always_inline]] U bit_cast(T v) {
+[[gnu::always_inline]] NDZIP_UNIVERSAL U bit_cast(T v) {
     static_assert(std::is_trivially_copy_constructible_v<U> && sizeof(U) == sizeof(T));
     U cast;
     __builtin_memcpy(&cast, &v, sizeof cast);

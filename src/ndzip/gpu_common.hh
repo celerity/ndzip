@@ -20,7 +20,8 @@ inline constexpr index_type banks_of = bytes_of<Bits> / bytes_of<uint_bank_t>;
 
 
 template<typename Profile>
-index_type global_offset(index_type local_offset, extent<Profile::dimensions> global_size) {
+NDZIP_UNIVERSAL index_type global_offset(
+        index_type local_offset, extent<Profile::dimensions> global_size) {
     index_type global_offset = 0;
     index_type global_stride = 1;
     for (unsigned d = 0; d < Profile::dimensions; ++d) {
@@ -39,7 +40,8 @@ template<typename Profile>
 #ifdef NDZIP_GPU_GROUP_SIZE
 inline constexpr index_type hypercube_group_size = NDZIP_GPU_GROUP_SIZE;
 #else
-inline constexpr index_type hypercube_group_size = bytes_of<typename Profile::bits_type> == 4 ? 256 : 512;
+inline constexpr index_type hypercube_group_size
+        = bytes_of<typename Profile::bits_type> == 4 ? 256 : 512;
 #endif
 
 struct forward_transform_tag;
@@ -62,7 +64,7 @@ struct hypercube_layout<profile<T, 1>, forward_transform_tag> {
     constexpr static index_type lane_length = hc_size / num_lanes;
     constexpr static index_type value_width = banks_of<typename profile<T, 1>::bits_type>;
 
-    constexpr static index_type pad(index_type i) {
+    NDZIP_UNIVERSAL constexpr static index_type pad(index_type i) {
         return value_width * i + value_width * i / warp_size;
     }
 };
@@ -82,11 +84,11 @@ template<typename T>
 struct directional_accessor<profile<T, 1>, 0, forward_transform_tag> {
     using layout = hypercube_layout<profile<T, 1>, forward_transform_tag>;
 
-    constexpr static index_type prev_lane_in_row(index_type lane) {
+    NDZIP_UNIVERSAL constexpr static index_type prev_lane_in_row(index_type lane) {
         return lane > 0 ? lane - 1 : no_such_lane;
     }
 
-    constexpr static index_type offset(index_type lane) {
+    NDZIP_UNIVERSAL constexpr static index_type offset(index_type lane) {
         return lane * layout::hc_size / layout::num_lanes;
     }
 
@@ -103,7 +105,7 @@ struct hypercube_layout<profile<T, 2>, forward_transform_tag> {
     constexpr static index_type lane_length = hc_size / num_lanes;
     constexpr static index_type value_width = banks_of<typename profile<T, 2>::bits_type>;
 
-    constexpr static index_type pad(index_type i) {
+    NDZIP_UNIVERSAL constexpr static index_type pad(index_type i) {
         return value_width * i + value_width * i / warp_size;
     }
 };
@@ -112,14 +114,14 @@ template<typename T>
 struct directional_accessor<profile<T, 2>, 0, forward_transform_tag> {
     using layout = hypercube_layout<profile<T, 2>, forward_transform_tag>;
 
-    constexpr static index_type prev_lane_in_row(index_type lane) {
+    NDZIP_UNIVERSAL constexpr static index_type prev_lane_in_row(index_type lane) {
         if (lane % (layout::side_length / layout::lane_length) > 0) {
             return lane - 1;
         } else {
             return no_such_lane;
         }
     }
-    constexpr static index_type offset(index_type lane) {
+    NDZIP_UNIVERSAL constexpr static index_type offset(index_type lane) {
         return lane * (layout::hc_size / layout::num_lanes);
     }
     constexpr static index_type stride = 1;
@@ -129,17 +131,17 @@ template<typename T>
 struct directional_accessor<profile<T, 2>, 1, forward_transform_tag> {
     using layout = hypercube_layout<profile<T, 2>, forward_transform_tag>;
 
-    constexpr static index_type prev_lane_in_row(index_type lane) {
+    NDZIP_UNIVERSAL constexpr static index_type prev_lane_in_row(index_type lane) {
         if (lane >= layout::side_length) {
             return lane - layout::side_length;
         } else {
             return no_such_lane;
         }
     }
-    constexpr static index_type offset(index_type lane) {
+    NDZIP_UNIVERSAL constexpr static index_type offset(index_type lane) {
         return (lane / layout::side_length)
-               * (layout::hc_size / layout::num_lanes * layout::side_length)
-               + lane % layout::side_length;
+                * (layout::hc_size / layout::num_lanes * layout::side_length)
+                + lane % layout::side_length;
     }
     constexpr static index_type stride = layout::side_length;
 };
@@ -152,7 +154,7 @@ struct hypercube_layout<profile<T, 2>, inverse_transform_tag> {
     constexpr static index_type lane_length = hc_size / num_lanes;
     constexpr static index_type value_width = banks_of<typename profile<T, 2>::bits_type>;
 
-    constexpr static index_type pad(index_type i) {
+    NDZIP_UNIVERSAL constexpr static index_type pad(index_type i) {
         if constexpr (value_width == 1) {
             return i + i / side_length;
         } else {
@@ -164,16 +166,24 @@ struct hypercube_layout<profile<T, 2>, inverse_transform_tag> {
 template<typename T>
 struct directional_accessor<profile<T, 2>, 0, inverse_transform_tag> {
     using layout = hypercube_layout<profile<T, 2>, inverse_transform_tag>;
-    constexpr static index_type prev_lane_in_row(index_type) { return no_such_lane; }
-    constexpr static index_type offset(index_type lane) { return lane * layout::side_length; }
+    NDZIP_UNIVERSAL constexpr static index_type prev_lane_in_row(index_type) {
+        return no_such_lane;
+    }
+    NDZIP_UNIVERSAL constexpr static index_type offset(index_type lane) {
+        return lane * layout::side_length;
+    }
     constexpr static index_type stride = 1;
 };
 
 template<typename T>
 struct directional_accessor<profile<T, 2>, 1, inverse_transform_tag> {
     using layout = hypercube_layout<profile<T, 2>, inverse_transform_tag>;
-    constexpr static index_type prev_lane_in_row(index_type) { return no_such_lane; }
-    constexpr static index_type offset(index_type lane) { return lane % layout::side_length; }
+    NDZIP_UNIVERSAL constexpr static index_type prev_lane_in_row(index_type) {
+        return no_such_lane;
+    }
+    NDZIP_UNIVERSAL constexpr static index_type offset(index_type lane) {
+        return lane % layout::side_length;
+    }
     constexpr static index_type stride = layout::side_length;
 };
 
@@ -186,7 +196,7 @@ struct hypercube_layout<profile<T, 3>, Transform> {
     constexpr static index_type lane_length = hc_size / num_lanes;
     constexpr static index_type value_width = banks_of<typename profile<T, 3>::bits_type>;
 
-    constexpr static index_type pad(index_type i) {
+    NDZIP_UNIVERSAL constexpr static index_type pad(index_type i) {
         auto padded = value_width * i + value_width * i / warp_size;
         if (value_width == 2) { padded -= i / (value_width * num_lanes); }
         return padded;
@@ -196,8 +206,12 @@ struct hypercube_layout<profile<T, 3>, Transform> {
 template<typename T, typename Transform>
 struct directional_accessor<profile<T, 3>, 0, Transform> {
     using layout = hypercube_layout<profile<T, 3>, Transform>;
-    constexpr static index_type prev_lane_in_row(index_type) { return no_such_lane; }
-    constexpr static index_type offset(index_type lane) { return lane * layout::side_length; }
+    NDZIP_UNIVERSAL constexpr static index_type prev_lane_in_row(index_type) {
+        return no_such_lane;
+    }
+    NDZIP_UNIVERSAL constexpr static index_type offset(index_type lane) {
+        return lane * layout::side_length;
+    }
     constexpr static index_type stride = 1;
 };
 
@@ -205,12 +219,14 @@ template<typename T, typename Transform>
 struct directional_accessor<profile<T, 3>, 1, Transform> {
     using layout = hypercube_layout<profile<T, 3>, Transform>;
 
-    constexpr static index_type prev_lane_in_row(index_type) { return no_such_lane; }
-    constexpr static index_type offset(index_type lane) {
+    NDZIP_UNIVERSAL constexpr static index_type prev_lane_in_row(index_type) {
+        return no_such_lane;
+    }
+    NDZIP_UNIVERSAL constexpr static index_type offset(index_type lane) {
         return (lane / layout::side_length) * 2 * layout::num_lanes
-               - (lane / (layout::num_lanes / 2))
-                 * (layout::hc_size - ipow(layout::side_length, 2))
-               + lane % layout::side_length;
+                - (lane / (layout::num_lanes / 2))
+                * (layout::hc_size - ipow(layout::side_length, 2))
+                + lane % layout::side_length;
     }
     constexpr static index_type stride = layout::side_length;
 };
@@ -218,8 +234,10 @@ struct directional_accessor<profile<T, 3>, 1, Transform> {
 template<typename T, typename Transform>
 struct directional_accessor<profile<T, 3>, 2, Transform> {
     using layout = hypercube_layout<profile<T, 3>, Transform>;
-    constexpr static index_type prev_lane_in_row(index_type) { return no_such_lane; }
-    constexpr static index_type offset(index_type lane) { return lane; }
+    NDZIP_UNIVERSAL constexpr static index_type prev_lane_in_row(index_type) {
+        return no_such_lane;
+    }
+    NDZIP_UNIVERSAL constexpr static index_type offset(index_type lane) { return lane; }
     constexpr static index_type stride = layout::side_length * layout::side_length;
 };
 
@@ -246,13 +264,13 @@ struct hypercube_ptr {
     uint_bank_t *memory;
 
     template<typename T = bits_type>
-    T load(index_type i) const {
+    NDZIP_UNIVERSAL T load(index_type i) const {
         static_assert(sizeof(T) == sizeof(bits_type));
         return load_aligned<alignof(uint_bank_t), T>(memory + layout::pad(i));
     }
 
     template<typename T = bits_type>
-    void store(index_type i, std::common_type_t<T> bits) {
+    NDZIP_UNIVERSAL void store(index_type i, std::common_type_t<T> bits) {
         static_assert(sizeof(T) == sizeof(bits_type));
         store_aligned<alignof(uint_bank_t), T>(memory + layout::pad(i), bits);
     }
@@ -277,9 +295,11 @@ class border_map {
         }
     }
 
-    constexpr extent<dimensions> operator[](index_type i) const { return index<dimensions>(i); }
+    NDZIP_UNIVERSAL constexpr extent<dimensions> operator[](index_type i) const {
+        return index<dimensions>(i);
+    }
 
-    constexpr index_type size() const { return _border[0]; }
+    NDZIP_UNIVERSAL constexpr index_type size() const { return _border[0]; }
 
   private:
     extent<dimensions> _inner;
@@ -288,15 +308,15 @@ class border_map {
     extent<dimensions> _stride;
 
     template<unsigned D>
-    constexpr extent<D> index(index_type i) const;
+    NDZIP_UNIVERSAL constexpr extent<D> index(index_type i) const;
 
     template<>
-    constexpr extent<1> index<1>(index_type i) const {
+    NDZIP_UNIVERSAL constexpr extent<1> index<1>(index_type i) const {
         return {_edge[dimensions - 1] + i};
     }
 
     template<>
-    constexpr extent<2> index<2>(index_type i) const {
+    NDZIP_UNIVERSAL constexpr extent<2> index<2>(index_type i) const {
         if (i >= _edge[dimensions - 2]) {
             i -= _edge[dimensions - 2];
             auto y = _inner[dimensions - 2] + i / _stride[dimensions - 2];
@@ -310,7 +330,7 @@ class border_map {
     }
 
     template<>
-    constexpr extent<3> index<3>(index_type i) const {
+    NDZIP_UNIVERSAL constexpr extent<3> index<3>(index_type i) const {
         if (i >= _edge[dimensions - 3]) {
             i -= _edge[dimensions - 3];
             auto z = _inner[dimensions - 3] + i / _stride[dimensions - 3];
@@ -336,10 +356,10 @@ struct hypercube_ptr<profile<Data, 1>, inverse_transform_tag> {
 
     bits_type *memory;
 
-    bits_type load(index_type i) const { return memory[i]; }
+    NDZIP_UNIVERSAL bits_type load(index_type i) const { return memory[i]; }
 
-    void store(index_type i, bits_type bits) { memory[i] = bits; }
+    NDZIP_UNIVERSAL void store(index_type i, bits_type bits) { memory[i] = bits; }
 };
 
 
-}
+}  // namespace ndzip::detail::gpu

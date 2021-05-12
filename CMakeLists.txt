@@ -122,7 +122,6 @@ endif ()
 if (NDZIP_USE_HIPSYCL)
     add_library(ndzip-sycl SHARED
         src/ndzip/sycl_bits.hh
-        src/ndzip/sycl_bits.hh
         src/ndzip/sycl_encoder.inl
     )
     target_split_configured_sources(ndzip-sycl PRIVATE
@@ -133,6 +132,20 @@ if (NDZIP_USE_HIPSYCL)
     target_compile_options(ndzip-sycl PRIVATE ${NDZIP_COMPILE_FLAGS} ${NDZIP_HIPSYCL_COMPILE_FLAGS})
     add_sycl_to_target(TARGET ndzip-sycl)
     target_link_libraries(ndzip-sycl PUBLIC ndzip)
+endif ()
+
+if (NDZIP_USE_CUDA)
+    add_library(ndzip-cuda SHARED
+        src/ndzip/cuda_bits.cuh
+        src/ndzip/cuda_encoder.inl
+    )
+    target_split_configured_sources(ndzip-cuda PRIVATE
+        GENERATE cuda_encoder.cu FROM src/ndzip/cuda_encoder.inl
+        ${NDZIP_PROFILE_CONFIGURATIONS}
+    )
+    target_include_directories(ndzip-cuda PUBLIC include)
+    target_compile_options(ndzip-cuda PRIVATE ${NDZIP_COMPILE_FLAGS} ${NDZIP_CUDA_COMPILE_FLAGS})
+    target_link_libraries(ndzip-cuda PUBLIC ndzip)
 endif ()
 
 add_library(io STATIC
@@ -199,15 +212,13 @@ if (NDZIP_BUILD_TEST AND Catch2_FOUND)
 
     if (NDZIP_USE_CUDA)
         add_executable(cuda_bits_test
-                src/ndzip/cuda_bits.cuh  # TODO move to ndzip-cuda lib
                 src/test/test_utils.hh
                 src/test/test_main.cc
                 src/test/cuda_bits_test.cu)
         target_include_directories(cuda_bits_test PRIVATE src include)
         target_compile_options(cuda_bits_test PRIVATE
                 ${NDZIP_COMPILE_FLAGS} -Werror=pass-failed ${NDZIP_CUDA_COMPILE_FLAGS})
-        target_link_libraries(cuda_bits_test PRIVATE Catch2::Catch2)
-        add_sycl_to_target(TARGET cuda_bits_test)
+        target_link_libraries(cuda_bits_test PRIVATE ndzip-cuda Catch2::Catch2)
     endif ()
 endif ()
 

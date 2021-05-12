@@ -7,11 +7,6 @@ using namespace ndzip::detail::gpu_cuda;
 
 
 template<typename T>
-struct plus {
-    __host__ __device__ T operator()(T a, T b) const { return a + b; }
-};
-
-template<typename T>
 struct logical_or {
     __host__ __device__ T operator()(T a, T b) const { return a || b; }
 };
