@@ -12,12 +12,60 @@ struct logical_or {
 };
 
 
+__global__ void test_warp_reduce(index_type *out) {
+    out[threadIdx.x] = warp_reduce(index_type{1}, plus<index_type>{});
+}
+
+__global__ void test_warp_inclusive_scan(index_type *out) {
+    out[threadIdx.x]
+            = warp_inclusive_scan(static_cast<index_type>(threadIdx.x), plus<index_type>{});
+}
+
+__global__ void test_warp_exclusive_scan(index_type *out) {
+    out[threadIdx.x] = warp_exclusive_scan(
+            static_cast<index_type>(threadIdx.x), index_type{0}, plus<index_type>{});
+}
+
 template<typename T, index_type Range, index_type GroupSize>
 __global__ void test_inclusive_scan(T *out) {
     auto block = known_size_block<GroupSize>{};
     distribute_for(Range, block, [&](index_type item) { out[item] = 1; });
     __syncthreads();
     inclusive_scan<Range>(block, out, plus<T>{});
+}
+
+
+TEST_CASE("Warp-cooperative primitives work", "[cuda][scan]") {
+    cuda_buffer<index_type> buf(warp_size);
+    std::vector<index_type> out(warp_size);
+    std::vector<index_type> iota(warp_size);
+    std::vector<index_type> ref(warp_size);
+
+    std::iota(iota.begin(), iota.end(), index_type{0});
+
+    SECTION("warp_reduce") {
+        test_warp_reduce<<<1, warp_size>>>(buf.get());
+        CHECKED_CUDA_CALL(cudaMemcpy, out.data(), buf.get(), warp_size * sizeof(index_type),
+                cudaMemcpyDeviceToHost);
+        std::fill(ref.begin(), ref.end(), warp_size);
+        check_for_vector_equality(out, ref);
+    }
+
+    SECTION("warp_inclusive_scan") {
+        test_warp_inclusive_scan<<<1, warp_size>>>(buf.get());
+        CHECKED_CUDA_CALL(cudaMemcpy, out.data(), buf.get(), warp_size * sizeof(index_type),
+                cudaMemcpyDeviceToHost);
+        iter_inclusive_scan(iota.begin(), iota.end(), ref.begin(), plus<index_type>{});
+        check_for_vector_equality(out, ref);
+    }
+
+    SECTION("warp_exclusive_scan") {
+        test_warp_exclusive_scan<<<1, warp_size>>>(buf.get());
+        CHECKED_CUDA_CALL(cudaMemcpy, out.data(), buf.get(), warp_size * sizeof(index_type),
+                cudaMemcpyDeviceToHost);
+        iter_exclusive_scan(iota.begin(), iota.end(), ref.begin(), plus<index_type>{});
+        check_for_vector_equality(out, ref);
+    }
 }
 
 

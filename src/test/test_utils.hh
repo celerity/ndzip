@@ -78,9 +78,23 @@ void black_hole(T *datum) {
 template<typename InputIt, typename OutputIt, typename BinaryOperation = std::plus<>,
         typename T = typename std::iterator_traits<OutputIt>::value_type>
 constexpr OutputIt iter_inclusive_scan(InputIt first, InputIt last, OutputIt d_first,
-        BinaryOperation binary_op = {}, T init = {}) {
+                                       BinaryOperation binary_op = {}, T init = {}) {
     while (first != last) {
         *d_first = init = binary_op(init, *first);
+        ++first;
+        ++d_first;
+    }
+    return d_first;
+}
+
+// std::exclusive_scan is not available on all platforms
+template<typename InputIt, typename OutputIt, typename BinaryOperation = std::plus<>,
+        typename T = typename std::iterator_traits<OutputIt>::value_type>
+constexpr OutputIt iter_exclusive_scan(InputIt first, InputIt last, OutputIt d_first,
+        BinaryOperation binary_op = {}, T init = {}) {
+    while (first != last) {
+        *d_first = init;
+        init = binary_op(init, *first);
         ++first;
         ++d_first;
     }

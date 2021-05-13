@@ -126,14 +126,10 @@ __device__ T warp_exclusive_scan(T x, T init, BinaryOp binary_op) {
 
     for (size_t i = 1; i < warp_size; i *= 2) {
         size_t next_id = warp_thread_id - i;
-        if (i > warp_thread_id) {
-            next_id = 0;
-        }
+        if (i > warp_thread_id) { next_id = 0; }
 
         auto y = __shfl_sync(0xffff'ffff, x, next_id);
-        if (i <= warp_thread_id && warp_thread_id < warp_size) {
-            x = binary_op(x, y);
-        }
+        if (i <= warp_thread_id && warp_thread_id < warp_size) { x = binary_op(x, y); }
     }
 
     auto scan = __shfl_sync(0xffff'ffff, x, warp_thread_id - 1);
@@ -186,7 +182,8 @@ inline void cuda_check(cudaError_t err, const char *tag) {
     }
 }
 
-#define CHECKED_CUDA_CALL(f, ...) cuda_check(f(__VA_ARGS__), STRINGIZE(f) ": ")
+#define CHECKED_CUDA_CALL(f, ...) \
+    ::ndzip::detail::gpu_cuda::cuda_check(f(__VA_ARGS__), STRINGIZE(f) ": ")
 
 
 template<typename T>
