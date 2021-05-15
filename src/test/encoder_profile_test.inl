@@ -348,88 +348,6 @@ TEMPLATE_TEST_CASE(
     check_for_vector_equality(input_data, output_data);
 }
 
-
-template<typename, typename>
-class gpu_transform_test_kernel;
-
-template<typename Profile, typename Tag, typename CPUTransform, typename GPUTransform>
-static void test_cpu_gpu_transform_equality(
-        const CPUTransform &cpu_transform, const GPUTransform &gpu_transform) {
-    using bits_type = typename Profile::bits_type;
-    constexpr auto hc_size
-            = static_cast<index_type>(ipow(Profile::hypercube_side_length, Profile::dimensions));
-
-    const auto input = make_random_vector<bits_type>(hc_size);
-
-    auto cpu_transformed = input;
-    cpu_transform(cpu_transformed.data());
-
-    sycl::queue q{sycl::gpu_selector{}};
-    buffer<bits_type> io_buf{range<1>{hc_size}};
-
-    q.submit([&](handler &cgh) {
-        cgh.copy(input.data(), io_buf.template get_access<sam::discard_write>(cgh));
-    });
-    q.submit([&](handler &cgh) {
-        auto global_acc = io_buf.template get_access<sam::read_write>(cgh);
-        cgh.parallel<gpu_transform_test_kernel<Profile, Tag>>(range<1>{1},
-                range<1>{gpu::hypercube_group_size<Profile>},
-                [global_acc, hc_size = hc_size, gpu_transform](
-                        gpu_sycl::hypercube_group<Profile> grp, physical_item<1>) {
-                    gpu_sycl::hypercube_memory<Profile, Tag> lm{grp};
-                    gpu::hypercube_ptr<Profile, Tag> hc{lm()};
-                    grp.distribute_for(hc_size, [&](index_type i) { hc.store(i, global_acc[i]); });
-                    gpu_transform(grp, hc);
-                    grp.distribute_for(hc_size, [&](index_type i) { global_acc[i] = hc.load(i); });
-                });
-    });
-
-    std::vector<bits_type> gpu_transformed(hc_size);
-    q.submit([&](handler &cgh) {
-        cgh.copy(io_buf.template get_access<sam::read>(cgh), gpu_transformed.data());
-    });
-    q.wait();
-
-    check_for_vector_equality(gpu_transformed, cpu_transformed);
-}
-
-TEMPLATE_TEST_CASE("CPU and SYCL forward block transforms are identical", "[sycl]", ALL_PROFILES) {
-    using bits_type = typename TestType::bits_type;
-    test_cpu_gpu_transform_equality<TestType, gpu::forward_transform_tag>(
-            [](bits_type *block) {
-                detail::block_transform(
-                        block, TestType::dimensions, TestType::hypercube_side_length);
-            },
-            // Use lambda instead of the function name, otherwise a host function pointer will
-            // be passed into the device kernel
-            [](gpu_sycl::hypercube_group<TestType> grp,
-                    gpu::hypercube_ptr<TestType, gpu::forward_transform_tag> hc) {
-                const auto hc_size = ipow(TestType::hypercube_side_length, TestType::dimensions);
-                grp.distribute_for(
-                        hc_size, [&](index_type i) { hc.store(i, rotate_left_1(hc.load(i))); });
-                gpu_sycl::forward_block_transform(grp, hc);
-            });
-}
-
-TEMPLATE_TEST_CASE("CPU and SYCL inverse block transforms are identical", "[sycl]", ALL_PROFILES) {
-    using bits_type = typename TestType::bits_type;
-    test_cpu_gpu_transform_equality<TestType, gpu::inverse_transform_tag>(
-            [](bits_type *block) {
-                detail::inverse_block_transform(
-                        block, TestType::dimensions, TestType::hypercube_side_length);
-            },
-            // Use lambda instead of the function name, otherwise a host function pointer will
-            // be passed into the device kernel
-            [](gpu_sycl::hypercube_group<TestType> grp,
-                    gpu::hypercube_ptr<TestType, gpu::inverse_transform_tag> hc) {
-                gpu_sycl::inverse_block_transform<TestType>(grp, hc);
-                const auto hc_size = ipow(TestType::hypercube_side_length, TestType::dimensions);
-                grp.distribute_for(
-                        hc_size, [&](index_type i) { hc.store(i, rotate_right_1(hc.load(i))); });
-            });
-}
-
-
 template<typename>
 class gpu_hypercube_transpose_test_kernel;
 template<typename>
@@ -597,14 +515,32 @@ template<typename Profile>
 __global__ void hypercube_decode_test_kernel(
         const typename Profile::bits_type *stream, typename Profile::bits_type *output) {
     constexpr index_type hc_size = ipow(Profile::hypercube_side_length, Profile::dimensions);
+
     __shared__ gpu_cuda::hypercube_memory<Profile, gpu::inverse_transform_tag> lm;
     auto *lmp = lm;  // workaround for https://bugs.llvm.org/show_bug.cgi?id=50316
     gpu::hypercube_ptr<Profile, gpu::inverse_transform_tag> hc{lmp};
 
     auto block = gpu_cuda::hypercube_block<Profile>{};
     gpu_cuda::read_transposed_chunks<Profile>(block, hc, stream);
-    distribute_for(
-            hc_size, block, [&](index_type i) { output[i] = hc.load(i); });
+    __syncthreads();
+    distribute_for(hc_size, block, [&](index_type i) { output[i] = hc.load(i); });
+}
+
+template<typename Profile, typename Tag, typename CudaTransform>
+__global__ void
+test_gpu_transform(typename Profile::bits_type *buffer, CudaTransform cuda_transform) {
+    constexpr index_type hc_size = ipow(Profile::hypercube_side_length, Profile::dimensions);
+
+    __shared__ gpu_cuda::hypercube_memory<Profile, Tag> lm;
+    auto *lmp = lm;  // workaround for https://bugs.llvm.org/show_bug.cgi?id=50316
+    gpu::hypercube_ptr<Profile, Tag> hc{lmp};
+
+    auto block = gpu_cuda::hypercube_block<Profile>{};
+    distribute_for(hc_size, block, [&](index_type i) { hc.store(i, buffer[i]); });
+    __syncthreads();
+    cuda_transform(block, hc);
+    __syncthreads();
+    distribute_for(hc_size, block, [&](index_type i) { buffer[i] = hc.load(i); });
 }
 
 #endif
@@ -872,8 +808,8 @@ TEMPLATE_TEST_CASE("GPU hypercube decoding works", "[sycl][cuda][decode]", ALL_P
         CHECKED_CUDA_CALL(cudaMemcpy, stream_buf.get(), stream.data(),
                 stream.size() * sizeof(bits_type), cudaMemcpyHostToDevice);
 
-        hypercube_decode_test_kernel<TestType><<<1, (gpu::hypercube_group_size<TestType>)>>>(
-                stream_buf.get(), output_buf.get());
+        hypercube_decode_test_kernel<TestType>
+                <<<1, (gpu::hypercube_group_size<TestType>)>>>(stream_buf.get(), output_buf.get());
 
         std::vector<bits_type> output(hc_size);
         CHECKED_CUDA_CALL(cudaMemcpy, output.data(), output_buf.get(), hc_size * sizeof(bits_type),
@@ -881,5 +817,160 @@ TEMPLATE_TEST_CASE("GPU hypercube decoding works", "[sycl][cuda][decode]", ALL_P
 
         check_for_vector_equality(output, input);
     }
+#endif
+}
+
+
+template<typename, typename>
+class sycl_transform_test_kernel;
+
+template<typename Profile, typename Tag, typename CpuTransform
+#if NDZIP_HIPSYCL_SUPPORT
+        ,
+        typename SyclTransform
+#endif
+#if NDZIP_CUDA_SUPPORT
+        ,
+        typename CudaTransform
+#endif
+        >
+static void test_cpu_gpu_transform_equality(const CpuTransform &cpu_transform
+#if NDZIP_HIPSYCL_SUPPORT
+        ,
+        const SyclTransform &sycl_transform
+#endif
+#if NDZIP_CUDA_SUPPORT
+        ,
+        const CudaTransform &cuda_transform
+#endif
+) {
+    using bits_type = typename Profile::bits_type;
+    constexpr auto hc_size
+            = static_cast<index_type>(ipow(Profile::hypercube_side_length, Profile::dimensions));
+
+    const auto input = make_random_vector<bits_type>(hc_size);
+
+    auto cpu_transformed = input;
+    cpu_transform(cpu_transformed.data());
+
+#if NDZIP_HIPSYCL_SUPPORT
+    SECTION("with SYCL") {
+        sycl::queue sycl_q{sycl::gpu_selector{}};
+        buffer<bits_type> sycl_io_buf{range<1>{hc_size}};
+
+        sycl_q.submit([&](handler &cgh) {
+            cgh.copy(input.data(), sycl_io_buf.template get_access<sam::discard_write>(cgh));
+        });
+        sycl_q.submit([&](handler &cgh) {
+            auto global_acc = sycl_io_buf.template get_access<sam::read_write>(cgh);
+            cgh.parallel<sycl_transform_test_kernel<Profile, Tag>>(range<1>{1},
+                    range<1>{gpu::hypercube_group_size<Profile>},
+                    [global_acc, hc_size = hc_size, sycl_transform](
+                            gpu_sycl::hypercube_group<Profile> grp, physical_item<1>) {
+                        gpu_sycl::hypercube_memory<Profile, Tag> lm{grp};
+                        gpu::hypercube_ptr<Profile, Tag> hc{lm()};
+                        grp.distribute_for(
+                                hc_size, [&](index_type i) { hc.store(i, global_acc[i]); });
+                        sycl_transform(grp, hc);
+                        grp.distribute_for(
+                                hc_size, [&](index_type i) { global_acc[i] = hc.load(i); });
+                    });
+        });
+
+        std::vector<bits_type> sycl_transformed(hc_size);
+        sycl_q.submit([&](handler &cgh) {
+            cgh.copy(sycl_io_buf.template get_access<sam::read>(cgh), sycl_transformed.data());
+        });
+        sycl_q.wait();
+
+        check_for_vector_equality(sycl_transformed, cpu_transformed);
+    }
+#endif
+
+#if NDZIP_CUDA_SUPPORT
+    SECTION("with CUDA") {
+        gpu_cuda::cuda_buffer<bits_type> cuda_io_buf(hc_size);
+        CHECKED_CUDA_CALL(cudaMemcpy, cuda_io_buf.get(), input.data(),
+                input.size() * sizeof(bits_type), cudaMemcpyHostToDevice);
+        test_gpu_transform<Profile, Tag, CudaTransform>
+                <<<1, (gpu::hypercube_group_size<Profile>)>>>(cuda_io_buf.get(), cuda_transform);
+
+        std::vector<bits_type> cuda_transformed(hc_size);
+        CHECKED_CUDA_CALL(cudaMemcpy, cuda_transformed.data(), cuda_io_buf.get(),
+                cuda_transformed.size() * sizeof(bits_type), cudaMemcpyDeviceToHost);
+
+        check_for_vector_equality(cuda_transformed, cpu_transformed);
+    }
+#endif
+}
+
+TEMPLATE_TEST_CASE("CPU and GPU forward block transforms are identical", "[transform][sycl][cuda]",
+        ALL_PROFILES) {
+    using bits_type = typename TestType::bits_type;
+    test_cpu_gpu_transform_equality<TestType, gpu::forward_transform_tag>(
+            [](bits_type *block) {
+                detail::block_transform(
+                        block, TestType::dimensions, TestType::hypercube_side_length);
+            }
+#if NDZIP_HIPSYCL_SUPPORT
+            ,
+            // Use lambda instead of the function name, otherwise a host function pointer will
+            // be passed into the device kernel
+            [](gpu_sycl::hypercube_group<TestType> grp,
+                    gpu::hypercube_ptr<TestType, gpu::forward_transform_tag> hc) {
+                constexpr auto hc_size
+                        = ipow(TestType::hypercube_side_length, TestType::dimensions);
+                grp.distribute_for(
+                        hc_size, [&](index_type i) { hc.store(i, rotate_left_1(hc.load(i))); });
+                gpu_sycl::forward_block_transform(grp, hc);
+            }
+#endif
+#if NDZIP_CUDA_SUPPORT
+            ,
+            [] __device__(gpu_cuda::hypercube_block<TestType> block,
+                    gpu::hypercube_ptr<TestType, gpu::forward_transform_tag> hc) {
+                constexpr auto hc_size
+                        = ipow(TestType::hypercube_side_length, TestType::dimensions);
+                distribute_for(hc_size, block,
+                        [&](index_type i) { hc.store(i, rotate_left_1(hc.load(i))); });
+                __syncthreads();
+                gpu_cuda::forward_block_transform(block, hc);
+            }
+#endif
+    );
+}
+
+TEMPLATE_TEST_CASE("CPU and GPU inverse block transforms are identical", "[sycl][gpu][transform]",
+        ALL_PROFILES) {
+    using bits_type = typename TestType::bits_type;
+    test_cpu_gpu_transform_equality<TestType, gpu::inverse_transform_tag>(
+            [](bits_type *block) {
+                detail::inverse_block_transform(
+                        block, TestType::dimensions, TestType::hypercube_side_length);
+            }
+#if NDZIP_HIPSYCL_SUPPORT
+            ,
+            // Use lambda instead of the function name, otherwise a host function pointer will
+            // be passed into the device kernel
+            [](gpu_sycl::hypercube_group<TestType> grp,
+                    gpu::hypercube_ptr<TestType, gpu::inverse_transform_tag> hc) {
+                constexpr auto hc_size
+                        = ipow(TestType::hypercube_side_length, TestType::dimensions);
+                gpu_sycl::inverse_block_transform<TestType>(grp, hc);
+                grp.distribute_for(
+                        hc_size, [&](index_type i) { hc.store(i, rotate_right_1(hc.load(i))); });
+            }
+#endif
+#if NDZIP_CUDA_SUPPORT
+            ,
+            [] __device__(gpu_cuda::hypercube_block<TestType> block,
+                    gpu::hypercube_ptr<TestType, gpu::inverse_transform_tag> hc) {
+                constexpr auto hc_size
+                        = ipow(TestType::hypercube_side_length, TestType::dimensions);
+                gpu_cuda::inverse_block_transform<TestType>(block, hc);
+                __syncthreads();
+                distribute_for(hc_size, block,
+                        [&](index_type i) { hc.store(i, rotate_right_1(hc.load(i))); });
+            });
 #endif
 }
