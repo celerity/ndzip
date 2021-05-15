@@ -431,58 +431,6 @@ TEMPLATE_TEST_CASE("CPU and SYCL inverse block transforms are identical", "[sycl
 
 
 template<typename>
-class gpu_hypercube_decode_test_kernel;
-
-TEMPLATE_TEST_CASE("SYCL hypercube decoding works", "[sycl][decode]", ALL_PROFILES) {
-    using bits_type = typename TestType::bits_type;
-    const auto hc_size = ipow(TestType::hypercube_side_length, TestType::dimensions);
-
-    auto input = make_random_vector<bits_type>(hc_size);
-    for (index_type i = 0; i < hc_size; ++i) {
-        for (auto idx : {0, 12, 13, 29, static_cast<int>(bits_of<bits_type> - 2)}) {
-            input[i] &= ~(bits_type{1} << ((static_cast<unsigned>(idx) * (i / bits_of<bits_type>) )
-                                  % bits_of<bits_type>) );
-            input[floor(i, bits_of<bits_type>) + idx] = 0;
-        }
-    }
-
-    cpu::simd_aligned_buffer<bits_type> cpu_cube(input.size());
-    memcpy(cpu_cube.data(), input.data(), input.size() * sizeof(bits_type));
-    std::vector<bits_type> stream(hc_size * 2);
-    auto cpu_length_bytes = cpu::zero_bit_encode(
-            cpu_cube.data(), reinterpret_cast<std::byte *>(stream.data()), hc_size);
-    REQUIRE(cpu_length_bytes % sizeof(bits_type) == 0);
-
-    sycl::queue q{sycl::gpu_selector{}};
-
-    buffer<bits_type> stream_buf{stream.data(), range<1>{cpu_length_bytes / sizeof(bits_type)}};
-
-    buffer<bits_type> output_buf{range<1>{hc_size}};
-    q.submit([&](handler &cgh) {
-        auto stream_acc = stream_buf.template get_access<sam::read>(cgh);
-        auto output_acc = output_buf.template get_access<sam::discard_write>(cgh);
-        cgh.parallel<gpu_hypercube_decode_test_kernel<TestType>>(sycl::range{1},
-                sycl::range<1>{gpu::hypercube_group_size<TestType>},
-                [stream_acc, output_acc](
-                        gpu_sycl::hypercube_group<TestType> grp, sycl::physical_item<1>) {
-                    gpu_sycl::hypercube_memory<TestType, gpu::inverse_transform_tag> lm{grp};
-                    gpu::hypercube_ptr<TestType, gpu::inverse_transform_tag> hc{lm()};
-                    gpu_sycl::read_transposed_chunks<TestType>(grp, hc, stream_acc.get_pointer());
-                    grp.distribute_for(hc_size, [&](index_type i) { output_acc[i] = hc.load(i); });
-                });
-    });
-
-    std::vector<bits_type> output(hc_size);
-    q.submit([&](handler &cgh) {
-        cgh.copy(output_buf.template get_access<sam::read>(cgh), output.data());
-    });
-    q.wait();
-
-    check_for_vector_equality(output, input);
-}
-
-
-template<typename>
 class gpu_hypercube_transpose_test_kernel;
 template<typename>
 class gpu_hypercube_compact_test_kernel;
@@ -643,6 +591,20 @@ __global__ void test_compact_chunks(const typename Profile::bits_type *chunks,
         const index_type *offsets, index_type *length, typename Profile::bits_type *stream) {
     auto block = gpu_cuda::hypercube_block<Profile>{};
     gpu_cuda::compact_chunks<Profile>(block, chunks, offsets, length, stream);
+}
+
+template<typename Profile>
+__global__ void hypercube_decode_test_kernel(
+        const typename Profile::bits_type *stream, typename Profile::bits_type *output) {
+    constexpr index_type hc_size = ipow(Profile::hypercube_side_length, Profile::dimensions);
+    __shared__ gpu_cuda::hypercube_memory<Profile, gpu::inverse_transform_tag> lm;
+    auto *lmp = lm;  // workaround for https://bugs.llvm.org/show_bug.cgi?id=50316
+    gpu::hypercube_ptr<Profile, gpu::inverse_transform_tag> hc{lmp};
+
+    auto block = gpu_cuda::hypercube_block<Profile>{};
+    gpu_cuda::read_transposed_chunks<Profile>(block, hc, stream);
+    distribute_for(
+            hc_size, block, [&](index_type i) { output[i] = hc.load(i); });
 }
 
 #endif
@@ -826,9 +788,9 @@ TEMPLATE_TEST_CASE("Residual encodings from different encoders are equivalent",
         gpu_cuda::cuda_buffer<bits_type> stream_buf(hc_size * 2);
         cuda_fill(stream_buf.get(), bits_type{}, stream_buf.size());
 
-        test_compact_chunks<TestType><<<1, (gpu::hypercube_group_size<TestType>)>>>(
-                chunks_buf.get(), chunk_lengths_buf.get(), stream_length_buf.get(),
-                stream_buf.get());
+        test_compact_chunks<TestType>
+                <<<1, (gpu::hypercube_group_size<TestType>)>>>(chunks_buf.get(),
+                        chunk_lengths_buf.get(), stream_length_buf.get(), stream_buf.get());
 
         std::vector<bits_type> gpu_stream(stream_buf.size());
         CHECKED_CUDA_CALL(cudaMemcpy, gpu_stream.data(), stream_buf.get(),
@@ -836,11 +798,88 @@ TEMPLATE_TEST_CASE("Residual encodings from different encoders are equivalent",
 
         index_type gpu_stream_length;
         CHECKED_CUDA_CALL(cudaMemcpy, &gpu_stream_length, stream_length_buf.get(),
-                          sizeof(index_type), cudaMemcpyDeviceToHost);
+                sizeof(index_type), cudaMemcpyDeviceToHost);
         auto gpu_length_bytes = gpu_stream_length * sizeof(bits_type);
 
         CHECK(gpu_length_bytes == cpu_length_bytes);
         check_for_vector_equality(gpu_stream, cpu_stream);
+    }
+#endif
+}
+
+
+template<typename>
+class gpu_hypercube_decode_test_kernel;
+
+TEMPLATE_TEST_CASE("GPU hypercube decoding works", "[sycl][cuda][decode]", ALL_PROFILES) {
+    using bits_type = typename TestType::bits_type;
+    const auto hc_size = ipow(TestType::hypercube_side_length, TestType::dimensions);
+
+    auto input = make_random_vector<bits_type>(hc_size);
+    for (index_type i = 0; i < hc_size; ++i) {
+        for (auto idx : {0, 12, 13, 29, static_cast<int>(bits_of<bits_type> - 2)}) {
+            input[i] &= ~(bits_type{1} << ((static_cast<unsigned>(idx) * (i / bits_of<bits_type>) )
+                                  % bits_of<bits_type>) );
+            input[floor(i, bits_of<bits_type>) + idx] = 0;
+        }
+    }
+
+    cpu::simd_aligned_buffer<bits_type> cpu_cube(input.size());
+    memcpy(cpu_cube.data(), input.data(), input.size() * sizeof(bits_type));
+    std::vector<bits_type> stream(hc_size * 2);
+    auto cpu_length_bytes = cpu::zero_bit_encode(
+            cpu_cube.data(), reinterpret_cast<std::byte *>(stream.data()), hc_size);
+    REQUIRE(cpu_length_bytes % sizeof(bits_type) == 0);
+
+#if NDZIP_HIPSYCL_SUPPORT
+    SECTION("Using SYCL") {
+        sycl::queue q{sycl::gpu_selector{}};
+
+        buffer<bits_type> stream_buf{stream.data(), range<1>{cpu_length_bytes / sizeof(bits_type)}};
+
+        buffer<bits_type> output_buf{range<1>{hc_size}};
+        q.submit([&](handler &cgh) {
+            auto stream_acc = stream_buf.template get_access<sam::read>(cgh);
+            auto output_acc = output_buf.template get_access<sam::discard_write>(cgh);
+            cgh.parallel<gpu_hypercube_decode_test_kernel<TestType>>(sycl::range{1},
+                    sycl::range<1>{gpu::hypercube_group_size<TestType>},
+                    [stream_acc, output_acc](
+                            gpu_sycl::hypercube_group<TestType> grp, sycl::physical_item<1>) {
+                        gpu_sycl::hypercube_memory<TestType, gpu::inverse_transform_tag> lm{grp};
+                        gpu::hypercube_ptr<TestType, gpu::inverse_transform_tag> hc{lm()};
+                        gpu_sycl::read_transposed_chunks<TestType>(
+                                grp, hc, stream_acc.get_pointer());
+                        grp.distribute_for(
+                                hc_size, [&](index_type i) { output_acc[i] = hc.load(i); });
+                    });
+        });
+
+        std::vector<bits_type> output(hc_size);
+        q.submit([&](handler &cgh) {
+            cgh.copy(output_buf.template get_access<sam::read>(cgh), output.data());
+        });
+        q.wait();
+
+        check_for_vector_equality(output, input);
+    }
+#endif
+
+#if NDZIP_CUDA_SUPPORT
+    SECTION("Using CUDA") {
+        gpu_cuda::cuda_buffer<bits_type> stream_buf(stream.size());
+        gpu_cuda::cuda_buffer<bits_type> output_buf(hc_size);
+
+        CHECKED_CUDA_CALL(cudaMemcpy, stream_buf.get(), stream.data(),
+                stream.size() * sizeof(bits_type), cudaMemcpyHostToDevice);
+
+        hypercube_decode_test_kernel<TestType><<<1, (gpu::hypercube_group_size<TestType>)>>>(
+                stream_buf.get(), output_buf.get());
+
+        std::vector<bits_type> output(hc_size);
+        CHECKED_CUDA_CALL(cudaMemcpy, output.data(), output_buf.get(), hc_size * sizeof(bits_type),
+                cudaMemcpyDeviceToHost);
+
+        check_for_vector_equality(output, input);
     }
 #endif
 }
