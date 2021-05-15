@@ -16,7 +16,7 @@ using namespace ndzip::detail::gpu;
 
 template<typename T, index_type N>
 struct vec {
-    T elements[N];
+    alignas(sizeof(T) * N) T elements[N]{{}};
 
     __device__ T &operator[](index_type i) { return elements[i]; }
     __device__ const T &operator[](index_type i) const { return elements[i]; }

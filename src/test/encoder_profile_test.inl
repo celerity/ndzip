@@ -638,6 +638,13 @@ __global__ void encode_hypercube_kernel(const typename Profile::bits_type *input
     if (blockIdx.x == 0 && threadIdx.x == 0) { chunk_lengths[0] = 0; }
 }
 
+template<typename Profile>
+__global__ void test_compact_chunks(const typename Profile::bits_type *chunks,
+        const index_type *offsets, index_type *length, typename Profile::bits_type *stream) {
+    auto block = gpu_cuda::hypercube_block<Profile>{};
+    gpu_cuda::compact_chunks<Profile>(block, chunks, offsets, length, stream);
+}
+
 #endif
 
 
@@ -706,6 +713,7 @@ TEMPLATE_TEST_CASE("Residual encodings from different encoders are equivalent",
 
     const auto num_chunks = 1 + hc_size / col_chunk_size;
 
+#if NDZIP_HIPSYCL_SUPPORT
     SECTION("SYCL vs CPU") {
         sycl::queue q{sycl::gpu_selector{}};
 
@@ -740,13 +748,13 @@ TEMPLATE_TEST_CASE("Residual encodings from different encoders are equivalent",
 
         std::vector<bits_type> chunks(chunks_buf.get_range().get(0));
         q.submit([&](handler &cgh) {
-          cgh.copy(chunks_buf.template get_access<sam::read>(cgh), chunks.data());
-        }).wait();
+             cgh.copy(chunks_buf.template get_access<sam::read>(cgh), chunks.data());
+         }).wait();
 
         std::vector<index_type> chunk_lengths(chunk_lengths_buf.get_range().get(0));
         q.submit([&](handler &cgh) {
-          cgh.copy(chunk_lengths_buf.get_access<sam::read>(cgh), chunk_lengths.data());
-        }).wait();
+             cgh.copy(chunk_lengths_buf.get_access<sam::read>(cgh), chunk_lengths.data());
+         }).wait();
         gpu_sycl::hierarchical_inclusive_scan(q, chunk_lengths_buf, sycl::plus<index_type>{});
 
         buffer<bits_type> stream_buf(range<1>{hc_size * 2});
@@ -786,7 +794,9 @@ TEMPLATE_TEST_CASE("Residual encodings from different encoders are equivalent",
         CHECK(gpu_length_bytes == cpu_length_bytes);
         check_for_vector_equality(gpu_stream, cpu_stream);
     }
+#endif
 
+#if NDZIP_CUDA_SUPPORT
     SECTION("CUDA vs CPU") {
         gpu_cuda::cuda_buffer<bits_type> input_buf(hc_size);
         gpu_cuda::cuda_buffer<bits_type> chunks_buf(hc_total_chunks_size);
@@ -796,34 +806,41 @@ TEMPLATE_TEST_CASE("Residual encodings from different encoders are equivalent",
         CHECKED_CUDA_CALL(cudaMemcpy, input_buf.get(), input.data(), hc_size * sizeof(bits_type),
                 cudaMemcpyHostToDevice);
 
+        cuda_fill(chunks_buf.get(), bits_type{}, chunks_buf.size());
+
         encode_hypercube_kernel<TestType><<<1, (gpu::hypercube_group_size<TestType>)>>>(
                 input_buf.get(), chunks_buf.get(), chunk_lengths_buf.get());
 
         std::vector<bits_type> chunks(chunks_buf.size());
         CHECKED_CUDA_CALL(cudaMemcpy, chunks.data(), chunks_buf.get(),
-                          chunks_buf.size() * sizeof(bits_type), cudaMemcpyDeviceToHost);
+                chunks_buf.size() * sizeof(bits_type), cudaMemcpyDeviceToHost);
 
         std::vector<index_type> chunk_lengths(chunk_lengths_buf.size());
         CHECKED_CUDA_CALL(cudaMemcpy, chunk_lengths.data(), chunk_lengths_buf.get(),
-                          chunk_lengths_buf.size() * sizeof(index_type), cudaMemcpyDeviceToHost);
+                chunk_lengths_buf.size() * sizeof(index_type), cudaMemcpyDeviceToHost);
 
         gpu_cuda::hierarchical_inclusive_scan(
                 chunk_lengths_buf.get(), chunk_lengths_buf.size(), gpu_cuda::plus<index_type>{});
 
+        gpu_cuda::cuda_buffer<index_type> stream_length_buf(1);
         gpu_cuda::cuda_buffer<bits_type> stream_buf(hc_size * 2);
         cuda_fill(stream_buf.get(), bits_type{}, stream_buf.size());
 
-        gpu_cuda::compact_all_chunks<TestType><<<1, (gpu::hypercube_group_size<TestType>)>>>(
-                chunks_buf.get(), chunk_lengths_buf.get(), stream_buf.get());
+        test_compact_chunks<TestType><<<1, (gpu::hypercube_group_size<TestType>)>>>(
+                chunks_buf.get(), chunk_lengths_buf.get(), stream_length_buf.get(),
+                stream_buf.get());
 
         std::vector<bits_type> gpu_stream(stream_buf.size());
         CHECKED_CUDA_CALL(cudaMemcpy, gpu_stream.data(), stream_buf.get(),
                 stream_buf.size() * sizeof(bits_type), cudaMemcpyDeviceToHost);
 
-        stream<TestType> stream{1, gpu_stream.data()};
-        auto gpu_length_bytes = stream.hypercube_size(0) * sizeof(bits_type);
+        index_type gpu_stream_length;
+        CHECKED_CUDA_CALL(cudaMemcpy, &gpu_stream_length, stream_length_buf.get(),
+                          sizeof(index_type), cudaMemcpyDeviceToHost);
+        auto gpu_length_bytes = gpu_stream_length * sizeof(bits_type);
 
         CHECK(gpu_length_bytes == cpu_length_bytes);
         check_for_vector_equality(gpu_stream, cpu_stream);
     }
+#endif
 }
