@@ -974,3 +974,103 @@ TEMPLATE_TEST_CASE("CPU and GPU inverse block transforms are identical", "[sycl]
             });
 #endif
 }
+
+TEMPLATE_TEST_CASE("Single block compresses identically on all encoders",
+        "[omp][sycl][gpu][compress]", ALL_PROFILES) {
+    using data_type = typename TestType::data_type;
+    using bits_type = typename TestType::bits_type;
+    constexpr auto dimensions = TestType::dimensions;
+
+    const auto size = extent<dimensions>::broadcast(TestType::hypercube_side_length);
+    const auto input = make_random_vector<data_type>(num_elements(size));
+    const auto input_slice = slice{input.data(), size};
+    const auto max_output_words
+            = div_ceil(compressed_size_bound<data_type>(size), sizeof(data_type));
+
+    std::vector<bits_type> cpu_output(max_output_words);
+    auto cpu_output_bytes
+            = cpu_encoder<data_type, dimensions>{}.compress(input_slice, cpu_output.data());
+    cpu_output.resize(cpu_output_bytes / sizeof(data_type));
+
+#if NDZIP_OPENMP_SUPPORT
+    SECTION("Multi-threaded vs single-threaded CPU") {
+        std::vector<bits_type> mt_cpu_output(max_output_words);
+        auto mt_cpu_output_bytes = mt_cpu_encoder<data_type, dimensions>{}.compress(
+                input_slice, mt_cpu_output.data());
+        mt_cpu_output.resize(mt_cpu_output_bytes / sizeof(data_type));
+        check_for_vector_equality(mt_cpu_output, cpu_output);
+    }
+#endif
+
+#if NDZIP_HIPSYCL_SUPPORT
+    SECTION("SYCL vs CPU") {
+        std::vector<bits_type> sycl_output(max_output_words);
+        auto sycl_output_bytes
+                = sycl_encoder<data_type, dimensions>{}.compress(input_slice, sycl_output.data());
+        sycl_output.resize(sycl_output_bytes / sizeof(data_type));
+        check_for_vector_equality(sycl_output, cpu_output);
+    }
+#endif
+
+#if NDZIP_CUDA_SUPPORT
+    SECTION("CUDA vs CPU") {
+        std::vector<bits_type> cuda_output(max_output_words);
+        auto cuda_output_bytes
+                = cuda_encoder<data_type, dimensions>{}.compress(input_slice, cuda_output.data());
+        cuda_output.resize(cuda_output_bytes / sizeof(data_type));
+        check_for_vector_equality(cuda_output, cpu_output);
+    }
+#endif
+}
+
+TEMPLATE_TEST_CASE("Single block decompresses correctly on all encoders",
+        "[omp][sycl][gpu][decompress]", ALL_PROFILES) {
+    using data_type = typename TestType::data_type;
+    using bits_type = typename TestType::bits_type;
+    constexpr auto dimensions = TestType::dimensions;
+
+    const auto size = extent<dimensions>::broadcast(TestType::hypercube_side_length);
+    const auto input = make_random_vector<data_type>(num_elements(size));
+    const auto input_slice = slice{input.data(), size};
+    const auto max_output_words
+            = div_ceil(compressed_size_bound<data_type>(size), sizeof(data_type));
+
+    std::vector<bits_type> compressed(max_output_words);
+    auto compressed_bytes
+            = cpu_encoder<data_type, dimensions>{}.compress(input_slice, compressed.data());
+    compressed.resize(compressed_bytes / sizeof(data_type));
+
+    SECTION("On single-threaded CPU") {
+        std::vector<data_type> cpu_output(num_elements(size));
+        cpu_encoder<data_type, dimensions>{}.decompress(
+                compressed.data(), compressed.size(), slice{cpu_output.data(), size});
+        check_for_vector_equality(cpu_output, input);
+    }
+
+#if NDZIP_OPENMP_SUPPORT
+    SECTION("On multi-threaded CPU") {
+        std::vector<data_type> mt_cpu_output(num_elements(size));
+        mt_cpu_encoder<data_type, dimensions>{}.decompress(
+                compressed.data(), compressed.size(), slice{mt_cpu_output.data(), size});
+        check_for_vector_equality(mt_cpu_output, input);
+    }
+#endif
+
+#if NDZIP_HIPSYCL_SUPPORT
+    SECTION("On SYCL") {
+        std::vector<data_type> sycl_output(num_elements(size));
+        sycl_encoder<data_type, dimensions>{}.decompress(
+                compressed.data(), compressed.size(), slice{sycl_output.data(), size});
+        check_for_vector_equality(sycl_output, input);
+    }
+#endif
+
+#if NDZIP_CUDA_SUPPORT
+    SECTION("On CUDA") {
+        std::vector<data_type> cuda_output(num_elements(size));
+        cuda_encoder<data_type, dimensions>{}.decompress(
+                compressed.data(), compressed.size(), slice{cuda_output.data(), size});
+        check_for_vector_equality(cuda_output, input);
+    }
+#endif
+}

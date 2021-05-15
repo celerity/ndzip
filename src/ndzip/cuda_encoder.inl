@@ -61,12 +61,12 @@ __device__ void load_hypercube(hypercube_block<Profile> block, index_type hc_ind
 }
 
 template<typename Profile>
-__device__ void store_hypercube(hypercube_block<Profile> grp, index_type hc_index,
+__device__ void store_hypercube(hypercube_block<Profile> block, index_type hc_index,
         slice<typename Profile::data_type, Profile::dimensions> data,
         hypercube_ptr<Profile, inverse_transform_tag> hc) {
     using data_type = typename Profile::data_type;
     for_hypercube_indices<Profile>(
-            grp, hc_index, data.size(), [&](index_type global_idx, index_type local_idx) {
+            block, hc_index, data.size(), [&](index_type global_idx, index_type local_idx) {
                 data.data()[global_idx] = bit_cast<data_type>(rotate_right_1(hc.load(local_idx)));
             });
 }
@@ -602,8 +602,7 @@ size_t ndzip::cuda_encoder<T, Dims>::decompress(const void *raw_stream, size_t b
     cuda_buffer<bits_type> stream_buf{static_cast<index_type>(div_ceil(bytes, sizeof(bits_type)))};
     cuda_buffer<data_type> data_buf{num_elements(data.size())};
 
-    CHECKED_CUDA_CALL(cudaMemcpy, stream_buf.get(), raw_stream,
-            stream_buf.size() * sizeof(bits_type), cudaMemcpyHostToDevice);
+    CHECKED_CUDA_CALL(cudaMemcpy, stream_buf.get(), raw_stream, bytes, cudaMemcpyHostToDevice);
 
     decompress_block<profile><<<num_hypercubes, (hypercube_group_size<profile>)>>>(
             stream_buf.get(), slice{data_buf.get(), data.size()});
