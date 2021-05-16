@@ -296,7 +296,7 @@ class border_map {
     }
 
     NDZIP_UNIVERSAL constexpr extent<dimensions> operator[](index_type i) const {
-        return index<dimensions>(i);
+        return index(dim_tag<dimensions>{}, i);
     }
 
     NDZIP_UNIVERSAL constexpr index_type size() const { return _border[0]; }
@@ -307,16 +307,16 @@ class border_map {
     extent<dimensions> _edge;
     extent<dimensions> _stride;
 
-    template<unsigned D>
-    NDZIP_UNIVERSAL constexpr extent<D> index(index_type i) const;
+    // We cannot write index() as a specialized template function because NVCC doesn't allow
+    // specializations inside a class definition and border_map is a template itself, so
+    // specialization cannot happen outside either. Instead we do overload selection by tag type.
+    template<unsigned D> using dim_tag = std::integral_constant<unsigned, D>;
 
-    template<>
-    NDZIP_UNIVERSAL constexpr extent<1> index<1>(index_type i) const {
+    NDZIP_UNIVERSAL constexpr extent<1> index(dim_tag<1>, index_type i) const {
         return {_edge[dimensions - 1] + i};
     }
 
-    template<>
-    NDZIP_UNIVERSAL constexpr extent<2> index<2>(index_type i) const {
+    NDZIP_UNIVERSAL constexpr extent<2> index(dim_tag<2>, index_type i) const {
         if (i >= _edge[dimensions - 2]) {
             i -= _edge[dimensions - 2];
             auto y = _inner[dimensions - 2] + i / _stride[dimensions - 2];
@@ -324,13 +324,12 @@ class border_map {
             return {y, x};
         } else {
             auto y = i / _border[dimensions - 1];
-            auto e_x = index<1>(i % _border[dimensions - 1]);
+            auto e_x = index(dim_tag<1>{}, i % _border[dimensions - 1]);
             return {y, e_x[0]};
         }
     }
 
-    template<>
-    NDZIP_UNIVERSAL constexpr extent<3> index<3>(index_type i) const {
+    NDZIP_UNIVERSAL constexpr extent<3> index(dim_tag<3>, index_type i) const {
         if (i >= _edge[dimensions - 3]) {
             i -= _edge[dimensions - 3];
             auto z = _inner[dimensions - 3] + i / _stride[dimensions - 3];
@@ -340,7 +339,7 @@ class border_map {
             return {z, y, x};
         } else {
             auto z = i / _border[dimensions - 2];
-            auto e_yx = index<2>(i % _border[dimensions - 2]);
+            auto e_yx = index(dim_tag<2>{}, i % _border[dimensions - 2]);
             return {z, e_yx[0], e_yx[1]};
         }
     }

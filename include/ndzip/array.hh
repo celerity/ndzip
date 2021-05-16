@@ -6,7 +6,7 @@
 #include <type_traits>
 
 
-#ifdef __CUDA__
+#if defined(__CUDA__) || defined(__NVCC__)
 #define NDZIP_UNIVERSAL __host__ __device__
 #else
 #define NDZIP_UNIVERSAL
@@ -24,7 +24,7 @@ class extent {
     using const_iterator = const index_type *;
     using iterator = index_type *;
 
-    NDZIP_UNIVERSAL constexpr extent() noexcept = default;
+    constexpr extent() noexcept = default;
 
     template<typename... Init,
             std::enable_if_t<((sizeof...(Init) == Dims) && ...
@@ -174,11 +174,6 @@ class slice {
   public:
     NDZIP_UNIVERSAL explicit slice(T *data, extent<Dims> size) : _data(data), _size(size) {}
 
-    template<typename U,
-            std::enable_if_t<std::is_const_v<T> && std::is_same_v<std::remove_const_t<T>, U>,
-                    int> = 0>
-    NDZIP_UNIVERSAL slice(slice<U, Dims> other) : _data(other._data), _size(other._size) {}
-
     NDZIP_UNIVERSAL const extent<Dims> &size() const { return _size; }
 
     NDZIP_UNIVERSAL T *data() const { return _data; }
@@ -190,6 +185,17 @@ class slice {
     NDZIP_UNIVERSAL T &operator[](const ndzip::extent<Dims> &pos) const {
         return _data[linear_index(pos)];
     }
+
+#ifdef __NVCC__
+#pragma diag_suppress 554  //  will not be called if T == const T
+#endif
+    // NVCC breaks on a SFINAE'd constructor slice(slice<U, Dims>) with U == std::remove_const_t<T>
+    NDZIP_UNIVERSAL operator slice<const T, Dims>() const {
+        return slice<const T, Dims>{_data, _size};
+    }
+#ifdef __NVCC__
+#pragma diag_default 554
+#endif
 
   private:
     T *_data;

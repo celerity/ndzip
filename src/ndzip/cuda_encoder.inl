@@ -468,10 +468,6 @@ __global__ void compact_border(slice<const typename Profile::data_type, Profile:
         index_type num_header_words, border_map<Profile> border_map) {
     using bits_type = typename Profile::bits_type;
 
-    constexpr index_type hc_size = ipow(Profile::hypercube_side_length, Profile::dimensions);
-    constexpr index_type col_chunk_size = bits_of<bits_type>;
-    constexpr index_type chunks_per_hc = 1 /* header */ + hc_size / col_chunk_size;
-
     auto border_offset = num_header_words + *num_compressed_words;
     auto i = static_cast<index_type>(blockIdx.x * hypercube_group_size<Profile> + threadIdx.x);
     if (i < border_map.size()) {

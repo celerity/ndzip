@@ -315,7 +315,7 @@ struct ndzip_encoder_factory<ndzip::mt_cpu_encoder<Data, Dims>> {
     }
 };
 
-#if NDZIP_GPU_SUPPORT
+#if NDZIP_HIPSYCL_SUPPORT
 
 template<typename Data, unsigned Dims>
 struct ndzip_encoder_factory<ndzip::sycl_encoder<Data, Dims>> {

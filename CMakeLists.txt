@@ -77,15 +77,29 @@ endif ()
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CUDA_STANDARD 17)
 
-set(NDZIP_COMPILE_FLAGS
-    -Wall -Wextra -Werror=return-type -Werror=init-self -Werror=undef -Wno-attributes -Wimplicit-fallthrough
-    # Force colored warnings in Ninja's output, if the compiler has -fdiagnostics-color support.
-    # Rationale in https://github.com/ninja-build/ninja/issues/814
-    $<$<STREQUAL:${CMAKE_GENERATOR},Ninja>:-fdiagnostics-color=always>)
+set(NDZIP_COMPILE_FLAGS -Wall -Wextra -Wno-attributes -Wimplicit-fallthrough)
+set(NDZIP_CXX_FLAGS ${NDZIP_COMPILE_FLAGS} -Werror=return-type -Werror=init-self -Werror=undef)
 
-# Aggressive inlining avoids GPU call stack allocation == global memory access bottleneck
-set(NDZIP_HIPSYCL_COMPILE_FLAGS -mllvm -inline-threshold=2000 -Xarch_device -DNDEBUG=1)
-set(NDZIP_CUDA_COMPILE_FLAGS -Xarch_device -DNDEBUG=1)
+if (NDZIP_USE_HIPSYCL)
+    # Aggressive inlining avoids GPU call stack allocation == global memory access bottleneck
+    set(NDZIP_HIPSYCL_FLAGS ${NDZIP_COMPILE_FLAGS} -mllvm -inline-threshold=2000 -Xarch_device -DNDEBUG=1)
+endif()
+
+if (NDZIP_USE_CUDA)
+    if (CMAKE_CUDA_COMPILER_ID STREQUAL NVIDIA)
+        set(NDZIP_CUDA_FLAGS ${NDZIP_COMPILE_FLAGS}
+            --extended-lambda  # Allow [] __device__ () lambda syntax
+            --expt-relaxed-constexpr # Allow calling constexpr __host__ in __device__ constexprs
+            # All diagnostics disabled here were false-positives
+            -Xcudafe --display_error_number
+            -Xcudafe --diag_suppress=2473 # always_inline is ignored on non-inline functions
+            -Xcudafe --diag_suppress=186 # pointless comparison of unsigned integer with zero
+            -Xcudafe --diag_suppress=940 # missing return statement at end of non-void function
+        )
+    else ()
+        set(NDZIP_CUDA_FLAGS ${NDZIP_CXX_FLAGS})
+    endif ()
+endif ()
 
 set(NDZIP_PROFILE_CONFIGURATIONS
     VARIABLE DATA_TYPE VALUES float double
@@ -113,7 +127,7 @@ target_compile_definitions(ndzip PUBLIC
     -DNDZIP_CUDA_SUPPORT=$<BOOL:${NDZIP_USE_CUDA}>
     -DNDZIP_OPENMP_SUPPORT=$<BOOL:${OpenMP_FOUND}>
 )
-target_compile_options(ndzip PRIVATE ${NDZIP_COMPILE_FLAGS})
+target_compile_options(ndzip PRIVATE ${NDZIP_CXX_FLAGS})
 
 if (NDZIP_USE_OPENMP)
     target_link_libraries(ndzip PRIVATE OpenMP::OpenMP_CXX Boost::thread)
@@ -129,7 +143,7 @@ if (NDZIP_USE_HIPSYCL)
         ${NDZIP_PROFILE_CONFIGURATIONS}
     )
     target_include_directories(ndzip-sycl PUBLIC include)
-    target_compile_options(ndzip-sycl PRIVATE ${NDZIP_COMPILE_FLAGS} ${NDZIP_HIPSYCL_COMPILE_FLAGS})
+    target_compile_options(ndzip-sycl PRIVATE ${NDZIP_HIPSYCL_FLAGS})
     add_sycl_to_target(TARGET ndzip-sycl)
     target_link_libraries(ndzip-sycl PUBLIC ndzip)
 endif ()
@@ -144,7 +158,10 @@ if (NDZIP_USE_CUDA)
         ${NDZIP_PROFILE_CONFIGURATIONS}
     )
     target_include_directories(ndzip-cuda PUBLIC include)
-    target_compile_options(ndzip-cuda PRIVATE ${NDZIP_COMPILE_FLAGS} ${NDZIP_CUDA_COMPILE_FLAGS})
+    # target_compile_options and the COMPILE_OPTIONS property will de-duplicate flags which breaks
+    # -Xcudafe <arg>. Use (deprecated) COMPILE_FLAGS instead.
+    list(JOIN NDZIP_CUDA_FLAGS " " NDZIP_CUDA_FLAGS_STRING)
+    set_target_properties(ndzip-cuda PROPERTIES COMPILE_FLAGS "${NDZIP_CUDA_FLAGS_STRING}")
     target_link_libraries(ndzip-cuda PUBLIC ndzip)
 endif ()
 
@@ -159,7 +176,7 @@ add_executable(compress
     src/compress/compress.cc
 )
 
-target_compile_options(compress PRIVATE ${NDZIP_COMPILE_FLAGS})
+target_compile_options(compress PRIVATE ${NDZIP_CXX_FLAGS})
 target_link_libraries(compress PRIVATE ndzip io Boost::program_options)
 if (NDZIP_USE_HIPSYCL)
     target_link_libraries(compress PRIVATE ndzip-sycl)
@@ -175,14 +192,31 @@ if (NDZIP_BUILD_TEST AND Catch2_FOUND)
         src/test/test_main.cc
         src/test/encoder_generic_test.cc
         src/test/encoder_profile_test.inl)
+
     target_split_configured_sources(encoder_test PRIVATE
         GENERATE encoder_profile_test.cc FROM src/test/encoder_profile_test.inl
         ${NDZIP_PROFILE_CONFIGURATIONS}
         )
+
+    if (NDZIP_USE_CUDA AND NOT NDZIP_USE_HIPSYCL)
+        # TODO hack: SYCL / CUDA versions of encoder_test must be compiled separately
+        #   to allow the CUDA part to optionally use NVCC instead of Clang. This only
+        #   works with NVCC if SYCL is disabled.
+        get_target_property(ENCODER_TEST_SOURCES encoder_test SOURCES)
+        foreach (source in ${ENCODER_TEST_SOURCES})
+            if (source MATCHES ".*/encoder_profile_test.*\\.cc")
+                set_source_files_properties("${source}" PROPERTIES
+                    LANGUAGE CUDA
+                    COMPILE_FLAGS "${NDZIP_CUDA_FLAGS_STRING}")
+            endif ()
+        endforeach ()
+    endif()
+
     target_include_directories(encoder_test PRIVATE src)
-    target_compile_options(encoder_test PRIVATE ${NDZIP_COMPILE_FLAGS} ${NDZIP_HIPSYCL_COMPILE_FLAGS})
     target_link_libraries(encoder_test PRIVATE ndzip Catch2::Catch2 Boost::thread)
+
     if (NDZIP_USE_HIPSYCL)
+        target_compile_options(encoder_test PRIVATE ${NDZIP_HIPSYCL_FLAGS})
         add_sycl_to_target(TARGET encoder_test)
         target_link_libraries(encoder_test PRIVATE ndzip-sycl)
     endif ()
@@ -196,8 +230,7 @@ if (NDZIP_BUILD_TEST AND Catch2_FOUND)
             src/test/test_main.cc
             src/test/sycl_bits_test.cc)
         target_include_directories(sycl_bits_test PRIVATE src include)
-        target_compile_options(sycl_bits_test PRIVATE
-            ${NDZIP_COMPILE_FLAGS} -Werror=pass-failed ${NDZIP_HIPSYCL_COMPILE_FLAGS})
+        target_compile_options(sycl_bits_test PRIVATE ${NDZIP_HIPSYCL_FLAGS})
         target_link_libraries(sycl_bits_test PRIVATE Catch2::Catch2)
         add_sycl_to_target(TARGET sycl_bits_test)
 
@@ -211,7 +244,7 @@ if (NDZIP_BUILD_TEST AND Catch2_FOUND)
                 ${NDZIP_PROFILE_CONFIGURATIONS}
                 )
         target_include_directories(sycl_ubench PRIVATE src include)
-        target_compile_options(sycl_ubench PRIVATE ${NDZIP_COMPILE_FLAGS} ${NDZIP_HIPSYCL_COMPILE_FLAGS})
+        target_compile_options(sycl_ubench PRIVATE ${NDZIP_HIPSYCL_FLAGS})
         target_link_libraries(sycl_ubench PRIVATE ndzip-sycl Catch2::Catch2)
         add_sycl_to_target(TARGET sycl_ubench)
     endif ()
@@ -222,8 +255,8 @@ if (NDZIP_BUILD_TEST AND Catch2_FOUND)
                 src/test/test_main.cc
                 src/test/cuda_bits_test.cu)
         target_include_directories(cuda_bits_test PRIVATE src include)
-        target_compile_options(cuda_bits_test PRIVATE
-                ${NDZIP_COMPILE_FLAGS} -Werror=pass-failed ${NDZIP_CUDA_COMPILE_FLAGS})
+        set_source_files_properties(src/test/cuda_bits_test.cu
+                PROPERTIES COMPILE_FLAGS "${NDZIP_CUDA_FLAGS_STRING}")
         target_link_libraries(cuda_bits_test PRIVATE ndzip-cuda Catch2::Catch2)
     endif ()
 endif ()
@@ -266,7 +299,7 @@ endif ()
 
 if (NDZIP_BUILD_BENCHMARK)
     add_executable(benchmark src/benchmark/benchmark.cc)
-    target_compile_options(benchmark PRIVATE ${NDZIP_COMPILE_FLAGS})
+    target_compile_options(benchmark PRIVATE ${NDZIP_CXX_FLAGS})
     target_link_libraries(benchmark PRIVATE ndzip io Boost::program_options)
     if (STD_CPP_FS)
         target_link_libraries(benchmark PRIVATE ${STD_CPP_FS})

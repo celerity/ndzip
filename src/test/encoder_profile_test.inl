@@ -353,6 +353,9 @@ class gpu_hypercube_transpose_test_kernel;
 template<typename>
 class gpu_hypercube_compact_test_kernel;
 
+template<typename, typename>
+class sycl_transform_test_kernel;
+
 #endif
 
 
@@ -547,7 +550,7 @@ test_gpu_transform(typename Profile::bits_type *buffer, CudaTransform cuda_trans
 
 
 TEMPLATE_TEST_CASE("Flattening of hypercubes is identical between encoders", "[cuda][sycl][load]",
-        (sycl_encoder<DATA_TYPE, DIMENSIONS>) ) {
+        ALL_PROFILES) {
     using data_type = typename TestType::data_type;
     using profile = detail::profile<data_type, TestType::dimensions>;
     using bits_type = typename profile::bits_type;
@@ -696,10 +699,12 @@ TEMPLATE_TEST_CASE("Residual encodings from different encoders are equivalent",
 
 #if NDZIP_CUDA_SUPPORT
     SECTION("CUDA vs CPU") {
+        (void) chunks_per_hc; // unused when compiling only for CUDA
+
         gpu_cuda::cuda_buffer<bits_type> input_buf(hc_size);
         gpu_cuda::cuda_buffer<bits_type> chunks_buf(hc_total_chunks_size);
         gpu_cuda::cuda_buffer<index_type> chunk_lengths_buf(
-                ceil(1 + num_chunks, gpu_sycl::hierarchical_inclusive_scan_granularity));
+                ceil(1 + num_chunks, gpu_cuda::hierarchical_inclusive_scan_granularity));
 
         CHECKED_CUDA_CALL(cudaMemcpy, input_buf.get(), input.data(), hc_size * sizeof(bits_type),
                 cudaMemcpyHostToDevice);
@@ -820,9 +825,6 @@ TEMPLATE_TEST_CASE("GPU hypercube decoding works", "[sycl][cuda][decode]", ALL_P
 #endif
 }
 
-
-template<typename, typename>
-class sycl_transform_test_kernel;
 
 template<typename Profile, typename Tag, typename CpuTransform
 #if NDZIP_HIPSYCL_SUPPORT

@@ -476,15 +476,35 @@ NDZIP_UNIVERSAL constexpr void static_check() {
 
 
 NDZIP_UNIVERSAL inline unsigned popcount(unsigned int x) {
+#ifdef __CUDA_ARCH__
+    // NVCC regards __builtin_popcount as a __host__ function
+    return __popc(static_cast<int>(x));
+#else
     return __builtin_popcount(x);
+#endif
 }
 
 NDZIP_UNIVERSAL inline unsigned popcount(unsigned long x) {
+#ifdef __CUDA_ARCH__
+    // NVCC regards __builtin_popcountl as a __host__ function
+    if (sizeof(unsigned long) == sizeof(unsigned int)) {
+        return __popc(static_cast<int>(x));
+    } else {
+        static_assert(sizeof(unsigned long) == sizeof(unsigned long long));
+        return __popcll(static_cast<long long>(x));
+    }
+#else
     return __builtin_popcountl(x);
+#endif
 }
 
 NDZIP_UNIVERSAL inline unsigned popcount(unsigned long long x) {
+#ifdef __CUDA_ARCH__
+    // NVCC regards __builtin_popcountll as a __host__ function
+    return __popcll(static_cast<long long>(x));
+#else
     return __builtin_popcountll(x);
+#endif
 }
 
 
