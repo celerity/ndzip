@@ -614,8 +614,7 @@ TEMPLATE_TEST_CASE("Residual encodings from different encoders are equivalent",
 
     const auto num_chunks = 1 + hc_size / col_chunk_size;
     const auto chunk_lengths_buf_size
-            = ceil(1 + num_chunks,
-            gpu_sycl::hierarchical_inclusive_scan_granularity);
+            = ceil(1 + num_chunks, gpu_sycl::hierarchical_inclusive_scan_granularity);
 
 #if NDZIP_HIPSYCL_SUPPORT
     std::vector<bits_type> sycl_chunks(hc_total_chunks_size);
@@ -637,11 +636,11 @@ TEMPLATE_TEST_CASE("Residual encodings from different encoders are equivalent",
         buffer<index_type> chunk_lengths_buf{range<1>{chunk_lengths_buf_size}};
 
         q.submit([&](handler &cgh) {
-          cgh.fill(chunks_buf.template get_access<sam::discard_write>(cgh), bits_type{0});
-        }).wait();
+             cgh.fill(chunks_buf.template get_access<sam::discard_write>(cgh), bits_type{0});
+         }).wait();
         q.submit([&](handler &cgh) {
-          cgh.fill(chunk_lengths_buf.get_access<sam::discard_write>(cgh), index_type{0});
-        }).wait();
+             cgh.fill(chunk_lengths_buf.get_access<sam::discard_write>(cgh), index_type{0});
+         }).wait();
 
         q.submit([&](handler &cgh) {
             auto input_acc = input_buf.template get_access<sam::read>(cgh);
@@ -673,8 +672,8 @@ TEMPLATE_TEST_CASE("Residual encodings from different encoders are equivalent",
         gpu_sycl::hierarchical_inclusive_scan(q, chunk_lengths_buf, sycl::plus<index_type>{});
 
         q.submit([&](handler &cgh) {
-          cgh.copy(chunk_lengths_buf.get_access<sam::read>(cgh), sycl_chunk_offsets.data());
-        }).wait();
+             cgh.copy(chunk_lengths_buf.get_access<sam::read>(cgh), sycl_chunk_offsets.data());
+         }).wait();
 
         buffer<bits_type> stream_buf(range<1>{hc_size * 2});
         q.submit([&](handler &cgh) {
@@ -722,7 +721,7 @@ TEMPLATE_TEST_CASE("Residual encodings from different encoders are equivalent",
 
     // CUDA vs CPU
     {
-        (void) chunks_per_hc; // unused when compiling only for CUDA
+        (void) chunks_per_hc;  // unused when compiling only for CUDA
 
         gpu_cuda::cuda_buffer<bits_type> input_buf(hc_size);
         gpu_cuda::cuda_buffer<bits_type> chunks_buf(hc_total_chunks_size);
@@ -759,8 +758,8 @@ TEMPLATE_TEST_CASE("Residual encodings from different encoders are equivalent",
 
         CHECKED_CUDA_CALL(cudaMemcpy, cuda_stream.data(), stream_buf.get(),
                 stream_buf.size() * sizeof(bits_type), cudaMemcpyDeviceToHost);
-        CHECKED_CUDA_CALL(cudaMemcpy, &cuda_num_words, stream_length_buf.get(),
-                sizeof(index_type), cudaMemcpyDeviceToHost);
+        CHECKED_CUDA_CALL(cudaMemcpy, &cuda_num_words, stream_length_buf.get(), sizeof(index_type),
+                cudaMemcpyDeviceToHost);
         auto cuda_length_bytes = cuda_num_words * sizeof(bits_type);
 
         CHECK(cuda_length_bytes == cpu_length_bytes);

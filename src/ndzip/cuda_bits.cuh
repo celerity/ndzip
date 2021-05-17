@@ -132,8 +132,8 @@ __device__ T warp_exclusive_scan(T x, T init, BinaryOp binary_op) {
         if (i <= warp_thread_id && warp_thread_id < warp_size) { x = binary_op(x, y); }
     }
 
-    auto scan = __shfl_sync(0xffff'ffff, x, warp_thread_id - 1);
-    return threadIdx.x == 0 ? init : binary_op(scan, init);
+    auto scan = __shfl_sync(0xffff'ffff, x, (warp_thread_id - 1) % warp_size);
+    return warp_thread_id == 0 ? init : binary_op(scan, init);
 }
 
 
