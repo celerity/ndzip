@@ -456,7 +456,7 @@ __global__ void compact_all_chunks(const typename Profile::bits_type *chunks,
     auto hc_index = static_cast<index_type>(blockIdx.x);
     auto block = hypercube_block<Profile>{};
 
-    detail::stream<Profile> stream{blockDim.x, stream_buf};
+    detail::stream<Profile> stream{gridDim.x, stream_buf};
     compact_chunks<Profile>(block, chunks + hc_index * hc_total_chunks_size,
             offsets + hc_index * chunks_per_hc, stream.header() + hc_index, stream.hypercube(0));
 }
@@ -487,7 +487,7 @@ __global__ void decompress_block(const typename Profile::bits_type *stream_buf,
     hypercube_ptr<Profile, inverse_transform_tag> hc{lmp};
 
     const auto hc_index = static_cast<index_type>(blockIdx.x);
-    detail::stream<const Profile> stream{blockDim.x, stream_buf};
+    detail::stream<const Profile> stream{gridDim.x, stream_buf};
     read_transposed_chunks<Profile>(block, hc, stream.hypercube(hc_index));
     __syncthreads();
     inverse_block_transform<Profile>(block, hc);
