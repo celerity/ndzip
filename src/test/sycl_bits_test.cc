@@ -37,7 +37,7 @@ TEMPLATE_TEST_CASE(
     iter_inclusive_scan(cpu_input.begin(), cpu_input.end(), cpu_result.begin());
 
     gpu_result_available.wait();
-    check_for_vector_equality(cpu_result, gpu_result);
+    CHECK_FOR_VECTOR_EQUALITY(cpu_result, gpu_result);
 }
 
 
@@ -62,5 +62,5 @@ TEMPLATE_TEST_CASE("hierarchical_inclusive_scan produces the expected results", 
     });
     q.wait();
 
-    check_for_vector_equality(gpu_prefix_sum, cpu_prefix_sum);
+    CHECK_FOR_VECTOR_EQUALITY(gpu_prefix_sum, cpu_prefix_sum);
 }

@@ -61,7 +61,7 @@ TEMPLATE_TEST_CASE("decode(encode(input)) reproduces the input", "[encoder][de]"
         auto stream_bytes_read = decoder.decompress(stream.data(), stream.size(), output);
 
         CHECK(stream_bytes_read == stream.size());
-        check_for_vector_equality(input_data, output_data);
+        CHECK_FOR_VECTOR_EQUALITY(input_data, output_data);
     };
 
     SECTION("cpu_encoder::encode() => cpu_encoder::decode()") {
@@ -142,7 +142,7 @@ TEMPLATE_TEST_CASE("file headers from different encoders are identical", "[heade
     auto test_stream_length = test_encoder.compress(input, test_stream.data());
     test_stream.resize(file.num_hypercubes());
 
-    check_for_vector_equality(reference_stream, test_stream);
+    CHECK_FOR_VECTOR_EQUALITY(reference_stream, test_stream);
     CHECK(reference_stream_length == test_stream_length);
 }
 #endif
@@ -345,7 +345,7 @@ TEMPLATE_TEST_CASE(
     });
     q.wait();
 
-    check_for_vector_equality(input_data, output_data);
+    CHECK_FOR_VECTOR_EQUALITY(input_data, output_data);
 }
 
 template<typename>
@@ -487,7 +487,7 @@ TEMPLATE_TEST_CASE(
     CHECKED_CUDA_CALL(cudaMemcpy, output_data.data(), output_buf.get(),
             output_buf.size() * sizeof(data_type), cudaMemcpyDeviceToHost);
 
-    check_for_vector_equality(input_data, output_data);
+    CHECK_FOR_VECTOR_EQUALITY(input_data, output_data);
 }
 
 template<typename Profile>
@@ -574,14 +574,14 @@ TEMPLATE_TEST_CASE("Flattening of hypercubes is identical between encoders", "[c
     SECTION("SYCL vs CPU") {
         sycl::queue sycl_q{sycl::gpu_selector{}};
         auto sycl_dump = sycl_load_and_dump_hypercube<profile>(input, hc_index, sycl_q);
-        check_for_vector_equality(sycl_dump.data(), cpu_dump.data(), hc_size);
+        CHECK_FOR_VECTOR_EQUALITY(sycl_dump.data(), cpu_dump.data(), hc_size);
     }
 #endif
 
 #if NDZIP_CUDA_SUPPORT
     SECTION("CUDA vs CPU") {
         auto cuda_dump = cuda_load_and_dump_hypercube<profile>(input, hc_index);
-        check_for_vector_equality(cuda_dump.data(), cpu_dump.data(), hc_size);
+        CHECK_FOR_VECTOR_EQUALITY(cuda_dump.data(), cpu_dump.data(), hc_size);
     }
 #endif
 }
@@ -613,9 +613,19 @@ TEMPLATE_TEST_CASE("Residual encodings from different encoders are equivalent",
             cpu_cube.data(), reinterpret_cast<std::byte *>(cpu_stream.data()), hc_size);
 
     const auto num_chunks = 1 + hc_size / col_chunk_size;
+    const auto chunk_lengths_buf_size
+            = ceil(1 + num_chunks,
+            gpu_sycl::hierarchical_inclusive_scan_granularity);
 
 #if NDZIP_HIPSYCL_SUPPORT
-    SECTION("SYCL vs CPU") {
+    std::vector<bits_type> sycl_chunks(hc_total_chunks_size);
+    std::vector<index_type> sycl_chunk_lengths(chunk_lengths_buf_size);
+    std::vector<index_type> sycl_chunk_offsets(chunk_lengths_buf_size);
+    index_type sycl_num_words;
+    std::vector<bits_type> sycl_stream(hc_size * 2);
+
+    // SYCL vs CPU
+    {
         sycl::queue q{sycl::gpu_selector{}};
 
         buffer<bits_type> input_buf{hc_size};
@@ -624,13 +634,19 @@ TEMPLATE_TEST_CASE("Residual encodings from different encoders are equivalent",
         });
 
         buffer<bits_type> chunks_buf{hc_total_chunks_size};
-        buffer<index_type> chunk_lengths_buf{
-                range<1>{ceil(1 + num_chunks, gpu_sycl::hierarchical_inclusive_scan_granularity)}};
+        buffer<index_type> chunk_lengths_buf{range<1>{chunk_lengths_buf_size}};
+
+        q.submit([&](handler &cgh) {
+          cgh.fill(chunks_buf.template get_access<sam::discard_write>(cgh), bits_type{0});
+        }).wait();
+        q.submit([&](handler &cgh) {
+          cgh.fill(chunk_lengths_buf.get_access<sam::discard_write>(cgh), index_type{0});
+        }).wait();
 
         q.submit([&](handler &cgh) {
             auto input_acc = input_buf.template get_access<sam::read>(cgh);
-            auto columns_acc = chunks_buf.template get_access<sam::discard_write>(cgh);
-            auto chunk_lengths_acc = chunk_lengths_buf.get_access<sam::discard_write>(cgh);
+            auto columns_acc = chunks_buf.template get_access<sam::write>(cgh);
+            auto chunk_lengths_acc = chunk_lengths_buf.get_access<sam::write>(cgh);
             cgh.parallel<gpu_hypercube_transpose_test_kernel<TestType>>(sycl::range<1>{1},
                     sycl::range<1>{gpu::hypercube_group_size<TestType>},
                     [=](gpu_sycl::hypercube_group<TestType> grp, sycl::physical_item<1> phys_idx) {
@@ -647,16 +663,18 @@ TEMPLATE_TEST_CASE("Residual encodings from different encoders are equivalent",
                     });
         });
 
-        std::vector<bits_type> chunks(chunks_buf.get_range().get(0));
         q.submit([&](handler &cgh) {
-             cgh.copy(chunks_buf.template get_access<sam::read>(cgh), chunks.data());
+             cgh.copy(chunks_buf.template get_access<sam::read>(cgh), sycl_chunks.data());
+         }).wait();
+        q.submit([&](handler &cgh) {
+             cgh.copy(chunk_lengths_buf.get_access<sam::read>(cgh), sycl_chunk_lengths.data());
          }).wait();
 
-        std::vector<index_type> chunk_lengths(chunk_lengths_buf.get_range().get(0));
-        q.submit([&](handler &cgh) {
-             cgh.copy(chunk_lengths_buf.get_access<sam::read>(cgh), chunk_lengths.data());
-         }).wait();
         gpu_sycl::hierarchical_inclusive_scan(q, chunk_lengths_buf, sycl::plus<index_type>{});
+
+        q.submit([&](handler &cgh) {
+          cgh.copy(chunk_lengths_buf.get_access<sam::read>(cgh), sycl_chunk_offsets.data());
+        }).wait();
 
         buffer<bits_type> stream_buf(range<1>{hc_size * 2});
         q.submit([&](handler &cgh) {
@@ -681,24 +699,29 @@ TEMPLATE_TEST_CASE("Residual encodings from different encoders are equivalent",
                     });
         });
 
-        index_type gpu_num_words;
         q.submit([&](handler &cgh) {
-             cgh.copy(length_buf.template get_access<sam::read>(cgh), &gpu_num_words);
+             cgh.copy(length_buf.template get_access<sam::read>(cgh), &sycl_num_words);
          }).wait();
-        auto gpu_length_bytes = gpu_num_words * sizeof(bits_type);
+        auto sycl_length_bytes = sycl_num_words * sizeof(bits_type);
 
-        std::vector<bits_type> gpu_stream(stream_buf.get_range()[0]);
         q.submit([&](handler &cgh) {
-             cgh.copy(stream_buf.template get_access<sam::read>(cgh), gpu_stream.data());
+             cgh.copy(stream_buf.template get_access<sam::read>(cgh), sycl_stream.data());
          }).wait();
 
-        CHECK(gpu_length_bytes == cpu_length_bytes);
-        check_for_vector_equality(gpu_stream, cpu_stream);
+        CHECK(sycl_length_bytes == cpu_length_bytes);
+        CHECK_FOR_VECTOR_EQUALITY(sycl_stream, cpu_stream);
     }
 #endif
 
 #if NDZIP_CUDA_SUPPORT
-    SECTION("CUDA vs CPU") {
+    std::vector<bits_type> cuda_chunks(hc_total_chunks_size);
+    std::vector<index_type> cuda_chunk_lengths(chunk_lengths_buf_size);
+    std::vector<index_type> cuda_chunk_offsets(chunk_lengths_buf_size);
+    std::vector<bits_type> cuda_stream(hc_size * 2);
+    index_type cuda_num_words;
+
+    // CUDA vs CPU
+    {
         (void) chunks_per_hc; // unused when compiling only for CUDA
 
         gpu_cuda::cuda_buffer<bits_type> input_buf(hc_size);
@@ -710,20 +733,21 @@ TEMPLATE_TEST_CASE("Residual encodings from different encoders are equivalent",
                 cudaMemcpyHostToDevice);
 
         cuda_fill(chunks_buf.get(), bits_type{}, chunks_buf.size());
+        cuda_fill(chunk_lengths_buf.get(), index_type{}, chunk_lengths_buf.size());
 
         encode_hypercube_kernel<TestType><<<1, (gpu::hypercube_group_size<TestType>)>>>(
                 input_buf.get(), chunks_buf.get(), chunk_lengths_buf.get());
 
-        std::vector<bits_type> chunks(chunks_buf.size());
-        CHECKED_CUDA_CALL(cudaMemcpy, chunks.data(), chunks_buf.get(),
+        CHECKED_CUDA_CALL(cudaMemcpy, cuda_chunks.data(), chunks_buf.get(),
                 chunks_buf.size() * sizeof(bits_type), cudaMemcpyDeviceToHost);
-
-        std::vector<index_type> chunk_lengths(chunk_lengths_buf.size());
-        CHECKED_CUDA_CALL(cudaMemcpy, chunk_lengths.data(), chunk_lengths_buf.get(),
+        CHECKED_CUDA_CALL(cudaMemcpy, cuda_chunk_lengths.data(), chunk_lengths_buf.get(),
                 chunk_lengths_buf.size() * sizeof(index_type), cudaMemcpyDeviceToHost);
 
         gpu_cuda::hierarchical_inclusive_scan(
                 chunk_lengths_buf.get(), chunk_lengths_buf.size(), gpu_cuda::plus<index_type>{});
+
+        CHECKED_CUDA_CALL(cudaMemcpy, cuda_chunk_offsets.data(), chunk_lengths_buf.get(),
+                chunk_lengths_buf.size() * sizeof(index_type), cudaMemcpyDeviceToHost);
 
         gpu_cuda::cuda_buffer<index_type> stream_length_buf(1);
         gpu_cuda::cuda_buffer<bits_type> stream_buf(hc_size * 2);
@@ -733,17 +757,26 @@ TEMPLATE_TEST_CASE("Residual encodings from different encoders are equivalent",
                 <<<1, (gpu::hypercube_group_size<TestType>)>>>(chunks_buf.get(),
                         chunk_lengths_buf.get(), stream_length_buf.get(), stream_buf.get());
 
-        std::vector<bits_type> gpu_stream(stream_buf.size());
-        CHECKED_CUDA_CALL(cudaMemcpy, gpu_stream.data(), stream_buf.get(),
+        CHECKED_CUDA_CALL(cudaMemcpy, cuda_stream.data(), stream_buf.get(),
                 stream_buf.size() * sizeof(bits_type), cudaMemcpyDeviceToHost);
-
-        index_type gpu_stream_length;
-        CHECKED_CUDA_CALL(cudaMemcpy, &gpu_stream_length, stream_length_buf.get(),
+        CHECKED_CUDA_CALL(cudaMemcpy, &cuda_num_words, stream_length_buf.get(),
                 sizeof(index_type), cudaMemcpyDeviceToHost);
-        auto gpu_length_bytes = gpu_stream_length * sizeof(bits_type);
+        auto cuda_length_bytes = cuda_num_words * sizeof(bits_type);
 
-        CHECK(gpu_length_bytes == cpu_length_bytes);
-        check_for_vector_equality(gpu_stream, cpu_stream);
+        CHECK(cuda_length_bytes == cpu_length_bytes);
+        CHECK_FOR_VECTOR_EQUALITY(cuda_stream, cpu_stream);
+    }
+#endif
+
+#if NDZIP_HIPSYCL_SUPPORT && NDZIP_CUDA_SUPPORT
+    // SYCL vs CUDA
+    {
+        CHECK_FOR_VECTOR_EQUALITY(sycl_chunks, cuda_chunks);
+        CHECK_FOR_VECTOR_EQUALITY(sycl_chunk_lengths, cuda_chunk_lengths);
+        CHECK_FOR_VECTOR_EQUALITY(sycl_chunk_offsets, cuda_chunk_offsets);
+        CHECK(sycl_num_words == cuda_num_words);
+        CHECK_FOR_VECTOR_EQUALITY(sycl_stream, cuda_stream);
+        CHECK_FOR_VECTOR_EQUALITY(cuda_stream, cpu_stream);
     }
 #endif
 }
@@ -801,7 +834,7 @@ TEMPLATE_TEST_CASE("GPU hypercube decoding works", "[sycl][cuda][decode]", ALL_P
         });
         q.wait();
 
-        check_for_vector_equality(output, input);
+        CHECK_FOR_VECTOR_EQUALITY(output, input);
     }
 #endif
 
@@ -820,7 +853,7 @@ TEMPLATE_TEST_CASE("GPU hypercube decoding works", "[sycl][cuda][decode]", ALL_P
         CHECKED_CUDA_CALL(cudaMemcpy, output.data(), output_buf.get(), hc_size * sizeof(bits_type),
                 cudaMemcpyDeviceToHost);
 
-        check_for_vector_equality(output, input);
+        CHECK_FOR_VECTOR_EQUALITY(output, input);
     }
 #endif
 }
@@ -885,7 +918,7 @@ static void test_cpu_gpu_transform_equality(const CpuTransform &cpu_transform
         });
         sycl_q.wait();
 
-        check_for_vector_equality(sycl_transformed, cpu_transformed);
+        CHECK_FOR_VECTOR_EQUALITY(sycl_transformed, cpu_transformed);
     }
 #endif
 
@@ -901,7 +934,7 @@ static void test_cpu_gpu_transform_equality(const CpuTransform &cpu_transform
         CHECKED_CUDA_CALL(cudaMemcpy, cuda_transformed.data(), cuda_io_buf.get(),
                 cuda_transformed.size() * sizeof(bits_type), cudaMemcpyDeviceToHost);
 
-        check_for_vector_equality(cuda_transformed, cpu_transformed);
+        CHECK_FOR_VECTOR_EQUALITY(cuda_transformed, cpu_transformed);
     }
 #endif
 }
@@ -1000,7 +1033,7 @@ TEMPLATE_TEST_CASE("Single block compresses identically on all encoders",
         auto mt_cpu_output_bytes = mt_cpu_encoder<data_type, dimensions>{}.compress(
                 input_slice, mt_cpu_output.data());
         mt_cpu_output.resize(mt_cpu_output_bytes / sizeof(data_type));
-        check_for_vector_equality(mt_cpu_output, cpu_output);
+        CHECK_FOR_VECTOR_EQUALITY(mt_cpu_output, cpu_output);
     }
 #endif
 
@@ -1010,7 +1043,7 @@ TEMPLATE_TEST_CASE("Single block compresses identically on all encoders",
         auto sycl_output_bytes
                 = sycl_encoder<data_type, dimensions>{}.compress(input_slice, sycl_output.data());
         sycl_output.resize(sycl_output_bytes / sizeof(data_type));
-        check_for_vector_equality(sycl_output, cpu_output);
+        CHECK_FOR_VECTOR_EQUALITY(sycl_output, cpu_output);
     }
 #endif
 
@@ -1020,7 +1053,7 @@ TEMPLATE_TEST_CASE("Single block compresses identically on all encoders",
         auto cuda_output_bytes
                 = cuda_encoder<data_type, dimensions>{}.compress(input_slice, cuda_output.data());
         cuda_output.resize(cuda_output_bytes / sizeof(data_type));
-        check_for_vector_equality(cuda_output, cpu_output);
+        CHECK_FOR_VECTOR_EQUALITY(cuda_output, cpu_output);
     }
 #endif
 }
@@ -1045,16 +1078,16 @@ TEMPLATE_TEST_CASE("Single block decompresses correctly on all encoders",
     SECTION("On single-threaded CPU") {
         std::vector<data_type> cpu_output(num_elements(size));
         cpu_encoder<data_type, dimensions>{}.decompress(
-                compressed.data(), compressed.size(), slice{cpu_output.data(), size});
-        check_for_vector_equality(cpu_output, input);
+                compressed.data(), compressed_bytes, slice{cpu_output.data(), size});
+        CHECK_FOR_VECTOR_EQUALITY(cpu_output, input);
     }
 
 #if NDZIP_OPENMP_SUPPORT
     SECTION("On multi-threaded CPU") {
         std::vector<data_type> mt_cpu_output(num_elements(size));
         mt_cpu_encoder<data_type, dimensions>{}.decompress(
-                compressed.data(), compressed.size(), slice{mt_cpu_output.data(), size});
-        check_for_vector_equality(mt_cpu_output, input);
+                compressed.data(), compressed_bytes, slice{mt_cpu_output.data(), size});
+        CHECK_FOR_VECTOR_EQUALITY(mt_cpu_output, input);
     }
 #endif
 
@@ -1062,8 +1095,8 @@ TEMPLATE_TEST_CASE("Single block decompresses correctly on all encoders",
     SECTION("On SYCL") {
         std::vector<data_type> sycl_output(num_elements(size));
         sycl_encoder<data_type, dimensions>{}.decompress(
-                compressed.data(), compressed.size(), slice{sycl_output.data(), size});
-        check_for_vector_equality(sycl_output, input);
+                compressed.data(), compressed_bytes, slice{sycl_output.data(), size});
+        CHECK_FOR_VECTOR_EQUALITY(sycl_output, input);
     }
 #endif
 
@@ -1071,8 +1104,8 @@ TEMPLATE_TEST_CASE("Single block decompresses correctly on all encoders",
     SECTION("On CUDA") {
         std::vector<data_type> cuda_output(num_elements(size));
         cuda_encoder<data_type, dimensions>{}.decompress(
-                compressed.data(), compressed.size(), slice{cuda_output.data(), size});
-        check_for_vector_equality(cuda_output, input);
+                compressed.data(), compressed_bytes, slice{cuda_output.data(), size});
+        CHECK_FOR_VECTOR_EQUALITY(cuda_output, input);
     }
 #endif
 }

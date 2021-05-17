@@ -29,7 +29,7 @@ static std::vector<Arithmetic> make_random_vector(size_t size) {
 
 
 template<typename T>
-void check_for_vector_equality(const T *lhs, const T *rhs, size_t size) {
+void check_for_vector_equality(const T *lhs, const T *rhs, size_t size, const char *file, int line) {
     size_t first_mismatch = SIZE_MAX, last_mismatch = 0;
     for (size_t i = 0; i < size; ++i) {
         if (lhs[i] != rhs[i]) {
@@ -40,7 +40,7 @@ void check_for_vector_equality(const T *lhs, const T *rhs, size_t size) {
 
     if (first_mismatch <= last_mismatch) {
         std::ostringstream ss;
-        ss << "vectors mismatch between index " << first_mismatch << " and " << last_mismatch
+        ss << file << ":" << line << ": vectors mismatch between index " << first_mismatch << " and " << last_mismatch
            << ":\n    {";
         for (auto *vec : {&lhs, &rhs}) {
             for (size_t i = first_mismatch; i <= last_mismatch;) {
@@ -62,14 +62,17 @@ void check_for_vector_equality(const T *lhs, const T *rhs, size_t size) {
 
 
 template<typename T>
-void check_for_vector_equality(const std::vector<T> &lhs, const std::vector<T> &rhs) {
+void check_for_vector_equality(const std::vector<T> &lhs, const std::vector<T> &rhs,
+        const char *file, int line) {
     if (lhs.size() != rhs.size()) {
-        FAIL_CHECK(
-                "vectors differ in size: " << lhs.size() << " vs. " << rhs.size() << " elements\n");
+        FAIL_CHECK(file << ":" << line << ": vectors differ in size: " << lhs.size() << " vs. " << rhs.size() << " elements\n");
     } else {
-        check_for_vector_equality(lhs.data(), rhs.data(), lhs.size());
+        check_for_vector_equality(lhs.data(), rhs.data(), lhs.size(), file, line);
     }
 }
+
+
+#define CHECK_FOR_VECTOR_EQUALITY(...) check_for_vector_equality(__VA_ARGS__, __FILE__, __LINE__)
 
 
 template<class T>

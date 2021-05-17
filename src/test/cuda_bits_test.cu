@@ -48,7 +48,7 @@ TEST_CASE("Warp-cooperative primitives work", "[cuda][scan]") {
         CHECKED_CUDA_CALL(cudaMemcpy, out.data(), buf.get(), warp_size * sizeof(index_type),
                 cudaMemcpyDeviceToHost);
         std::fill(ref.begin(), ref.end(), warp_size);
-        check_for_vector_equality(out, ref);
+        CHECK_FOR_VECTOR_EQUALITY(out, ref);
     }
 
     SECTION("warp_inclusive_scan") {
@@ -56,7 +56,7 @@ TEST_CASE("Warp-cooperative primitives work", "[cuda][scan]") {
         CHECKED_CUDA_CALL(cudaMemcpy, out.data(), buf.get(), warp_size * sizeof(index_type),
                 cudaMemcpyDeviceToHost);
         iter_inclusive_scan(iota.begin(), iota.end(), ref.begin(), plus<index_type>{});
-        check_for_vector_equality(out, ref);
+        CHECK_FOR_VECTOR_EQUALITY(out, ref);
     }
 
     SECTION("warp_exclusive_scan") {
@@ -64,7 +64,7 @@ TEST_CASE("Warp-cooperative primitives work", "[cuda][scan]") {
         CHECKED_CUDA_CALL(cudaMemcpy, out.data(), buf.get(), warp_size * sizeof(index_type),
                 cudaMemcpyDeviceToHost);
         iter_exclusive_scan(iota.begin(), iota.end(), ref.begin(), plus<index_type>{});
-        check_for_vector_equality(out, ref);
+        CHECK_FOR_VECTOR_EQUALITY(out, ref);
     }
 }
 
@@ -86,7 +86,7 @@ TEMPLATE_TEST_CASE(
     CHECKED_CUDA_CALL(cudaMemcpy, gpu_result.data(), out.get(), out.size() * sizeof(TestType),
             cudaMemcpyDeviceToHost);
 
-    check_for_vector_equality(cpu_result, gpu_result);
+    CHECK_FOR_VECTOR_EQUALITY(cpu_result, gpu_result);
 }
 
 
@@ -108,5 +108,5 @@ TEMPLATE_TEST_CASE("hierarchical_inclusive_scan produces the expected results", 
     CHECKED_CUDA_CALL(cudaMemcpy, gpu_prefix_sum.data(), prefix_sum_buf.get(),
             prefix_sum_buf.size() * sizeof(uint32_t), cudaMemcpyDeviceToHost);
 
-    check_for_vector_equality(gpu_prefix_sum, cpu_prefix_sum);
+    CHECK_FOR_VECTOR_EQUALITY(gpu_prefix_sum, cpu_prefix_sum);
 }
