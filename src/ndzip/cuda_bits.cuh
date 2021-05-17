@@ -223,9 +223,6 @@ class cuda_buffer {
     index_type _size = 0;
 };
 
-
-inline constexpr index_type hierarchical_inclusive_scan_granularity = 512;
-
 template<typename Scalar, typename BinaryOp>
 __global__ void
 hierarchical_inclusive_scan_reduce(Scalar *big_buf, Scalar *small_buf, BinaryOp op) {

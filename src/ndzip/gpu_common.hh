@@ -361,4 +361,6 @@ struct hypercube_ptr<profile<Data, 1>, inverse_transform_tag> {
 };
 
 
+inline constexpr index_type hierarchical_inclusive_scan_granularity = 512;
+
 }  // namespace ndzip::detail::gpu

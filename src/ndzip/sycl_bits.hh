@@ -144,8 +144,6 @@ class hierarchical_inclusive_scan_reduction_kernel;
 template<typename, typename>
 class hierarchical_inclusive_scan_expansion_kernel;
 
-inline constexpr index_type hierarchical_inclusive_scan_granularity = 512;
-
 template<typename Scalar, typename BinaryOp>
 auto hierarchical_inclusive_scan(
         sycl::queue &queue, sycl::buffer<Scalar> &in_out_buffer, BinaryOp op = {}) {

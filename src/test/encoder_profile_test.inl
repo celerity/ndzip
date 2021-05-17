@@ -614,7 +614,7 @@ TEMPLATE_TEST_CASE("Residual encodings from different encoders are equivalent",
 
     const auto num_chunks = 1 + hc_size / col_chunk_size;
     const auto chunk_lengths_buf_size
-            = ceil(1 + num_chunks, gpu_sycl::hierarchical_inclusive_scan_granularity);
+            = ceil(1 + num_chunks, gpu::hierarchical_inclusive_scan_granularity);
 
 #if NDZIP_HIPSYCL_SUPPORT
     std::vector<bits_type> sycl_chunks(hc_total_chunks_size);
