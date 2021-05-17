@@ -1,5 +1,5 @@
+#include "test_utils.hh"
 #include <ndzip/cuda_bits.cuh>
-#include <test/test_utils.hh>
 
 using namespace ndzip;
 using namespace ndzip::detail;

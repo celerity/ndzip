@@ -1,6 +1,10 @@
 #pragma once
 
-#include <complex>  // we don't use <complex>, but not including it triggers a CUDA error
+// We don't use <complex>, but a Clang/glibcxx bug causes the build to fail when <random> is
+// included before <complex> (__host__/__device__ mismatch for glibcxx internal __failed_assertion()
+// prototype)
+#include <complex>
+
 #include <algorithm>
 #include <random>
 #include <sstream>

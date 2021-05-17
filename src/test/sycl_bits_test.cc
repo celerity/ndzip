@@ -1,7 +1,7 @@
 #include <complex>  // we don't use <complex>, but not including it triggers a CUDA error
 
+#include "test_utils.hh"
 #include <ndzip/sycl_bits.hh>
-#include <test/test_utils.hh>
 
 using namespace ndzip;
 using namespace ndzip::detail;
