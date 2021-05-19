@@ -42,6 +42,12 @@
 #if NDZIP_BENCHMARK_HAVE_MPC
 #include <MPC_12.h>
 #endif
+#if NDZIP_BENCHMARK_HAVE_NVCOMP
+#include <nvcomp/snappy.h>
+#endif
+#if NDZIP_BENCHMARK_HAVE_ZFP
+#include <zfp.h>
+#endif
 
 
 enum class data_type {
@@ -270,12 +276,16 @@ struct ndzip_encoder_factory<ndzip::mt_cpu_encoder<Data, Dims>> {
     }
 };
 
+#if NDZIP_GPU_SUPPORT
+
 template<typename Data, unsigned Dims>
 struct ndzip_encoder_factory<ndzip::gpu_encoder<Data, Dims>> {
     ndzip::gpu_encoder<Data, Dims> create(const benchmark_params &) const {
         return ndzip::gpu_encoder<Data, Dims>{true /* report_kernel_duration */};
     }
 };
+
+#endif
 
 template<template<typename, unsigned> typename Encoder, typename Data, unsigned Dims>
 struct ndzip_benchmark : public benchmark {
@@ -736,8 +746,9 @@ static benchmark_result benchmark_cudpp_compress(
             CHECKED_CUDA_CALL(cudaMemcpy, compressed_block_sizes.data(), d_compressedSize,
                     num_blocks * sizeof *d_compressedSize, cudaMemcpyDeviceToHost);
             // Output sizes are reported in words (i.e. "typedef uint" in CUDPP the code)
-            compressed_size = sizeof(unsigned int) * std::accumulate(
-                    compressed_block_sizes.begin(), compressed_block_sizes.end(), size_t{0});
+            compressed_size = sizeof(unsigned int)
+                    * std::accumulate(compressed_block_sizes.begin(), compressed_block_sizes.end(),
+                            size_t{0});
         }
     }
 
@@ -979,6 +990,54 @@ static benchmark_result benchmark_zstd(
     assert_buffer_equality(input_buffer, decompress_buffer.data(), uncompressed_size);
     return std::move(bench).result(uncompressed_size, compressed_size);
 }
+#endif
+
+
+#if NDZIP_BENCHMARK_HAVE_NVCOMP
+
+#define CHECKED_NVCOMP_CALL(f, ...) \
+    do { \
+        if (nvcompError_t err = f(__VA_ARGS__); err != nvcompSuccess) { \
+            throw std::runtime_error( \
+                    STRINGIFY(f) ": Error " + std::to_string(static_cast<int>(err))); \
+        } \
+    } while (0)
+
+static benchmark_result benchmark_nvcomp_snappy(
+        const void *input_buffer, const metadata &metadata, const benchmark_params &params) {
+    const auto uncompressed_size = metadata.size_in_bytes();
+    const int level = params.tunable;
+    auto bench = benchmark{params};
+
+    const size_t batch_size = 256; // TODO tune
+    const auto small_chunk_size = uncompressed_size / batch_size;
+    const auto large_chunk_size = small_chunk_size + uncompressed_size % batch_size;
+
+    size_t chunk_compress_bound;
+    CHECKED_NVCOMP_CALL(nvcompBatchedSnappyCompressGetOutputSize,
+            large_chunk_size, &chunk_compress_bound);
+
+    auto compress_buffer = scratch_buffer{batch_size * chunk_compress_bound};
+    size_t compressed_size;
+    while (bench.compress_more()) {
+        CHECKED_NVCOMP_CALL(nvcompBatchedSnappyCompressAsync, ...);
+        bench.record_compression();
+    }
+
+    auto decompress_buffer = scratch_buffer{uncompressed_size};
+    while (bench.decompress_more()) {
+        CHECKED_NVCOMP_CALL(nvcompBatchedSnappyDecompressAsync, ...);
+        bench.record_decompression();
+    }
+
+    assert_buffer_equality(input_buffer, decompress_buffer.data(), uncompressed_size);
+    return std::move(bench).result(uncompressed_size, compressed_size);
+}
+#endif
+
+
+#if NDZIP_BENCHMARK_HAVE_ZFP
+// TODO
 #endif
 
 

@@ -43,6 +43,18 @@ if (NDZIP_BUILD_BENCHMARK)
     else ()
         message(WARNING "Building without cudpp benchmark, perform git submodule step to enable")
     endif ()
+
+    if (EXISTS "${CMAKE_SOURCE_DIR}/contrib/nvcomp/CMakeLists.txt")
+        set(NVCOMP_FOUND TRUE)
+    else ()
+        message(WARNING "Building without NVCOMP benchmark, perform git submodule step to enable")
+    endif ()
+
+    if (EXISTS "${CMAKE_SOURCE_DIR}/contrib/zfp/CMakeLists.txt")
+        set(ZFP_FOUND TRUE)
+    else ()
+        message(WARNING "Building without ZFP benchmark, perform git submodule step to enable")
+    endif ()
 endif ()
 
 
@@ -194,6 +206,14 @@ if (NDZIP_BUILD_BENCHMARK)
         message(WARNING "CUDA not found, omitting some algorithms in benchmark")
     endif ()
 
+    if (NVCOMP_FOUND)
+        add_subdirectory(contrib/nvcomp EXCLUDE_FROM_ALL)
+    endif ()
+
+    if (ZFP_FOUND)
+        add_subdirectory(contrib/zfp EXCLUDE_FROM_ALL)
+    endif ()
+
     add_executable(benchmark src/benchmark/benchmark.cc)
     target_compile_options(benchmark PRIVATE ${NDZIP_COMPILE_FLAGS})
     target_link_libraries(benchmark PRIVATE ndzip io Boost::program_options fpc pfpc spdp)
@@ -206,6 +226,8 @@ if (NDZIP_BUILD_BENCHMARK)
         "-DNDZIP_BENCHMARK_HAVE_LZMA=$<BOOL:${LZMA_FOUND}>"
         "-DNDZIP_BENCHMARK_HAVE_FPZIP=$<BOOL:${FPZIP_FOUND}>"
         "-DNDZIP_BENCHMARK_HAVE_CUDPP=$<BOOL:${CUDPP_FOUND}>"
+        "-DNDZIP_BENCHMARK_HAVE_NVCOMP=$<BOOL:${NVCOMP_FOUND}>"
+        "-DNDZIP_BENCHMARK_HAVE_ZFP=$<BOOL:${ZFP_FOUND}>"
         "-DNDZIP_BENCHMARK_HAVE_GFC=$<BOOL:${CUDAToolkit_FOUND}>"
         "-DNDZIP_BENCHMARK_HAVE_MPC=$<BOOL:${CUDAToolkit_FOUND}>"
         "-DNDZIP_BENCHMARK_HAVE_ZSTD=$<BOOL:${ZSTD_FOUND}>"
@@ -237,5 +259,11 @@ if (NDZIP_BUILD_BENCHMARK)
     endif ()
     if (ZSTD_FOUND)
         target_link_libraries(benchmark PRIVATE PkgConfig::ZSTD)
+    endif ()
+    if (NVCOMP_FOUND)
+        target_link_libraries(benchmark PRIVATE nvcomp)
+    endif ()
+    if (ZFP_FOUND)
+        target_link_libraries(benchmark PRIVATE zfp)
     endif ()
 endif ()
