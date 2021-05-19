@@ -1,3 +1,4 @@
+#include <complex>  // we don't use <complex>, but not including it triggers a CUDA error
 #include <chrono>
 #include <cstdio>
 #include <filesystem>
@@ -43,7 +44,7 @@
 #include <MPC_12.h>
 #endif
 #if NDZIP_BENCHMARK_HAVE_NVCOMP
-#include <nvcomp/snappy.h>
+#include <nvcomp/lz4.hpp>
 #endif
 #if NDZIP_BENCHMARK_HAVE_ZFP
 #include <zfp.h>
@@ -995,15 +996,14 @@ static benchmark_result benchmark_zstd(
 
 #if NDZIP_BENCHMARK_HAVE_NVCOMP
 
-#define CHECKED_NVCOMP_CALL(f, ...) \
-    do { \
-        if (nvcompError_t err = f(__VA_ARGS__); err != nvcompSuccess) { \
-            throw std::runtime_error( \
-                    STRINGIFY(f) ": Error " + std::to_string(static_cast<int>(err))); \
+#define CHECKED_CUDA_CALL(f, ...) \
+    do {                          \
+        if (cudaError_t err = f(__VA_ARGS__); err != cudaSuccess) { \
+            throw std::runtime_error(STRINGIFY(f) ": " + std::string{cudaGetErrorString(err)}); \
         } \
     } while (0)
 
-static benchmark_result benchmark_nvcomp_snappy(
+static benchmark_result benchmark_nvcomp_lz4(
         const void *input_buffer, const metadata &metadata, const benchmark_params &params) {
     const auto uncompressed_size = metadata.size_in_bytes();
     const int level = params.tunable;
@@ -1013,24 +1013,76 @@ static benchmark_result benchmark_nvcomp_snappy(
     const auto small_chunk_size = uncompressed_size / batch_size;
     const auto large_chunk_size = small_chunk_size + uncompressed_size % batch_size;
 
-    size_t chunk_compress_bound;
-    CHECKED_NVCOMP_CALL(nvcompBatchedSnappyCompressGetOutputSize,
-            large_chunk_size, &chunk_compress_bound);
+    nvcomp::LZ4Compressor compressor;
+    size_t compress_bound, compress_temp_size;
+    compressor.configure(uncompressed_size, &compress_temp_size, &compress_bound);
 
-    auto compress_buffer = scratch_buffer{batch_size * chunk_compress_bound};
+    void *uncompressed_buffer;
+    CHECKED_CUDA_CALL(cudaMalloc, &uncompressed_buffer, uncompressed_size);
+    auto free_uncompressed_buffer = defer([&] { cudaFree(uncompressed_buffer); });
+    CHECKED_CUDA_CALL(cudaMemcpyAsync, uncompressed_buffer, input_buffer, uncompressed_size,
+            cudaMemcpyHostToDevice);
+
+    void *compress_buffer;
+    CHECKED_CUDA_CALL(cudaMalloc, &compress_buffer, compress_bound);
+    auto free_compress_buffer = defer([&] { cudaFree(compress_buffer); });
+
+    void *compress_temp_buffer;
+    CHECKED_CUDA_CALL(cudaMalloc, &compress_temp_buffer, compress_temp_size);
+    auto free_compress_temp_buffer = defer([&] { cudaFree(compress_temp_buffer); });
+
+    void *decompress_buffer;
+    CHECKED_CUDA_CALL(cudaMalloc, &decompress_buffer, uncompressed_size);
+    auto free_decompress_buffer = defer([&] { cudaFree(decompress_buffer); });
+
+    // Compress once to obtain output temp buffer size from decompressor
     size_t compressed_size;
+    compressor.compress_async(uncompressed_buffer, uncompressed_size, compress_temp_buffer,
+            compress_temp_size, compress_buffer, &compressed_size, nullptr);
+
+    nvcomp::LZ4Decompressor decompressor;
+    size_t decompress_temp_size, decompressed_size;
+    decompressor.configure(compress_buffer, compressed_size, &decompress_temp_size,
+            &decompressed_size, nullptr);
+    if (decompressed_size != uncompressed_size) { throw buffer_mismatch(); }
+
+    void *decompress_temp_buffer;
+    CHECKED_CUDA_CALL(cudaMalloc, &decompress_temp_buffer, decompress_temp_size);
+    auto free_decompress_temp_buffer = defer([&] { cudaFree(decompress_temp_buffer); });
+
+    cudaEvent_t before, after;
+    CHECKED_CUDA_CALL(cudaEventCreate, &before);
+    auto destroy_before = defer([&] { cudaEventDestroy(before); });
+    CHECKED_CUDA_CALL(cudaEventCreate, &after);
+    auto destroy_after = defer([&] { cudaEventDestroy(after); });
+
     while (bench.compress_more()) {
-        CHECKED_NVCOMP_CALL(nvcompBatchedSnappyCompressAsync, ...);
-        bench.record_compression();
+        CHECKED_CUDA_CALL(cudaEventRecord, before, nullptr);
+        compressor.compress_async(uncompressed_buffer, uncompressed_size, compress_temp_buffer,
+                compress_temp_size, compress_buffer, &compressed_size, nullptr);
+        CHECKED_CUDA_CALL(cudaEventRecord, after, nullptr);
+        float ms;
+        CHECKED_CUDA_CALL(cudaEventElapsedTime, &ms, before, after);
+        bench.record_compression(std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::duration<float, std::milli>{ms}));
     }
 
-    auto decompress_buffer = scratch_buffer{uncompressed_size};
-    while (bench.decompress_more()) {
-        CHECKED_NVCOMP_CALL(nvcompBatchedSnappyDecompressAsync, ...);
-        bench.record_decompression();
+    while (bench.compress_more()) {
+        CHECKED_CUDA_CALL(cudaEventRecord, before, nullptr);
+        decompressor.decompress_async(compress_buffer, compressed_size, decompress_temp_buffer,
+                decompress_temp_size, decompress_buffer, decompressed_size, nullptr);
+        CHECKED_CUDA_CALL(cudaEventRecord, after, nullptr);
+        float ms;
+        CHECKED_CUDA_CALL(cudaEventElapsedTime, &ms, before, after);
+        bench.record_decompression(std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::duration<float, std::milli>{ms}));
     }
 
-    assert_buffer_equality(input_buffer, decompress_buffer.data(), uncompressed_size);
+    auto output_buffer = scratch_buffer{decompressed_size};
+    CHECKED_CUDA_CALL(cudaMemcpy, output_buffer.data(), decompress_buffer, decompressed_size,
+            cudaMemcpyDeviceToHost);
+
+    assert_buffer_equality(input_buffer, output_buffer.data(), uncompressed_size);
     return std::move(bench).result(uncompressed_size, compressed_size);
 }
 #endif
