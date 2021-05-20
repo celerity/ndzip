@@ -78,6 +78,8 @@ struct metadata {
         }
         return size;
     }
+
+    size_t dimensions() const { return extent.size(); }
 };
 
 
@@ -1093,8 +1095,8 @@ static benchmark_result benchmark_nvcomp_lz4(
     nvcomp::LZ4Compressor compressor;
     nvcomp::LZ4Decompressor decompressor;
 
-    return benchmark_nvcomp_compressor(compressor, decompressor, input_buffer, uncompressed_buffer,
-            metadata, params);
+    return benchmark_nvcomp_compressor(
+            compressor, decompressor, input_buffer, uncompressed_buffer, metadata, params);
 }
 
 template<typename Integer>
@@ -1147,7 +1149,74 @@ static benchmark_result benchmark_nvcomp_cascaded(
 
 
 #if NDZIP_BENCHMARK_HAVE_ZFP
-// TODO
+
+// ZFP has a bit-level lossless (reversible) mode that is available only on CPU. An OpenMP variant
+// exists but only supports parallel compression, not decompression.
+static benchmark_result benchmark_zfp(
+        const void *input_buffer, const metadata &metadata, const benchmark_params &params) {
+    const auto uncompressed_size = metadata.size_in_bytes();
+    auto bench = benchmark{params};
+
+    zfp_field *field;
+    auto type = metadata.data_type == data_type::t_float ? zfp_type_float : zfp_type_double;
+    switch (metadata.extent.size()) {
+        case 1:
+            field = zfp_field_1d(const_cast<void *>(input_buffer), type,
+                    static_cast<unsigned>(metadata.extent[0]));
+            break;
+        case 2:
+            field = zfp_field_2d(const_cast<void *>(input_buffer), type,
+                    static_cast<unsigned>(metadata.extent[0]),
+                    static_cast<unsigned>(metadata.extent[1]));
+            break;
+        case 3:
+            field = zfp_field_3d(const_cast<void *>(input_buffer), type,
+                    static_cast<unsigned>(metadata.extent[0]),
+                    static_cast<unsigned>(metadata.extent[1]),
+                    static_cast<unsigned>(metadata.extent[2]));
+            break;
+    }
+    auto free_field = defer([&] { zfp_field_free(field); });
+
+    auto zfp = zfp_stream_open(nullptr);
+    auto close_zfp = defer([&] { zfp_stream_close(zfp); });
+
+    zfp_stream_set_reversible(zfp);
+    if (params.num_threads > 1) {
+        zfp_stream_set_execution(zfp, zfp_exec_omp);
+        zfp_stream_set_omp_threads(zfp, static_cast<unsigned>(params.num_threads));
+    }
+
+    auto compress_buffer = scratch_buffer{zfp_stream_maximum_size(zfp, field)};
+    auto stream = stream_open(compress_buffer.data(), compress_buffer.size());
+    auto close_stream = defer([&] { stream_close(stream); });
+    zfp_stream_set_bit_stream(zfp, stream);
+
+    size_t compressed_size;
+    while (bench.compress_more()) {
+        zfp_stream_rewind(zfp);
+        bench.time_compression([&] { compressed_size = zfp_compress(zfp, field); });
+    }
+
+    // ZFP does not currently support parallel decompression
+    zfp_stream_set_execution(zfp, zfp_exec_serial);
+
+    auto decompress_buffer = scratch_buffer{uncompressed_size};
+    zfp_field_set_pointer(field, decompress_buffer.data());
+
+    while (bench.decompress_more()) {
+        zfp_stream_rewind(zfp);
+        bench.time_decompression([&] {
+            if (zfp_decompress(zfp, field) != compressed_size) {
+                throw buffer_mismatch{};
+            }
+        });
+    }
+
+    assert_buffer_equality(input_buffer, decompress_buffer.data(), uncompressed_size);
+    return std::move(bench).result(uncompressed_size, compressed_size);
+}
+
 #endif
 
 
@@ -1268,6 +1337,9 @@ const algorithm_map &available_algorithms() {
 #endif
 #if NDZIP_BENCHMARK_HAVE_LZMA
         {"lzma", {benchmark_lzma, 1, 6, 9}},
+#endif
+#if NDZIP_BENCHMARK_HAVE_ZFP
+        {"zfp", {benchmark_zfp, 1, 1, 1, true /* multithreaded */}},
 #endif
     };
     // clang-format on
