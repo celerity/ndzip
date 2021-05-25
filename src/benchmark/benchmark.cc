@@ -1185,6 +1185,8 @@ static benchmark_result benchmark_zfp(
     if (params.num_threads > 1) {
         zfp_stream_set_execution(zfp, zfp_exec_omp);
         zfp_stream_set_omp_threads(zfp, static_cast<unsigned>(params.num_threads));
+    } else {
+        zfp_stream_set_execution(zfp, zfp_exec_serial);
     }
 
     auto compress_buffer = scratch_buffer{zfp_stream_maximum_size(zfp, field)};
@@ -1339,7 +1341,8 @@ const algorithm_map &available_algorithms() {
         {"lzma", {benchmark_lzma, 1, 6, 9}},
 #endif
 #if NDZIP_BENCHMARK_HAVE_ZFP
-        {"zfp", {benchmark_zfp, 1, 1, 1, true /* multithreaded */}},
+        {"zfp", {benchmark_zfp}},
+        {"zfp-mt", {benchmark_zfp, 1, 1, 1, true /* multithreaded */}},
 #endif
     };
     // clang-format on
