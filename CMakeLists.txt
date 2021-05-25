@@ -32,6 +32,11 @@ if (NDZIP_BUILD_BENCHMARK)
     pkg_check_modules(LZ4 liblz4>=1.0.0 QUIET IMPORTED_TARGET)
     pkg_check_modules(ZSTD libzstd>=1.0.0 QUIET IMPORTED_TARGET)
 
+    find_package(CUDAToolkit)
+    if (CUDAToolkit_FOUND)
+        enable_language(CUDA)
+    endif ()
+
     if (EXISTS "${CMAKE_SOURCE_DIR}/contrib/fpzip/CMakeLists.txt")
         set(FPZIP_FOUND TRUE)
     else ()
@@ -44,10 +49,13 @@ if (NDZIP_BUILD_BENCHMARK)
         message(WARNING "Building without cudpp benchmark, perform git submodule step to enable")
     endif ()
 
-    if (EXISTS "${CMAKE_SOURCE_DIR}/contrib/nvcomp/CMakeLists.txt")
-        set(NVCOMP_FOUND TRUE)
-    else ()
+    if (NOT EXISTS "${CMAKE_SOURCE_DIR}/contrib/nvcomp/CMakeLists.txt")
         message(WARNING "Building without NVCOMP benchmark, perform git submodule step to enable")
+    elseif (CMAKE_CUDA_COMPILER_ID STREQUAL Clang)
+        message(WARNING "Building without NVCOMP which does not currently support Clang")
+    else ()
+        message(WARNING ${CMAKE_CUDA_COMPILER_ID})
+        set(NVCOMP_FOUND TRUE)
     endif ()
 
     if (EXISTS "${CMAKE_SOURCE_DIR}/contrib/zfp/CMakeLists.txt")
@@ -180,7 +188,6 @@ endif ()
 
 
 if (NDZIP_BUILD_BENCHMARK)
-    find_package(CUDAToolkit)
     find_library(STD_CPP_FS stdc++fs)
 
     if (FPZIP_FOUND)
