@@ -130,6 +130,7 @@ struct benchmark_params {
     unsigned min_reps = 1;
     unsigned max_reps = 100;
     bool warm_up = true;
+    bool auto_tune = false;
 };
 
 
@@ -1103,7 +1104,7 @@ template<typename Integer>
 static nvcompCascadedFormatOpts
 select_optimal_nvcomp_cascaded_options(const void *uncompressed_buffer, size_t uncompressed_size) {
     nvcomp::CascadedSelector<Integer> selector{uncompressed_buffer, uncompressed_size,
-            {16 /* sample_size */, 256 /* num_samples */, 4109432731u /* seed */}};
+            {256 /* sample_size */, 1024 /* num_samples */, 4109432731u /* seed */}};
     size_t workspace_buffer_size = selector.get_temp_size();
 
     void *workspace_buffer;
@@ -1135,7 +1136,16 @@ static benchmark_result benchmark_nvcomp_cascaded(
     CHECKED_CUDA_CALL(cudaMemcpyAsync, uncompressed_buffer, input_buffer, uncompressed_size,
             cudaMemcpyHostToDevice);
 
-    auto options = select_optimal_nvcomp_cascaded_options(uncompressed_buffer, metadata);
+    nvcompCascadedFormatOpts options;
+    if (params.auto_tune) {
+        options = select_optimal_nvcomp_cascaded_options(uncompressed_buffer, metadata);
+        fprintf(stderr,
+                "nvCOMP Cascaded selected num_RLEs=%d, num_deltas=%d, use_bp=%d for %s\n",
+                options.num_RLEs, options.num_deltas, options.use_bp,
+                metadata.path.filename().c_str());
+    } else {
+        options = {1, 0, 1};
+    }
 
     nvcomp::CascadedCompressor compressor(
             metadata.data_type == data_type::t_float ? NVCOMP_TYPE_UINT : NVCOMP_TYPE_ULONGLONG,
@@ -1209,9 +1219,7 @@ static benchmark_result benchmark_zfp(
     while (bench.decompress_more()) {
         zfp_stream_rewind(zfp);
         bench.time_decompression([&] {
-            if (zfp_decompress(zfp, field) != compressed_size) {
-                throw buffer_mismatch{};
-            }
+            if (zfp_decompress(zfp, field) != compressed_size) { throw buffer_mismatch{}; }
         });
     }
 
@@ -1381,7 +1389,7 @@ struct join {
 
 static void benchmark_file(const metadata &metadata, const algorithm_map &algorithms, bool warm_up,
         std::chrono::microseconds min_time, unsigned min_reps, unsigned max_reps, tuning tunables,
-        bool benchmark_scaling, const ndzip::detail::io_factory &io_factory) {
+        bool benchmark_scaling, bool auto_tune, const ndzip::detail::io_factory &io_factory) {
     auto input_stream
             = io_factory.create_input_stream(metadata.path.string(), metadata.size_in_bytes());
     auto input_buffer = input_stream->read_exact();
@@ -1411,7 +1419,7 @@ static void benchmark_file(const metadata &metadata, const algorithm_map &algori
             for (size_t num_threads = min_num_threads; num_threads <= max_num_threads;
                     ++num_threads) {
                 auto params = benchmark_params{
-                        tunable, num_threads, min_time, min_reps, max_reps, warm_up};
+                        tunable, num_threads, min_time, min_reps, max_reps, warm_up, auto_tune};
 
                 benchmark_result result;
                 try {
@@ -1492,6 +1500,7 @@ int main(int argc, char **argv) {
     bool no_mmap = false;
     bool no_warmup = false;
     bool benchmark_scaling = false;
+    bool auto_tune = false;
 
     auto usage = "Usage: "s + argv[0] + " [options] csv-file\n\n";
 
@@ -1517,7 +1526,9 @@ int main(int argc, char **argv) {
                     "vary number of threads for multi-threaded algorithms")
             ("no-mmap", opts::bool_switch(&no_mmap), "do not use memory-mapped I/O")
             ("no-warmup", opts::bool_switch(&no_warmup),
-                    "do not perform an additional warm-up step per benchmark");
+                    "do not perform an additional warm-up step per benchmark")
+            ("auto-tune", opts::bool_switch(&auto_tune),
+                    "auto-select optimal configuration per dataset (nvCOMP Cascaded)");
     // clang-format on
 
     opts::positional_options_description pos;
@@ -1596,7 +1607,7 @@ int main(int argc, char **argv) {
         for (auto &metadata : load_metadata_file(metadata_csv_file)) {
             benchmark_file(metadata, selected_algorithms, !no_warmup,
                     std::chrono::milliseconds(benchmark_ms), benchmark_min_reps, benchmark_max_reps,
-                    tunables, benchmark_scaling, *io_factory);
+                    tunables, benchmark_scaling, auto_tune, *io_factory);
         }
         return EXIT_SUCCESS;
     } catch (std::exception &e) {
