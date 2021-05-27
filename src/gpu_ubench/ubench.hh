@@ -1,5 +1,7 @@
 #pragma once
 
+#include <complex>  // we don't use <complex>, but not including it triggers a CUDA error
+
 #include <SYCL/sycl.hpp>
 #define CATCH_CONFIG_ENABLE_BENCHMARKING
 #include <catch2/catch.hpp>

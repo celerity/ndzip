@@ -494,10 +494,12 @@ void write_transposed_chunks(hypercube_group<Profile> grp,
     });
 
     const auto out_header_chunk = out_chunks;
+    sycl::local_memory<sycl::vec<uint32_t, warps_per_col_chunk>[hypercube_group_size<Profile>]>
+            row_stage { grp };
 
     // Schedule one warp per chunk to allow subgroup reductions
     grp.distribute_for(num_col_chunks * warp_size,
-            [&](index_type item, index_type, sycl::logical_item<1>, sycl::sub_group sg) {
+            [&](index_type item, index_type, sycl::logical_item<1> idx, sycl::sub_group sg) {
                 const auto col_chunk_index = item / warp_size;
                 const auto in_col_chunk_base = col_chunk_index * col_chunk_size;
 
@@ -535,11 +537,19 @@ void write_transposed_chunks(hypercube_group<Profile> grp,
                     // Note that this makes assumptions about the endianness of uint64_t.
                     static_assert(warp_size == 32);  // implicit assumption with uint32_t
                     sycl::vec<uint32_t, warps_per_col_chunk> columns[warps_per_col_chunk];
-#pragma unroll
+
                     for (index_type i = 0; i < warps_per_col_chunk; ++i) {
+                        // Stage rows through local memory to avoid repeated hypercube_ptr index
+                        // calculations inside the loop
+                        row_stage[idx.get_local_id(0)]
+                                = hc.template load<sycl::vec<uint32_t, warps_per_col_chunk>>(
+                                        in_col_chunk_base + col_chunk_size - 1
+                                        - (warp_size * i + sg.get_local_linear_id()));
+                        sycl::group_barrier(sg);
+
                         for (index_type j = 0; j < warp_size; ++j) {
-                            auto row = hc.template load<sycl::vec<uint32_t, warps_per_col_chunk>>(
-                                    in_col_chunk_base + col_chunk_size - 1 - (warp_size * i + j));
+                            auto row = row_stage[floor<index_type>(idx.get_local_id(0), warp_size)
+                                    + j];
 #pragma unroll
                             for (index_type w = 0; w < warps_per_col_chunk; ++w) {
                                 columns[w][i] |= ((row[warps_per_col_chunk - 1 - w]
