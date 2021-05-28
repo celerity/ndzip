@@ -69,7 +69,7 @@ template<typename Profile>
 #ifdef NDZIP_GPU_GROUP_SIZE
 inline constexpr index_type hypercube_group_size = NDZIP_GPU_GROUP_SIZE;
 #else
-inline constexpr index_type hypercube_group_size = bytes_of<typename Profile::bits_type> == 4 ? 256 : 384;
+inline constexpr index_type hypercube_group_size = bytes_of<typename Profile::bits_type> == 4 ? 256 : 512;
 #endif
 
 template<typename Profile>
