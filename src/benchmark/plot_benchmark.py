@@ -38,10 +38,13 @@ def input_files(file_list):
 
 class ThroughputStats:
     def __init__(self, dataset_points: list, op: str):
+        sample_means = [int(p['uncompressed bytes']) / np.mean(np.array(
+            [float(t) for t in p[f'{op} times (microseconds)'].split(',')])) * 1e6
+                        for p in dataset_points]
+        # TODO stats except mean are probably imprecise
         samples = [np.array(
             [int(p['uncompressed bytes']) / float(t) * 1e6 for t in p[f'{op} times (microseconds)'].split(',')])
             for p in dataset_points]
-        sample_means = [np.mean(ds) for ds in samples]
         self.mean = np.mean(sample_means)
         self.stddev = np.sqrt(np.mean([np.var(ds) for ds in samples]))
         self.min = np.mean([np.min(ds) for ds in samples])
