@@ -49,7 +49,18 @@ cmake -B build -DCMAKE_PREFIX_PATH='../hipSYCL-rt-profiling/lib/cmake' -DHIPSYCL
 cmake --build build -j
 ```
 
-Replace `sm_75` and `75` with the string matching your GPU's Compute Capability. The `-U__FLOAT128__` define is required due to an [open bug in Clang](https://bugs.llvm.org/show_bug.cgi?id=47559).
+Replace `sm_75` and `75` with the string matching your GPU's Compute Capability. The `-U__FLOAT128__` define is required
+due to an [open bug in Clang](https://bugs.llvm.org/show_bug.cgi?id=47559).
+
+### For benchmarking with NVCOMP
+
+Unfortunately, Clang currently cannot build NVCOMP. A separate binary supporting NVCOMP benchmarks can be built using
+NVCC:
+
+```
+cmake -B build-nvcc -DCMAKE_CUDA_ARCHITECTURES=75 -DHIPSYCL_GPU_ARCH=sm_75 -DCMAKE_BUILD_TYPE=Release
+cmake --build build-nvcc -j
+```
 
 ## Running a benchmark
 
