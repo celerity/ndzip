@@ -60,6 +60,7 @@ enum class data_type {
 enum class tuning {
     good,
     min_max,
+    max,
     full,
 };
 
@@ -1400,6 +1401,8 @@ static void benchmark_file(const metadata &metadata, const algorithm_map &algori
             tunable_values = {algo.tunable_good};
         } else if (tunables == tuning::min_max) {
             tunable_values = {algo.tunable_min, algo.tunable_max};
+        } else if (tunables == tuning::max) {
+            tunable_values = {algo.tunable_max};
         } else {
             tunable_values.resize(algo.tunable_max - algo.tunable_min + 1);
             std::iota(tunable_values.begin(), tunable_values.end(), algo.tunable_min);
@@ -1521,7 +1524,7 @@ int main(int argc, char **argv) {
                     "repeat each at least n times (default 1)")
             ("max-reps,R", opts::value(&benchmark_max_reps),
                     "repeat each at most n times (default 100)")
-            ("tunables", opts::value<std::string>(), "tunables good|minmax|full (default good)")
+            ("tunables", opts::value<std::string>(), "tunables good|minmax|max|full (default good)")
             ("scaling", opts::bool_switch(&benchmark_scaling),
                     "vary number of threads for multi-threaded algorithms")
             ("no-mmap", opts::bool_switch(&no_mmap), "do not use memory-mapped I/O")
@@ -1558,11 +1561,12 @@ int main(int argc, char **argv) {
                 tunables = tuning::good;
             } else if (str == "minmax") {
                 tunables = tuning::min_max;
+            } else if (str == "max") {
+                tunables = tuning::max;
             } else if (str == "full") {
                 tunables = tuning::full;
             } else {
-                throw boost::program_options::invalid_option_value(
-                        "--tunables must be good, minmax or full");
+                throw boost::program_options::error("--tunables must be good, minmax, max or full");
             }
         }
 
