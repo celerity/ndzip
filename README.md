@@ -1,4 +1,4 @@
-# ndzip: A High-Throughput Parallel Lossless Comprssor for Scientific Data
+# ndzip: A High-Throughput Parallel Lossless Compressor for Scientific Data
 
 ndzip compresses and decompresses multidimensional univariate grids of single- and double-precision IEEE 754 floating-point data.
 Its primary use case is speeding up distributed HPC applications by increasing effective interconnect bandwidth.
@@ -11,7 +11,7 @@ git submodule update --init --recursive
 
 ## Prerequisites
 
-- CMake >= 3.10
+- CMake >= 3.15
 - Clang >= 10.0.0
 - Linux (tested on x86_64 and POWER9)
 - Boost >= 1.66
@@ -38,7 +38,7 @@ Recommended CMake options for optimal CPU performance
 ```
 git clone https://github.com/fknorr/hipSYCL --branch rt-profiling
 cd hipSYCL
-cmake -B build -DCMAKE_INSTALL_PREFIX=../hipSYCL-rt-profiling -DHIPSYCL_WITH_CUDA_BACKEND=YES -DCMAKE_BUILD_TYPE=Release
+cmake -B build -DCMAKE_INSTALL_PREFIX=../hipSYCL-rt-profiling -DWITH_CUDA_BACKEND=YES -DCMAKE_BUILD_TYPE=Release
 cmake --build build --target install -j
 ```
 

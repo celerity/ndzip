@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.4)
+cmake_minimum_required(VERSION 3.15)
 
 function(add_split_configured_source target scope file_name include variables values gen_lines counter)
     set(ctr ${${counter}})
