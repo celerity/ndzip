@@ -15,6 +15,11 @@
 #include <io/io.hh>
 #include <ndzip/ndzip.hh>
 
+#if NDZIP_BENCHMARK_HAVE_3RDPARTY
+#include <SPDP_11.h>
+#include <fpc.h>
+#include <pFPC.h>
+#endif
 #if NDZIP_BENCHMARK_HAVE_ZLIB
 #include <zlib.h>
 #endif
@@ -34,9 +39,6 @@
 #include <cuda_runtime.h>
 #include <cudpp.h>
 #endif
-#include <SPDP_11.h>
-#include <fpc.h>
-#include <pFPC.h>
 #if NDZIP_BENCHMARK_HAVE_GFC
 #include <GFC_22.h>
 #endif
@@ -469,6 +471,7 @@ static benchmark_result benchmark_fpzip(
 #endif
 
 
+#if NDZIP_BENCHMARK_HAVE_3RDPARTY
 static benchmark_result benchmark_fpc(
         const void *input_buffer, const metadata &metadata, const benchmark_params &params) {
     if (metadata.data_type != data_type::t_double) { throw not_implemented{}; }
@@ -569,6 +572,7 @@ static benchmark_result benchmark_spdp(
     assert_buffer_equality(input_buffer, decompress_buffer.data(), uncompressed_size);
     return std::move(bench).result(uncompressed_size, compressed_size);
 }
+#endif
 
 
 #if NDZIP_BENCHMARK_HAVE_GFC
@@ -1318,15 +1322,17 @@ const algorithm_map &available_algorithms() {
 #if NDZIP_GPU_SUPPORT
         {"ndzip-gpu", {benchmark_ndzip<ndzip::gpu_encoder>}},
 #endif
+#if NDZIP_BENCHMARK_HAVE_3RDPARTY
+        {"fpc", {benchmark_fpc, 1, 15, 25}},
+        {"pfpc", {benchmark_pfpc, 1, 15, 25, true /* multithreaded */}},
+        {"spdp", {benchmark_spdp, 1, 5, 9}},
+#endif
 #if NDZIP_BENCHMARK_HAVE_FPZIP
         {"fpzip", {benchmark_fpzip}},
 #endif
 #if NDZIP_BENCHMARK_HAVE_CUDPP
         {"cudpp-compress", {benchmark_cudpp_compress}},
 #endif
-        {"fpc", {benchmark_fpc, 1, 15, 25}},
-        {"pfpc", {benchmark_pfpc, 1, 15, 25, true /* multithreaded */}},
-        {"spdp", {benchmark_spdp, 1, 5, 9}},
 #if NDZIP_BENCHMARK_HAVE_GFC
         {"gfc", {benchmark_gfc}},
 #endif
@@ -1483,9 +1489,11 @@ static void print_library_versions() {
 #if NDZIP_BENCHMARK_HAVE_GFC
     printf("GFC %s\n", GFC_Version_String);
 #endif
+#if NDZIP_BENCHMARK_HAVE_3RDPARTY
     puts(FPC_Version_String);
     puts(pFPC_Version_String);
     puts(SPDP_Version_String);
+#endif
 }
 
 

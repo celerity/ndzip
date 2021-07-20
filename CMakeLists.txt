@@ -6,6 +6,7 @@ option(NDZIP_BUILD_TEST "Build unit tests" ON)
 option(NDZIP_BUILD_BENCHMARK "Build benchmarks against other algorithms" ON)
 option(NDZIP_WITH_MT "Enable parallel CPU implementation through OpenMP if available " ON)
 option(NDZIP_WITH_GPU "Enable GPU implementation through hipSYCL if available" ON)
+option(NDZIP_WITH_3RDPARTY_BENCHMARKS "Build third-party libraries for benchmarking" ON)
 
 set(CMAKE_MODULE_PATH "${PROJECT_SOURCE_DIR}/cmake")
 include(SplitConfiguration)
@@ -25,7 +26,7 @@ if (NDZIP_BUILD_TEST)
     find_package(Catch2)
 endif()
 
-if (NDZIP_BUILD_BENCHMARK)
+if (NDZIP_BUILD_BENCHMARK AND NDZIP_WITH_3RDPARTY_BENCHMARKS)
     find_package(ZLIB QUIET)
     find_package(PkgConfig)
     pkg_check_modules(LZMA liblzma>=5.0.0 QUIET IMPORTED_TARGET)
@@ -54,7 +55,6 @@ if (NDZIP_BUILD_BENCHMARK)
     elseif (CMAKE_CUDA_COMPILER_ID STREQUAL Clang)
         message(WARNING "Building without NVCOMP which does not currently support Clang")
     else ()
-        message(WARNING ${CMAKE_CUDA_COMPILER_ID})
         set(NVCOMP_FOUND TRUE)
     endif ()
 
@@ -187,7 +187,7 @@ if (NDZIP_BUILD_TEST AND Catch2_FOUND AND NDZIP_USE_HIPSYCL)
 endif ()
 
 
-if (NDZIP_BUILD_BENCHMARK)
+if (NDZIP_BUILD_BENCHMARK AND NDZIP_WITH_3RDPARTY_BENCHMARKS)
     find_library(STD_CPP_FS stdc++fs)
 
     if (FPZIP_FOUND)
@@ -220,14 +220,17 @@ if (NDZIP_BUILD_BENCHMARK)
     if (ZFP_FOUND)
         add_subdirectory(contrib/zfp EXCLUDE_FROM_ALL)
     endif ()
+endif ()
 
+if (NDZIP_BUILD_BENCHMARK)
     add_executable(benchmark src/benchmark/benchmark.cc)
     target_compile_options(benchmark PRIVATE ${NDZIP_COMPILE_FLAGS})
-    target_link_libraries(benchmark PRIVATE ndzip io Boost::program_options fpc pfpc spdp)
+    target_link_libraries(benchmark PRIVATE ndzip io Boost::program_options)
     if (STD_CPP_FS)
         target_link_libraries(benchmark PRIVATE ${STD_CPP_FS})
     endif ()
     target_compile_definitions(benchmark PRIVATE
+        "-DNDZIP_BENCHMARK_HAVE_3RDPARTY=$<BOOL:${NDZIP_WITH_3RDPARTY_BENCHMARKS}>"
         "-DNDZIP_BENCHMARK_HAVE_ZLIB=$<BOOL:${ZLIB_FOUND}>"
         "-DNDZIP_BENCHMARK_HAVE_LZ4=$<BOOL:${LZ4_FOUND}>"
         "-DNDZIP_BENCHMARK_HAVE_LZMA=$<BOOL:${LZMA_FOUND}>"
@@ -238,13 +241,17 @@ if (NDZIP_BUILD_BENCHMARK)
         "-DNDZIP_BENCHMARK_HAVE_GFC=$<BOOL:${CUDAToolkit_FOUND}>"
         "-DNDZIP_BENCHMARK_HAVE_MPC=$<BOOL:${CUDAToolkit_FOUND}>"
         "-DNDZIP_BENCHMARK_HAVE_ZSTD=$<BOOL:${ZSTD_FOUND}>"
-    )
+        )
     if (NDZIP_USE_OPENMP)
         target_link_libraries(benchmark PRIVATE OpenMP::OpenMP_CXX Boost::thread)
     endif ()
     if (NDZIP_USE_HIPSYCL)
         target_link_libraries(benchmark PRIVATE ndzip-gpu)
     endif ()
+endif ()
+
+if (NDZIP_BUILD_BENCHMARK AND NDZIP_WITH_3RDPARTY_BENCHMARKS)
+    target_link_libraries(benchmark PRIVATE fpc pfpc spdp)
     if (ZLIB_FOUND)
         target_link_libraries(benchmark PRIVATE ZLIB::ZLIB)
     endif ()

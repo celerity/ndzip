@@ -1,3 +1,5 @@
+#include <complex>  // we don't use <complex>, but not including it triggers a CUDA error
+
 #include <ndzip/gpu_bits.hh>
 #include <test/test_utils.hh>
 
