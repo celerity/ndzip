@@ -1030,35 +1030,44 @@ static benchmark_result benchmark_nvcomp_compressor(nvcomp::Compressor &compress
     size_t compress_bound, compress_temp_size;
     compressor.configure(uncompressed_size, &compress_temp_size, &compress_bound);
 
-    void *compress_buffer;
-    void *compress_temp_buffer;
-    void *decompress_buffer;
-    CHECKED_CUDA_CALL(cudaMalloc, &compress_buffer, compress_bound);
-    auto free_compress_buffer = defer([&] { cudaFree(compress_buffer); });
-    CHECKED_CUDA_CALL(cudaMalloc, &compress_temp_buffer, compress_temp_size);
-    auto free_compress_temp_buffer = defer([&] { cudaFree(compress_temp_buffer); });
-    CHECKED_CUDA_CALL(cudaMalloc, &decompress_buffer, uncompressed_size);
-    auto free_decompress_buffer = defer([&] { cudaFree(decompress_buffer); });
-
-    // Compress once to obtain output temp buffer size from decompressor
     size_t *compressed_size_buffer;
     CHECKED_CUDA_CALL(cudaMalloc, &compressed_size_buffer, sizeof *compressed_size_buffer);
     auto free_compressed_size_buffer = defer([&] { cudaFree(compressed_size_buffer); });
-    compressor.compress_async(uncompressed_buffer, uncompressed_size, compress_temp_buffer,
-            compress_temp_size, compress_buffer, compressed_size_buffer, nullptr);
 
-    size_t compressed_size;
-    CHECKED_CUDA_CALL(cudaMemcpy, &compressed_size, compressed_size_buffer, sizeof compressed_size,
-            cudaMemcpyDeviceToHost);
+    // Compress once to obtain output + temp buffer size, then re-allocate later to minimize peak
+    // memory consumption
+    size_t compressed_size, decompress_temp_size;
+    {
+        void *compress_buffer;
+        CHECKED_CUDA_CALL(cudaMalloc, &compress_buffer, compress_bound);
+        auto free_compress_buffer = defer([&] { cudaFree(compress_buffer); });
 
-    size_t decompress_temp_size, decompressed_size;
-    decompressor.configure(
-            compress_buffer, compressed_size, &decompress_temp_size, &decompressed_size, nullptr);
-    if (decompressed_size != uncompressed_size) { throw buffer_mismatch(); }
+        void *compress_temp_buffer;
+        CHECKED_CUDA_CALL(cudaMalloc, &compress_temp_buffer, compress_temp_size);
+        auto free_compress_temp_buffer = defer([&] { cudaFree(compress_temp_buffer); });
 
-    void *decompress_temp_buffer;
-    CHECKED_CUDA_CALL(cudaMalloc, &decompress_temp_buffer, decompress_temp_size);
-    auto free_decompress_temp_buffer = defer([&] { cudaFree(decompress_temp_buffer); });
+        compressor.compress_async(uncompressed_buffer, uncompressed_size, compress_temp_buffer,
+                compress_temp_size, compress_buffer, compressed_size_buffer, nullptr);
+        CHECKED_CUDA_CALL(cudaMemcpy, &compressed_size, compressed_size_buffer,
+                sizeof compressed_size, cudaMemcpyDeviceToHost);
+
+        size_t decompressed_size;
+        decompressor.configure(compress_buffer, compressed_size, &decompress_temp_size,
+                &decompressed_size, nullptr);
+        if (decompressed_size != uncompressed_size) { throw buffer_mismatch(); }
+    }
+
+    void *compress_buffer;
+    CHECKED_CUDA_CALL(cudaMalloc, &compress_buffer, compressed_size);
+    auto free_compress_buffer = defer([&] { cudaFree(compress_buffer); });
+    void *decompress_buffer;
+    CHECKED_CUDA_CALL(cudaMalloc, &decompress_buffer, uncompressed_size);
+    auto free_decompress_buffer = defer([&] { cudaFree(decompress_buffer); });
+
+    size_t temp_size = std::max(compress_temp_size, decompress_temp_size);
+    void *temp_buffer;
+    CHECKED_CUDA_CALL(cudaMalloc, &temp_buffer, temp_size);
+    auto free_temp_buffer = defer([&] { cudaFree(temp_buffer); });
 
     cudaEvent_t before, after;
     CHECKED_CUDA_CALL(cudaEventCreate, &before);
@@ -1068,20 +1077,20 @@ static benchmark_result benchmark_nvcomp_compressor(nvcomp::Compressor &compress
 
     while (bench.compress_more()) {
         bench.record_compression(time_cuda_kernel(before, after, [&] {
-            compressor.compress_async(uncompressed_buffer, uncompressed_size, compress_temp_buffer,
-                    compress_temp_size, compress_buffer, compressed_size_buffer, nullptr);
+            compressor.compress_async(uncompressed_buffer, uncompressed_size, temp_buffer,
+                    temp_size, compress_buffer, compressed_size_buffer, nullptr);
         }));
     }
 
     while (bench.decompress_more()) {
         bench.record_decompression(time_cuda_kernel(before, after, [&] {
-            decompressor.decompress_async(compress_buffer, compressed_size, decompress_temp_buffer,
-                    decompress_temp_size, decompress_buffer, decompressed_size, nullptr);
+            decompressor.decompress_async(compress_buffer, compressed_size, temp_buffer, temp_size,
+                    decompress_buffer, uncompressed_size, nullptr);
         }));
     }
 
-    auto output_buffer = scratch_buffer{decompressed_size};
-    CHECKED_CUDA_CALL(cudaMemcpy, output_buffer.data(), decompress_buffer, decompressed_size,
+    auto output_buffer = scratch_buffer{uncompressed_size};
+    CHECKED_CUDA_CALL(cudaMemcpy, output_buffer.data(), decompress_buffer, uncompressed_size,
             cudaMemcpyDeviceToHost);
 
     assert_buffer_equality(input_buffer, output_buffer.data(), uncompressed_size);
@@ -1144,8 +1153,7 @@ static benchmark_result benchmark_nvcomp_cascaded(
     nvcompCascadedFormatOpts options;
     if (params.auto_tune) {
         options = select_optimal_nvcomp_cascaded_options(uncompressed_buffer, metadata);
-        fprintf(stderr,
-                "nvCOMP Cascaded selected num_RLEs=%d, num_deltas=%d, use_bp=%d for %s\n",
+        fprintf(stderr, "nvCOMP Cascaded selected num_RLEs=%d, num_deltas=%d, use_bp=%d for %s\n",
                 options.num_RLEs, options.num_deltas, options.use_bp,
                 metadata.path.filename().c_str());
     } else {
