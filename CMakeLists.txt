@@ -2,8 +2,8 @@ cmake_minimum_required(VERSION 3.15)
 
 project(ndzip)
 
-option(NDZIP_BUILD_TEST "Build unit tests" ON)
-option(NDZIP_BUILD_BENCHMARK "Build benchmarks against other algorithms" ON)
+option(NDZIP_BUILD_TEST "Build unit tests" OFF)
+option(NDZIP_BUILD_BENCHMARK "Build benchmarks against other algorithms" OFF)
 option(NDZIP_WITH_MT "Enable parallel CPU implementation through OpenMP if available " ON)
 option(NDZIP_WITH_GPU "Enable GPU implementation through hipSYCL if available" ON)
 option(NDZIP_WITH_3RDPARTY_BENCHMARKS "Build third-party libraries for benchmarking" ON)
