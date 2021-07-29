@@ -1,7 +1,11 @@
 # ndzip: A High-Throughput Parallel Lossless Compressor for Scientific Data
 
-ndzip compresses and decompresses multidimensional univariate grids of single- and double-precision IEEE 754 floating-point data.
-Its primary use case is speeding up distributed HPC applications by increasing effective interconnect bandwidth.
+ndzip compresses and decompresses multidimensional univariate grids of single- and double-precision IEEE 754
+floating-point data. We implement a single-threaded CPU compressor, an OpenMP-backed multi-threaded compressor and a
+SYCL-based GPU compressor. All three variants generate and decode bit-identical compressed stream.
+
+ndzip is currently a research project with the primary use case of speeding up distributed HPC applications by
+increasing effective interconnect bandwidth.
 
 ## Prerequisites
 
@@ -14,17 +18,19 @@ Its primary use case is speeding up distributed HPC applications by increasing e
 ### Additionaly, for GPU support
 
 - CUDA >= 11.0 (not officially compatible with Clang 10/11, but a lower version will optimize insufficiently!)
-- A [fork of hipSYCL](https://github.com/fknorr/hipSYCL/tree/rt-profiling) which includes kernel profiling functionality 
+- A [fork of hipSYCL](https://github.com/fknorr/hipSYCL/tree/rt-profiling) which includes kernel profiling functionality
 - An Nvidia GPU of Compute Capability >= 6.1
 
 ## Building
 
 Make sure to set the right build type and enable the full instruction set of the target CPU architecture:
+
 ```sh
 -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_FLAGS="-march=native"
 ```
 
 If unit tests and microbenchmarks should also be built, add
+
 ```sh
 -DNDZIP_BUILD_TEST=YES
 ```
@@ -76,3 +82,15 @@ build/gpu_ubench     # GPU microbenchmarks, only if built with GPU support
 ## See also
 
 - [Benchmarking ndzip](docs/benchmarking.md)
+
+## References
+
+If you are using ndzip as part of your research, we kindly ask you to cite
+
+- Fabian Knorr, Peter Thoman, and Thomas Fahringer. "ndzip: A High-Throughput Parallel Lossless Compressor for
+  Scientific Data". In _2021 Data Compression Conference (DCC)_, IEEE,
+  2021. [[DOI]](https://doi.org/10.1109/DCC50243.2021.00018) [Preprint PDF](https://dps.uibk.ac.at/~fabian/publications/2021-ndzip-a-high-throughput-parallel-lossless-compressor-for-scientific-data.pdf)
+
+- Fabian Knorr, Peter Thoman, and Thomas Fahringer. "ndzip-gpu: Efficient Lossless Compression of Scientific
+  Floating-Point Data on GPUs". Accepted at Supercomputing
+  2021. [Preprint PDF](https://dps.uibk.ac.at/~fabian/publications/2021-ndzip-gpu-efficient-lossless-compression-of-scientific-floating-point-data-on-gpus.pdf)
