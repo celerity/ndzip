@@ -488,12 +488,13 @@ template<typename Profile>
 __global__ void decompress_block(const typename Profile::bits_type *stream_buf,
         slice<typename Profile::data_type, Profile::dimensions> data) {
     auto block = hypercube_block<Profile>{};
-    hypercube_memory<Profile, inverse_transform_tag> lm;
+    __shared__ hypercube_memory<Profile, inverse_transform_tag> lm;
     auto *lmp = lm;  // workaround for https://bugs.llvm.org/show_bug.cgi?id=50316
     hypercube_ptr<Profile, inverse_transform_tag> hc{lmp};
 
+    const auto num_hypercubes = static_cast<index_type>(gridDim.x);
     const auto hc_index = static_cast<index_type>(blockIdx.x);
-    detail::stream<const Profile> stream{gridDim.x, stream_buf};
+    detail::stream<const Profile> stream{num_hypercubes, stream_buf};
     read_transposed_chunks<Profile>(block, hc, stream.hypercube(hc_index));
     __syncthreads();
     inverse_block_transform<Profile>(block, hc);
@@ -618,7 +619,7 @@ size_t ndzip::cuda_encoder<T, Dims>::decompress(const void *raw_stream, size_t b
     const auto num_border_words = border_map.size();
 
     detail::stream<const profile> stream{
-            file.num_hypercubes(), static_cast<const bits_type *>(raw_stream)};
+            num_hypercubes, static_cast<const bits_type *>(raw_stream)};
     const auto border_offset = static_cast<index_type>(stream.border() - stream.buffer);
     const auto num_stream_words = border_offset + num_border_words;
 
