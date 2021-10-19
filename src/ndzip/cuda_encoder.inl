@@ -470,6 +470,9 @@ compact_all_chunks(index_type num_hypercubes, const typename Profile::bits_type 
 }
 
 
+constexpr static index_type border_threads_per_block = 256;
+
+
 template<typename Profile>
 __global__ void compact_border(slice<const typename Profile::data_type, Profile::dimensions> data,
         const index_type *num_compressed_words, typename Profile::bits_type *stream_buf,
@@ -477,7 +480,7 @@ __global__ void compact_border(slice<const typename Profile::data_type, Profile:
     using bits_type = typename Profile::bits_type;
 
     auto border_offset = num_header_words + *num_compressed_words;
-    auto i = static_cast<index_type>(blockIdx.x * hypercube_group_size<Profile> + threadIdx.x);
+    auto i = static_cast<index_type>(blockIdx.x * border_threads_per_block + threadIdx.x);
     if (i < border_map.size()) {
         stream_buf[border_offset + i] = bit_cast<bits_type>(data[border_map[i]]);
     }
@@ -508,7 +511,7 @@ __global__ void expand_border(const typename Profile::bits_type *stream_buf,
         slice<typename Profile::data_type, Profile::dimensions> data,
         border_map<Profile> border_map, index_type border_offset) {
     using data_type = typename Profile::data_type;
-    auto i = static_cast<index_type>(blockIdx.x * hypercube_group_size<Profile> + threadIdx.x);
+    auto i = static_cast<index_type>(blockIdx.x * border_threads_per_block + threadIdx.x);
     if (i < border_map.size()) {
         data[border_map[i]] = bit_cast<data_type>(stream_buf[border_offset + i]);
     }
@@ -571,7 +574,6 @@ size_t ndzip::cuda_encoder<T, Dims>::compress(const slice<const data_type, dimen
     // TODO num_header_words == num_header_fields ??
 
     if (num_border_words > 0) {
-        const index_type border_threads_per_block = 256;
         const index_type border_blocks = div_ceil(num_border_words, border_threads_per_block);
         compact_border<profile>
                 <<<border_blocks, border_threads_per_block>>>(slice{data_buffer.get(), data.size()},
@@ -624,7 +626,6 @@ size_t ndzip::cuda_encoder<T, Dims>::decompress(const void *raw_stream, size_t b
     const auto num_stream_words = border_offset + num_border_words;
 
     if (num_border_words > 0) {
-        const index_type border_threads_per_block = 256;
         const index_type border_blocks = div_ceil(num_border_words, border_threads_per_block);
         expand_border<profile><<<border_blocks, border_threads_per_block>>>(
                 stream_buf.get(), slice{data_buf.get(), data.size()}, border_map, border_offset);
