@@ -20,12 +20,12 @@ using hypercube_group = known_size_group<hypercube_group_size<Profile>>;
 template<typename Profile, typename Transform>
 using hypercube_memory = sycl::local_memory<
         typename hypercube_allocation<hypercube_layout<Profile, Transform>>::backing_type
-        [hypercube_allocation<hypercube_layout<Profile, Transform>>::size]>;
+                [hypercube_allocation<hypercube_layout<Profile, Transform>>::size]>;
 
 
 template<typename Profile, typename F>
 void for_hypercube_indices(hypercube_group<Profile> grp, index_type hc_index,
-                           extent<Profile::dimensions> data_size, F &&f) {
+        extent<Profile::dimensions> data_size, F &&f) {
     const auto side_length = Profile::hypercube_side_length;
     const auto hc_size = ipow(side_length, Profile::dimensions);
     const auto hc_offset
@@ -33,8 +33,8 @@ void for_hypercube_indices(hypercube_group<Profile> grp, index_type hc_index,
 
     index_type initial_offset = linear_offset(hc_offset, data_size);
     grp.distribute_for(hc_size, [&](index_type local_idx) {
-      index_type global_idx = initial_offset + global_offset<Profile>(local_idx, data_size);
-      f(global_idx, local_idx);
+        index_type global_idx = initial_offset + global_offset<Profile>(local_idx, data_size);
+        f(global_idx, local_idx);
     });
 }
 
@@ -308,7 +308,7 @@ void read_transposed_chunks(hypercube_group<Profile> grp,
     grp.distribute_for(num_col_chunks * warp_size,
             [&](index_type item0, index_type, sycl::logical_item<1> idx, sycl::sub_group sg) {
                 auto col_chunk_index = item0 / warp_size;
-                auto head = stream[col_chunk_index]; // TODO this has been read before, stage?
+                auto head = stream[col_chunk_index];  // TODO this has been read before, stage?
 
                 if (head != 0) {
                     word_type head_col[words_per_col];
@@ -424,7 +424,7 @@ class block_decompression_kernel;
 template<typename, unsigned>
 class border_expansion_kernel;
 
-}  // namespace ndzip::detail::gpu
+}  // namespace ndzip::detail::gpu_sycl
 
 
 template<typename T, unsigned Dims>
@@ -435,10 +435,9 @@ struct ndzip::sycl_encoder<T, Dims>::impl {
     impl(bool report_kernel_duration, bool verbose)
         : profiling_enabled(report_kernel_duration || verbose)
         , q{sycl::gpu_selector{},
-                report_kernel_duration || verbose
-                        ? sycl::property_list{sycl::property::queue::enable_profiling{}}
-                        : sycl::property_list{}}
-    {
+                  report_kernel_duration || verbose
+                          ? sycl::property_list{sycl::property::queue::enable_profiling{}}
+                          : sycl::property_list{}} {
         if (verbose) {
             auto device = q.get_device();
             printf("Using %s on %s %s (%lu bytes of local memory)\n",
@@ -494,9 +493,12 @@ size_t ndzip::sycl_encoder<T, Dims>::compress(const slice<const data_type, dimen
             ceil(1 + num_chunks, hierarchical_inclusive_scan_granularity));
     sycl::buffer<bits_type> stream_buf(
             div_ceil(compressed_size_bound<data_type, dimensions>(data.size()), sizeof(bits_type)));
-    _pimpl->q.submit([&](sycl::handler &cgh) {
-        cgh.fill(stream_buf.template get_access<sam::discard_write>(cgh, sycl::range<1>{1}), bits_type{});
-    }).wait();
+    _pimpl->q
+            .submit([&](sycl::handler &cgh) {
+                cgh.fill(stream_buf.template get_access<sam::discard_write>(cgh, sycl::range<1>{1}),
+                        bits_type{});
+            })
+            .wait();
 
     auto encode_kernel = [&](sycl::handler &cgh) {
         auto data_acc = data_buffer.template get_access<sam::read>(cgh);
@@ -524,23 +526,34 @@ size_t ndzip::sycl_encoder<T, Dims>::compress(const slice<const data_type, dimen
     auto encode_kernel_evt
             = submit_and_profile(_pimpl->q, "transform + chunk encode", encode_kernel);
 
-    auto intermediate_bufs_keepalive = hierarchical_inclusive_scan(_pimpl->q, chunk_lengths_buf, sycl::plus<index_type>{});
+    auto intermediate_bufs_keepalive
+            = hierarchical_inclusive_scan(_pimpl->q, chunk_lengths_buf, sycl::plus<index_type>{});
 
     auto num_compressed_words_offset = sycl::id<1>{num_hypercubes * chunks_per_hc};
 
-    submit_and_profile(_pimpl->q, "compact chunks", [&](sycl::handler &cgh) {
+    auto last_kernel_evt = submit_and_profile(_pimpl->q, "compact chunks", [&](sycl::handler &cgh) {
         auto chunks_acc = chunks_buf.template get_access<sam::read>(cgh);
         auto offsets_acc = chunk_lengths_buf.template get_access<sam::read>(cgh);
         auto stream_acc = stream_buf.template get_access<sam::discard_write>(cgh);
-        cgh.parallel<chunk_compaction_kernel<T, Dims>>(sycl::range<1>{num_hypercubes},
+        const auto num_header_fields = detail::ceil(
+                num_hypercubes, static_cast<uint32_t>(sizeof(bits_type) / sizeof(index_type)));
+        cgh.parallel<chunk_compaction_kernel<T, Dims>>(sycl::range<1>{num_header_fields},
                 sycl::range<1>{hypercube_group_size<profile>},
                 [=](hypercube_group<profile> grp, sycl::physical_item<1>) {
                     auto hc_index = static_cast<index_type>(grp.get_id(0));
                     detail::stream<profile> stream{num_hypercubes, stream_acc.get_pointer()};
-                    compact_chunks<profile>(grp,
-                            &chunks_acc.get_pointer()[hc_index * hc_total_chunks_size],
-                            &offsets_acc.get_pointer()[hc_index * chunks_per_hc],
-                            stream.header() + hc_index, stream.hypercube(0));
+                    if (hc_index == num_hypercubes) {
+                        // For 64-bit data types and an odd number of hypercubes, we insert a
+                        // padding word in the header to guarantee correct alignment. To keep the
+                        // compressed stream deterministic we round gridDim.x up to the next
+                        // multiple of 2 and initialize the padding to zero.
+                        grp.single_item([&] { stream.header()[num_hypercubes] = 0; });
+                    } else {
+                        compact_chunks<profile>(grp,
+                                &chunks_acc.get_pointer()[hc_index * hc_total_chunks_size],
+                                &offsets_acc.get_pointer()[hc_index * chunks_per_hc],
+                                stream.header() + hc_index, stream.hypercube(0));
+                    }
                 });
     });
 
@@ -549,53 +562,59 @@ size_t ndzip::sycl_encoder<T, Dims>::compress(const slice<const data_type, dimen
 
     detail::stream<profile> stream{num_hypercubes, static_cast<bits_type *>(raw_stream)};
     const auto num_header_words = stream.hypercube(0) - stream.buffer;
+    // TODO num_header_words == num_header_fields ??
 
-    auto compact_border_kernel = [&](sycl::handler &cgh) {
-        auto data_acc = data_buffer.template get_access<sam::read>(cgh);
-        auto offsets_acc = chunk_lengths_buf.template get_access<sam::read>(cgh);
-        auto stream_acc = stream_buf.template get_access<sam::discard_write>(cgh);
-        const auto data_size = data.size();
-        cgh.parallel_for<border_compaction_kernel<T, Dims>>(  // TODO leverage ILP
-                sycl::range<1>{num_border_words}, [=](sycl::item<1> item) {
-                    slice<const data_type, dimensions> data{data_acc.get_pointer(), data_size};
-                    auto num_compressed_words = offsets_acc[num_compressed_words_offset];
-                    auto border_offset = num_header_words + num_compressed_words;
-                    auto i = static_cast<index_type>(item.get_linear_id());
-                    stream_acc[border_offset + i] = bit_cast<bits_type>(data[border_map[i]]);
-                });
-    };
-    auto compact_border_evt
-            = submit_and_profile(_pimpl->q, "compact border", compact_border_kernel);
-    compact_border_evt.wait();
+    if (num_border_words > 0) {
+        auto compact_border_kernel = [&](sycl::handler &cgh) {
+            auto data_acc = data_buffer.template get_access<sam::read>(cgh);
+            auto offsets_acc = chunk_lengths_buf.template get_access<sam::read>(cgh);
+            auto stream_acc = stream_buf.template get_access<sam::discard_write>(cgh);
+            const auto data_size = data.size();
+            cgh.parallel_for<border_compaction_kernel<T, Dims>>(  // TODO leverage ILP
+                    sycl::range<1>{num_border_words}, [=](sycl::item<1> item) {
+                        slice<const data_type, dimensions> data{data_acc.get_pointer(), data_size};
+                        auto num_compressed_words = offsets_acc[num_compressed_words_offset];
+                        auto border_offset = num_header_words + num_compressed_words;
+                        auto i = static_cast<index_type>(item.get_linear_id());
+                        stream_acc[border_offset + i] = bit_cast<bits_type>(data[border_map[i]]);
+                    });
+        };
+        auto compact_border_evt
+                = submit_and_profile(_pimpl->q, "compact border", compact_border_kernel);
+        last_kernel_evt = compact_border_evt;
+        compact_border_evt.wait();
+    }
 
     index_type host_num_compressed_words;
     auto num_compressed_words_available = _pimpl->q.submit([&](sycl::handler &cgh) {
-        cgh.copy(chunk_lengths_buf.template get_access<sam::read>(cgh, sycl::range<1>{1},
-                    num_compressed_words_offset),
+        cgh.copy(chunk_lengths_buf.template get_access<sam::read>(
+                         cgh, sycl::range<1>{1}, num_compressed_words_offset),
                 &host_num_compressed_words);
     });
 
-    _pimpl->q.submit([&](sycl::handler &cgh) {
-        cgh.copy(chunk_lengths_buf.template get_access<sam::read>(cgh, sycl::range<1>{1},
-                    num_compressed_words_offset),
-                &host_num_compressed_words);
-    }).wait();
+    _pimpl->q
+            .submit([&](sycl::handler &cgh) {
+                cgh.copy(chunk_lengths_buf.template get_access<sam::read>(
+                                 cgh, sycl::range<1>{1}, num_compressed_words_offset),
+                        &host_num_compressed_words);
+            })
+            .wait();
 
     const auto host_border_offset = num_header_words + host_num_compressed_words;
     const auto host_num_stream_words = host_border_offset + num_border_words;
 
     submit_and_profile(_pimpl->q, "copy stream to host", [&](sycl::handler &cgh) {
-        cgh.copy(stream_buf.template get_access<sam::read>(cgh, host_num_stream_words), stream.buffer);
+        cgh.copy(stream_buf.template get_access<sam::read>(cgh, host_num_stream_words),
+                stream.buffer);
     }).wait();
 
     if (_pimpl->profiling_enabled) {
-        auto [early, late, kernel_duration] = measure_duration(encode_kernel_evt, compact_border_evt);
+        auto [early, late, kernel_duration] = measure_duration(encode_kernel_evt, last_kernel_evt);
         if (verbose()) {
-            printf("[profile] %8lu %8lu total kernel time %.3fms\n", early, late, kernel_duration.count() * 1e-6);
+            printf("[profile] %8lu %8lu total kernel time %.3fms\n", early, late,
+                    kernel_duration.count() * 1e-6);
         }
-        if (out_kernel_duration) {
-            *out_kernel_duration = kernel_duration;
-        }
+        if (out_kernel_duration) { *out_kernel_duration = kernel_duration; }
     } else if (out_kernel_duration) {
         *out_kernel_duration = {};
     }
@@ -625,25 +644,28 @@ size_t ndzip::sycl_encoder<T, Dims>::decompress(const void *raw_stream, size_t b
                 stream_buf.template get_access<sam::discard_write>(cgh));
     }).wait();
 
-    auto kernel_evt = submit_and_profile(_pimpl->q, "decompress blocks", [&](sycl::handler &cgh) {
-        auto stream_acc = stream_buf.template get_access<sam::read>(cgh);
-        auto data_acc = data_buf.template get_access<sam::discard_write>(cgh);
-        auto data_size = data.size();
-        auto num_hypercubes = file.num_hypercubes();
-        cgh.parallel<block_decompression_kernel<T, Dims>>(sycl::range<1>{num_hypercubes},
-                sycl::range<1>{hypercube_group_size<profile>},
-                [=](hypercube_group<profile> grp, sycl::physical_item<1>) {
-                    slice<data_type, dimensions> data{data_acc.get_pointer(), data_size};
-                    hypercube_memory<profile, inverse_transform_tag> lm{grp};
-                    hypercube_ptr<profile, inverse_transform_tag> hc{lm()};
+    auto decompress_kernel_evt
+            = submit_and_profile(_pimpl->q, "decompress blocks", [&](sycl::handler &cgh) {
+                  auto stream_acc = stream_buf.template get_access<sam::read>(cgh);
+                  auto data_acc = data_buf.template get_access<sam::discard_write>(cgh);
+                  auto data_size = data.size();
+                  auto num_hypercubes = file.num_hypercubes();
+                  cgh.parallel<block_decompression_kernel<T, Dims>>(sycl::range<1>{num_hypercubes},
+                          sycl::range<1>{hypercube_group_size<profile>},
+                          [=](hypercube_group<profile> grp, sycl::physical_item<1>) {
+                              slice<data_type, dimensions> data{data_acc.get_pointer(), data_size};
+                              hypercube_memory<profile, inverse_transform_tag> lm{grp};
+                              hypercube_ptr<profile, inverse_transform_tag> hc{lm()};
 
-                    const auto hc_index = static_cast<index_type>(grp.get_id(0));
-                    detail::stream<const profile> stream{num_hypercubes, stream_acc.get_pointer()};
-                    read_transposed_chunks<profile>(grp, hc, stream.hypercube(hc_index));
-                    inverse_block_transform<profile>(grp, hc);
-                    store_hypercube(grp, hc_index, {data}, hc);
-                });
-    });
+                              const auto hc_index = static_cast<index_type>(grp.get_id(0));
+                              detail::stream<const profile> stream{
+                                      num_hypercubes, stream_acc.get_pointer()};
+                              read_transposed_chunks<profile>(grp, hc, stream.hypercube(hc_index));
+                              inverse_block_transform<profile>(grp, hc);
+                              store_hypercube(grp, hc_index, {data}, hc);
+                          });
+              });
+    auto last_kernel_evt = decompress_kernel_evt;
 
     const auto border_map = gpu::border_map<profile>{data.size()};
     const auto num_border_words = border_map.size();
@@ -653,32 +675,35 @@ size_t ndzip::sycl_encoder<T, Dims>::decompress(const void *raw_stream, size_t b
     const auto border_offset = static_cast<index_type>(stream.border() - stream.buffer);
     const auto num_stream_words = border_offset + num_border_words;
 
-    auto expand_border_kernel = [&](sycl::handler &cgh) {
-        auto stream_acc = stream_buf.template get_access<sam::read>(cgh);
-        auto data_acc = data_buf.template get_access<sam::discard_write>(cgh);
-        const auto data_size = data.size();
-        cgh.parallel_for<border_expansion_kernel<T, Dims>>(  // TODO leverage ILP
-                sycl::range<1>{num_border_words}, [=](sycl::item<1> item) {
-                    slice<data_type, dimensions> data{data_acc.get_pointer(), data_size};
-                    auto i = static_cast<index_type>(item.get_linear_id());
-                    data[border_map[i]] = bit_cast<data_type>(stream_acc[border_offset + i]);
-                });
-    };
-    auto expand_border_evt = submit_and_profile(_pimpl->q, "expand border", expand_border_kernel);
-    expand_border_evt.wait();
+    if (num_border_words > 0) {
+        auto expand_border_kernel = [&](sycl::handler &cgh) {
+            auto stream_acc = stream_buf.template get_access<sam::read>(cgh);
+            auto data_acc = data_buf.template get_access<sam::discard_write>(cgh);
+            const auto data_size = data.size();
+            cgh.parallel_for<border_expansion_kernel<T, Dims>>(  // TODO leverage ILP
+                    sycl::range<1>{num_border_words}, [=](sycl::item<1> item) {
+                        slice<data_type, dimensions> data{data_acc.get_pointer(), data_size};
+                        auto i = static_cast<index_type>(item.get_linear_id());
+                        data[border_map[i]] = bit_cast<data_type>(stream_acc[border_offset + i]);
+                    });
+        };
+        auto expand_border_evt
+                = submit_and_profile(_pimpl->q, "expand border", expand_border_kernel);
+        expand_border_evt.wait();
+    }
 
     submit_and_profile(_pimpl->q, "copy output to host", [&](sycl::handler &cgh) {
         cgh.copy(data_buf.template get_access<sam::read>(cgh), data.data());
     }).wait();
 
     if (_pimpl->profiling_enabled) {
-        auto [early, late, kernel_duration] = measure_duration(kernel_evt, expand_border_evt);
+        auto [early, late, kernel_duration]
+                = measure_duration(decompress_kernel_evt, last_kernel_evt);
         if (verbose()) {
-            printf("[profile] %8lu %8lu total kernel time %.3fms\n", early, late, kernel_duration.count() * 1e-6);
+            printf("[profile] %8lu %8lu total kernel time %.3fms\n", early, late,
+                    kernel_duration.count() * 1e-6);
         }
-        if (out_kernel_duration) {
-            *out_kernel_duration = kernel_duration;
-        }
+        if (out_kernel_duration) { *out_kernel_duration = kernel_duration; }
     } else if (out_kernel_duration) {
         *out_kernel_duration = {};
     }

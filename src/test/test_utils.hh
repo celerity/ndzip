@@ -40,8 +40,8 @@ void check_for_vector_equality(const T *lhs, const T *rhs, size_t size, const ch
 
     if (first_mismatch <= last_mismatch) {
         std::ostringstream ss;
-        ss << file << ":" << line << ": vectors mismatch between index " << first_mismatch << " and " << last_mismatch
-           << ":\n    {";
+        ss << file << ":" << line << ": vectors of size " << size << " mismatch between index "
+           << first_mismatch << " and " << last_mismatch << ":\n    {";
         for (auto *vec : {&lhs, &rhs}) {
             for (size_t i = first_mismatch; i <= last_mismatch;) {
                 ss << (*vec)[i];
@@ -85,7 +85,7 @@ void black_hole(T *datum) {
 template<typename InputIt, typename OutputIt, typename BinaryOperation = std::plus<>,
         typename T = typename std::iterator_traits<OutputIt>::value_type>
 constexpr OutputIt iter_inclusive_scan(InputIt first, InputIt last, OutputIt d_first,
-                                       BinaryOperation binary_op = {}, T init = {}) {
+        BinaryOperation binary_op = {}, T init = {}) {
     while (first != last) {
         *d_first = init = binary_op(init, *first);
         ++first;

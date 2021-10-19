@@ -415,7 +415,6 @@ __device__ void compact_chunks(hypercube_block<Profile> block,
 template<typename Profile>
 __global__ void compress_block(slice<const typename Profile::data_type, Profile::dimensions> data,
         typename Profile::bits_type *chunks, index_type *chunk_lengths) {
-    using data_type = typename Profile::data_type;
     using bits_type = typename Profile::bits_type;
 
     constexpr index_type dimensions = Profile::dimensions;
@@ -443,7 +442,8 @@ __global__ void compress_block(slice<const typename Profile::data_type, Profile:
 
 
 template<typename Profile>
-__global__ void compact_all_chunks(const typename Profile::bits_type *chunks,
+__global__ void
+compact_all_chunks(index_type num_hypercubes, const typename Profile::bits_type *chunks,
         const index_type *offsets, typename Profile::bits_type *stream_buf) {
     using bits_type = typename Profile::bits_type;
 
@@ -453,12 +453,20 @@ __global__ void compact_all_chunks(const typename Profile::bits_type *chunks,
     constexpr index_type chunks_per_hc = 1 /* header */ + hc_size / col_chunk_size;
     constexpr index_type hc_total_chunks_size = hc_size + header_chunk_size;
 
-    auto hc_index = static_cast<index_type>(blockIdx.x);
+    const auto hc_index = static_cast<index_type>(blockIdx.x);
     auto block = hypercube_block<Profile>{};
 
-    detail::stream<Profile> stream{gridDim.x, stream_buf};
-    compact_chunks<Profile>(block, chunks + hc_index * hc_total_chunks_size,
-            offsets + hc_index * chunks_per_hc, stream.header() + hc_index, stream.hypercube(0));
+    detail::stream<Profile> stream{num_hypercubes, stream_buf};
+    if (hc_index == num_hypercubes) {
+        // For 64-bit data types and an odd number of hypercubes, we insert a padding word in the
+        // header to guarantee correct alignment. To keep the compressed stream deterministic we
+        // round gridDim.x up to the next multiple of 2 and initialize the padding to zero.
+        if (threadIdx.x == 0) { stream.header()[num_hypercubes] = 0; }
+    } else {
+        compact_chunks<Profile>(block, chunks + hc_index * hc_total_chunks_size,
+                offsets + hc_index * chunks_per_hc, stream.header() + hc_index,
+                stream.hypercube(0));
+    }
 }
 
 
@@ -479,8 +487,6 @@ __global__ void compact_border(slice<const typename Profile::data_type, Profile:
 template<typename Profile>
 __global__ void decompress_block(const typename Profile::bits_type *stream_buf,
         slice<typename Profile::data_type, Profile::dimensions> data) {
-    using data_type = typename Profile::data_type;
-
     auto block = hypercube_block<Profile>{};
     hypercube_memory<Profile, inverse_transform_tag> lm;
     auto *lmp = lm;  // workaround for https://bugs.llvm.org/show_bug.cgi?id=50316
@@ -549,23 +555,28 @@ size_t ndzip::cuda_encoder<T, Dims>::compress(const slice<const data_type, dimen
     auto intermediate_bufs_keepalive = hierarchical_inclusive_scan(
             chunk_lengths_buf.get(), chunk_lengths_buf.size(), plus<index_type>{});
 
-    auto num_compressed_words_offset = num_hypercubes * chunks_per_hc;
+    const auto num_compressed_words_offset = num_hypercubes * chunks_per_hc;
 
-    compact_all_chunks<profile><<<num_hypercubes, (hypercube_group_size<profile>)>>>(
-            chunks_buf.get(), chunk_lengths_buf.get(), stream_buf.get());
+    const auto num_header_fields = detail::ceil(
+            num_hypercubes, static_cast<uint32_t>(sizeof(bits_type) / sizeof(index_type)));
+    compact_all_chunks<profile><<<num_header_fields, (hypercube_group_size<profile>)>>>(
+            num_hypercubes, chunks_buf.get(), chunk_lengths_buf.get(), stream_buf.get());
 
     const auto border_map = gpu::border_map<profile>{data.size()};
     const auto num_border_words = border_map.size();
 
     detail::stream<profile> stream{num_hypercubes, static_cast<bits_type *>(raw_stream)};
     const auto num_header_words = stream.hypercube(0) - stream.buffer;
+    // TODO num_header_words == num_header_fields ??
 
-    const index_type compact_threads_per_block = 256;
-    const index_type compact_blocks = div_ceil(num_hypercubes, compact_threads_per_block);
-    compact_border<profile>
-            <<<compact_blocks, compact_threads_per_block>>>(slice{data_buffer.get(), data.size()},
-                    chunk_lengths_buf.get() + num_compressed_words_offset, stream_buf.get(),
-                    num_header_words, border_map);
+    if (num_border_words > 0) {
+        const index_type border_threads_per_block = 256;
+        const index_type border_blocks = div_ceil(num_border_words, border_threads_per_block);
+        compact_border<profile>
+                <<<border_blocks, border_threads_per_block>>>(slice{data_buffer.get(), data.size()},
+                        chunk_lengths_buf.get() + num_compressed_words_offset, stream_buf.get(),
+                        num_header_words, border_map);
+    }
 
     index_type host_num_compressed_words;
     CHECKED_CUDA_CALL(cudaMemcpy, &host_num_compressed_words,
@@ -611,10 +622,12 @@ size_t ndzip::cuda_encoder<T, Dims>::decompress(const void *raw_stream, size_t b
     const auto border_offset = static_cast<index_type>(stream.border() - stream.buffer);
     const auto num_stream_words = border_offset + num_border_words;
 
-    const index_type expand_threads_per_block = 256;
-    const index_type expand_blocks = div_ceil(num_hypercubes, expand_threads_per_block);
-    expand_border<profile><<<expand_blocks, expand_threads_per_block>>>(
-            stream_buf.get(), slice{data_buf.get(), data.size()}, border_map, border_offset);
+    if (num_border_words > 0) {
+        const index_type border_threads_per_block = 256;
+        const index_type border_blocks = div_ceil(num_border_words, border_threads_per_block);
+        expand_border<profile><<<border_blocks, border_threads_per_block>>>(
+                stream_buf.get(), slice{data_buf.get(), data.size()}, border_map, border_offset);
+    }
 
     CHECKED_CUDA_CALL(cudaMemcpy, data.data(), data_buf.get(), data_buf.size() * sizeof(data_type),
             cudaMemcpyDeviceToHost);
