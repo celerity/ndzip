@@ -7,4 +7,7 @@
 #endif
 #if NDZIP_HIPSYCL_SUPPORT
 #include "sycl_encoder.hh"
-#endif  // NDZIP_HIPSYCL_SUPPORT
+#endif
+#if NDZIP_CUDA_SUPPORT
+#include "cuda_encoder.hh"
+#endif

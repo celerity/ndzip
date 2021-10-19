@@ -742,8 +742,10 @@ TEMPLATE_TEST_CASE(
         CHECKED_CUDA_CALL(cudaMemcpy, cuda_chunk_lengths.data(), chunk_lengths_buf.get(),
                 chunk_lengths_buf.size() * sizeof(index_type), cudaMemcpyDeviceToHost);
 
-        gpu_cuda::hierarchical_inclusive_scan(
-                chunk_lengths_buf.get(), chunk_lengths_buf.size(), gpu_cuda::plus<index_type>{});
+        auto intermediate_bufs = gpu_cuda::hierarchical_inclusive_scan_allocate<index_type>(
+                chunk_lengths_buf.size());
+        gpu_cuda::hierarchical_inclusive_scan(chunk_lengths_buf.get(), intermediate_bufs,
+                chunk_lengths_buf.size(), gpu_cuda::plus<index_type>{});
 
         CHECKED_CUDA_CALL(cudaMemcpy, cuda_chunk_offsets.data(), chunk_lengths_buf.get(),
                 chunk_lengths_buf.size() * sizeof(index_type), cudaMemcpyDeviceToHost);

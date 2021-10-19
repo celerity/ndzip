@@ -440,7 +440,7 @@ struct ndzip::sycl_encoder<T, Dims>::impl {
                           : sycl::property_list{}} {
         if (verbose) {
             auto device = q.get_device();
-            printf("Using %s on %s %s (%lu bytes of local memory)\n",
+            printf("SYCL backend is %s on %s %s (%lu bytes of local memory)\n",
                     device.get_platform().get_info<sycl::info::platform::name>().c_str(),
                     device.get_info<sycl::info::device::vendor>().c_str(),
                     device.get_info<sycl::info::device::name>().c_str(),

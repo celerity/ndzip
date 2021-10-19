@@ -128,6 +128,10 @@ void process_stream(bool decompress, const std::vector<size_t> &size_components,
     } else if (encoder == "sycl") {
         process_stream<ndzip::sycl_encoder, Data>(decompress, size_components, in, out, io);
 #endif
+#if NDZIP_CUDA_SUPPORT
+    } else if (encoder == "cuda") {
+        process_stream<ndzip::cuda_encoder, Data>(decompress, size_components, in, out, io);
+#endif
     } else {
         throw opts::error("Invalid encoder \"" + encoder + "\" in option -e / --encoder");
     }
@@ -175,6 +179,9 @@ int main(int argc, char **argv) {
 #endif
 #if NDZIP_HIPSYCL_SUPPORT
                                              "|sycl"
+#endif
+#if NDZIP_CUDA_SUPPORT
+                                             "|cuda"
 #endif
                                              " (default cpu)")
         ("input,i", opts::value(&input), "input file (default '-' is stdin)")

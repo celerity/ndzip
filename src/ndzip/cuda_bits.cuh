@@ -223,6 +223,59 @@ class cuda_buffer {
     index_type _size = 0;
 };
 
+
+class cuda_event {
+  public:
+    class allocate_t {
+    } inline constexpr static allocate{};
+
+    cuda_event() noexcept = default;
+
+    cuda_event(allocate_t) { CHECKED_CUDA_CALL(cudaEventCreate, &_evt); }
+
+    cuda_event(cuda_event &&other) noexcept {
+        using std::swap;
+        swap(_evt, other._evt);
+    }
+
+    cuda_event &operator=(cuda_event &&other) noexcept {
+        using std::swap;
+        reset();
+        swap(_evt, other._evt);
+        return *this;
+    }
+
+    ~cuda_event() { reset(); }
+
+    explicit operator bool() const noexcept { return _evt != nullptr; }
+
+    void reset() {
+        if (_evt) {
+            CHECKED_CUDA_CALL(cudaEventDestroy, _evt);
+            _evt = nullptr;
+        }
+    }
+
+    void record() {
+        if (!_evt) { CHECKED_CUDA_CALL(cudaEventCreate, &_evt); }
+        CHECKED_CUDA_CALL(cudaEventRecord, _evt);
+    }
+
+    friend kernel_duration operator-(const cuda_event &a, const cuda_event &b) {
+        assert(a);
+        assert(b);
+        CHECKED_CUDA_CALL(cudaEventSynchronize, a._evt);
+        float ms;
+        CHECKED_CUDA_CALL(cudaEventElapsedTime, &ms, b._evt, a._evt);
+        return std::chrono::duration_cast<kernel_duration>(
+                std::chrono::duration<float, std::milli>(ms));
+    }
+
+  private:
+    cudaEvent_t _evt = nullptr;
+};
+
+
 template<typename Scalar, typename BinaryOp>
 __global__ void
 hierarchical_inclusive_scan_reduce(Scalar *big_buf, Scalar *small_buf, BinaryOp op) {
@@ -252,21 +305,27 @@ hierarchical_inclusive_scan_expand(const Scalar *small_buf, Scalar *big_buf, Bin
 }
 
 
-template<typename Scalar, typename BinaryOp>
-auto hierarchical_inclusive_scan(Scalar *in_out_buf, index_type n_elems, BinaryOp op = {}) {
+template<typename Scalar>
+auto hierarchical_inclusive_scan_allocate(index_type n_elems) {
     constexpr index_type granularity = hierarchical_inclusive_scan_granularity;
-    constexpr index_type threads_per_block = 256;
 
     std::vector<cuda_buffer<Scalar>> intermediate_bufs;
-    {
-        auto n = n_elems;
-        assert(n % granularity == 0);  // otherwise we will overrun the in_out buffer bounds
+    auto n = n_elems;
+    assert(n % granularity == 0);  // otherwise we will overrun the in_out buffer bounds
 
-        while (n > 1) {
-            n = div_ceil(n, granularity);
-            intermediate_bufs.emplace_back(ceil(n, granularity));
-        }
+    while (n > 1) {
+        n = div_ceil(n, granularity);
+        intermediate_bufs.emplace_back(ceil(n, granularity));
     }
+    return intermediate_bufs;
+}
+
+
+template<typename Scalar, typename BinaryOp>
+void hierarchical_inclusive_scan(Scalar *in_out_buf,
+        std::vector<cuda_buffer<Scalar>> &intermediate_bufs, index_type n_elems, BinaryOp op = {}) {
+    constexpr index_type granularity = hierarchical_inclusive_scan_granularity;
+    constexpr index_type threads_per_block = 256;
 
     for (index_type i = 0; i < intermediate_bufs.size(); ++i) {
         auto *big_buf = i > 0 ? intermediate_bufs[i - 1].get() : in_out_buf;
@@ -286,10 +345,6 @@ auto hierarchical_inclusive_scan(Scalar *in_out_buf, index_type n_elems, BinaryO
         const auto blocks = div_ceil(big_buf_size, granularity) - 1;
         hierarchical_inclusive_scan_expand<<<blocks, threads_per_block>>>(small_buf, big_buf, op);
     }
-
-    // (optionally) keep buffers alive so that cudaFree does not mess up profiling
-    // TODO keep state in `scanner` type to avoid delayed allocation
-    return intermediate_bufs;
 }
 
 

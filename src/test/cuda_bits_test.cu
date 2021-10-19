@@ -108,8 +108,10 @@ TEMPLATE_TEST_CASE("hierarchical_inclusive_scan produces the expected results", 
     cuda_buffer<uint32_t> prefix_sum_buf(input.size());
     CHECKED_CUDA_CALL(cudaMemcpy, prefix_sum_buf.get(), input.data(),
             prefix_sum_buf.size() * sizeof(uint32_t), cudaMemcpyHostToDevice);
-    auto keepalive
-            = hierarchical_inclusive_scan(prefix_sum_buf.get(), prefix_sum_buf.size(), TestType{});
+
+    auto intermediate_bufs = hierarchical_inclusive_scan_allocate<uint32_t>(prefix_sum_buf.size());
+    hierarchical_inclusive_scan(
+            prefix_sum_buf.get(), intermediate_bufs, prefix_sum_buf.size(), TestType{});
 
     std::vector<uint32_t> gpu_prefix_sum(input.size());
     CHECKED_CUDA_CALL(cudaMemcpy, gpu_prefix_sum.data(), prefix_sum_buf.get(),

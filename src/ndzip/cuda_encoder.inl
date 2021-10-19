@@ -552,12 +552,18 @@ size_t ndzip::cuda_encoder<T, Dims>::compress(const slice<const data_type, dimen
             ceil(1 + num_chunks, hierarchical_inclusive_scan_granularity)};
     cuda_buffer<bits_type> stream_buf{static_cast<index_type>(div_ceil(
             compressed_size_bound<data_type, dimensions>(data.size()), sizeof(bits_type)))};
+    auto intermediate_bufs
+            = hierarchical_inclusive_scan_allocate<index_type>(chunk_lengths_buf.size());
+
+    cuda_event start, stop;
+    bool record_events = out_kernel_duration || verbose();
+    if (record_events) { start.record(); }
 
     compress_block<profile><<<num_hypercubes, (hypercube_group_size<profile>)>>>(
             slice{data_buffer.get(), data.size()}, chunks_buf.get(), chunk_lengths_buf.get());
 
-    auto intermediate_bufs_keepalive = hierarchical_inclusive_scan(
-            chunk_lengths_buf.get(), chunk_lengths_buf.size(), plus<index_type>{});
+    hierarchical_inclusive_scan(chunk_lengths_buf.get(), intermediate_bufs,
+            chunk_lengths_buf.size(), plus<index_type>{});
 
     const auto num_compressed_words_offset = num_hypercubes * chunks_per_hc;
 
@@ -579,6 +585,13 @@ size_t ndzip::cuda_encoder<T, Dims>::compress(const slice<const data_type, dimen
                 <<<border_blocks, border_threads_per_block>>>(slice{data_buffer.get(), data.size()},
                         chunk_lengths_buf.get() + num_compressed_words_offset, stream_buf.get(),
                         num_header_words, border_map);
+    }
+
+    if (record_events) {
+        stop.record();
+        auto duration = stop - start;
+        if (out_kernel_duration) { *out_kernel_duration = duration; }
+        if (verbose()) { printf("[profile] total kernel time %.3fms\n", duration.count() * 1e-6); }
     }
 
     index_type host_num_compressed_words;
@@ -614,6 +627,10 @@ size_t ndzip::cuda_encoder<T, Dims>::decompress(const void *raw_stream, size_t b
 
     CHECKED_CUDA_CALL(cudaMemcpy, stream_buf.get(), raw_stream, bytes, cudaMemcpyHostToDevice);
 
+    cuda_event start, stop;
+    bool record_events = out_kernel_duration || verbose();
+    if (record_events) { start.record(); }
+
     decompress_block<profile><<<num_hypercubes, (hypercube_group_size<profile>)>>>(
             stream_buf.get(), slice{data_buf.get(), data.size()});
 
@@ -629,6 +646,13 @@ size_t ndzip::cuda_encoder<T, Dims>::decompress(const void *raw_stream, size_t b
         const index_type border_blocks = div_ceil(num_border_words, border_threads_per_block);
         expand_border<profile><<<border_blocks, border_threads_per_block>>>(
                 stream_buf.get(), slice{data_buf.get(), data.size()}, border_map, border_offset);
+    }
+
+    if (record_events) {
+        stop.record();
+        auto duration = stop - start;
+        if (out_kernel_duration) { *out_kernel_duration = duration; }
+        if (verbose()) { printf("[profile] total kernel time %.3fms\n", duration.count() * 1e-6); }
     }
 
     CHECKED_CUDA_CALL(cudaMemcpy, data.data(), data_buf.get(), data_buf.size() * sizeof(data_type),
