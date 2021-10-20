@@ -25,7 +25,7 @@ increasing effective interconnect bandwidth.
 
 - CUDA >= 11.0 (not officially compatible with Clang 10/11, but a lower version will optimize insufficiently!)
 - An Nvidia GPU with Compute Capability >= 6.1
-- For the SYCL version: A [fork of hipSYCL](https://github.com/fknorr/hipSYCL/tree/rt-profiling) which includes kernel
+- For the SYCL version: A recent version of [hipSYCL](https://github.com/illuhad/hipSYCL)
   profiling functionality
 
 ## Building
@@ -44,19 +44,19 @@ If unit tests and microbenchmarks should also be built, add
 
 ### For GPU support with SYCL
 
-1. Build and install the required [custom hipSYCL](https://github.com/fknorr/hipSYCL/tree/rt-profiling) version
+1. Build and install hipSYCL
 
 ```
-git clone https://github.com/fknorr/hipSYCL --branch rt-profiling
+git clone https://github.com/illuhad/hipSYCL
 cd hipSYCL
-cmake -B build -DCMAKE_INSTALL_PREFIX=../hipSYCL-rt-profiling -DWITH_CUDA_BACKEND=YES -DCMAKE_BUILD_TYPE=Release
+cmake -B build -DCMAKE_INSTALL_PREFIX=../hipSYCL-install -DWITH_CUDA_BACKEND=YES -DCMAKE_BUILD_TYPE=Release
 cmake --build build --target install -j
 ```
 
 2. Build ndzip with SYCL
 
 ```
-cmake -B build -DCMAKE_PREFIX_PATH='../hipSYCL-rt-profiling/lib/cmake' -DHIPSYCL_PLATFORM=cuda -DCMAKE_CUDA_ARCHITECTURES=75 -DHIPSYCL_GPU_ARCH=sm_75 -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_FLAGS="-U__FLOAT128__ -U__SIZEOF_FLOAT128__ -march=native"
+cmake -B build -DCMAKE_PREFIX_PATH='../hipSYCL-install/lib/cmake' -DHIPSYCL_PLATFORM=cuda -DCMAKE_CUDA_ARCHITECTURES=75 -DHIPSYCL_GPU_ARCH=sm_75 -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_FLAGS="-U__FLOAT128__ -U__SIZEOF_FLOAT128__ -march=native"
 cmake --build build -j
 ```
 

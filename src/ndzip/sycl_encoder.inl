@@ -484,7 +484,7 @@ size_t ndzip::sycl_encoder<T, Dims>::compress(
                     hypercube_memory<profile, forward_transform_tag> lm{grp};
                     hypercube_ptr<profile, forward_transform_tag> hc{&lm[0]};
 
-                    auto hc_index = static_cast<index_type>(grp.get_id(0));
+                    auto hc_index = static_cast<index_type>(grp.get_group_id(0));
                     load_hypercube(grp, hc_index, {data}, hc);
                     forward_block_transform(grp, hc);
                     write_transposed_chunks(grp, hc, &chunks_acc[hc_index * hc_total_chunks_size],
@@ -511,7 +511,7 @@ size_t ndzip::sycl_encoder<T, Dims>::compress(
         cgh.parallel<chunk_compaction_kernel<T, Dims>>(sycl::range<1>{num_header_fields},
                 sycl::range<1>{hypercube_group_size<profile>},
                 [=](hypercube_group<profile> grp, sycl::physical_item<1>) {
-                    auto hc_index = static_cast<index_type>(grp.get_id(0));
+                    auto hc_index = static_cast<index_type>(grp.get_group_id(0));
                     detail::stream<profile> stream{num_hypercubes, stream_acc.get_pointer()};
                     if (hc_index == num_hypercubes) {
                         // For 64-bit data types and an odd number of hypercubes, we insert a
@@ -621,7 +621,7 @@ size_t ndzip::sycl_encoder<T, Dims>::decompress(const void *raw_stream, size_t b
                     hypercube_memory<profile, inverse_transform_tag> lm{grp};
                     hypercube_ptr<profile, inverse_transform_tag> hc{lm()};
 
-                    const auto hc_index = static_cast<index_type>(grp.get_id(0));
+                    const auto hc_index = static_cast<index_type>(grp.get_group_id(0));
                     detail::stream<const profile> stream{num_hypercubes, stream_acc.get_pointer()};
                     read_transposed_chunks<profile>(grp, hc, stream.hypercube(hc_index));
                     inverse_block_transform<profile>(grp, hc);

@@ -168,7 +168,7 @@ auto hierarchical_inclusive_scan(sycl::queue &queue, sycl::buffer<Scalar> &in_ou
             auto small_acc = small_buffer.template get_access<sam::discard_write>(cgh);
             cgh.parallel<hierarchical_inclusive_scan_reduction_kernel<Scalar, BinaryOp>>(group_range, local_range,
                     [big_acc, small_acc, op](known_size_group<local_size> grp, sycl::physical_item<1>) {
-                        auto group_index = static_cast<index_type>(grp.get_id(0));
+                        auto group_index = static_cast<index_type>(grp.get_group_id(0));
                         Scalar *big = &big_acc[group_index * granularity];
                         Scalar &small = small_acc[group_index];
                         inclusive_scan<granularity>(grp, big, op);
@@ -194,7 +194,7 @@ auto hierarchical_inclusive_scan(sycl::queue &queue, sycl::buffer<Scalar> &in_ou
             auto big_acc = big_buffer.template get_access<sam::read_write>(cgh);
             cgh.parallel<hierarchical_inclusive_scan_expansion_kernel<Scalar, BinaryOp>>(group_range, local_range,
                     [small_acc, big_acc, op](known_size_group<local_size> grp, sycl::physical_item<1>) {
-                        auto group_index = static_cast<index_type>(grp.get_id(0));
+                        auto group_index = static_cast<index_type>(grp.get_group_id(0));
                         Scalar *big = &big_acc[(group_index + 1) * granularity];
                         Scalar small = small_acc[group_index];
                         grp.distribute_for(granularity, [&](index_type i) { big[i] = op(big[i], small); });
