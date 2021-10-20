@@ -209,9 +209,16 @@ class cuda_buffer {
 
     ~cuda_buffer() { reset(); }
 
+    void allocate(index_type size) {
+        reset();
+        CHECKED_CUDA_CALL(cudaMalloc, &_memory, size * sizeof(T));
+        _size = size;
+    }
+
     void reset() {
         if (_memory) { CHECKED_CUDA_CALL(cudaFree, _memory); }
         _memory = nullptr;
+        _size = 0;
     }
 
     index_type size() const { return _size; }
@@ -322,8 +329,8 @@ auto hierarchical_inclusive_scan_allocate(index_type n_elems) {
 
 
 template<typename Scalar, typename BinaryOp>
-void hierarchical_inclusive_scan(Scalar *in_out_buf,
-        std::vector<cuda_buffer<Scalar>> &intermediate_bufs, index_type n_elems, BinaryOp op = {}) {
+void hierarchical_inclusive_scan(Scalar *in_out_buf, std::vector<cuda_buffer<Scalar>> &intermediate_bufs,
+        index_type n_elems, BinaryOp op = {}, cudaStream_t stream = nullptr) {
     constexpr index_type granularity = hierarchical_inclusive_scan_granularity;
     constexpr index_type threads_per_block = 256;
 
@@ -333,7 +340,7 @@ void hierarchical_inclusive_scan(Scalar *in_out_buf,
         auto *small_buf = intermediate_bufs[i].get();
         assert(big_buf_size > 0);
         const auto blocks = div_ceil(big_buf_size, granularity);
-        hierarchical_inclusive_scan_reduce<<<blocks, threads_per_block>>>(big_buf, small_buf, op);
+        hierarchical_inclusive_scan_reduce<<<blocks, threads_per_block, 0, stream>>>(big_buf, small_buf, op);
     }
 
     for (index_type i = 1; i < intermediate_bufs.size(); ++i) {
@@ -343,7 +350,7 @@ void hierarchical_inclusive_scan(Scalar *in_out_buf,
         auto big_buf_size = ii > 0 ? intermediate_bufs[ii - 1].size() : n_elems;
         assert(big_buf_size > 0);
         const auto blocks = div_ceil(big_buf_size, granularity) - 1;
-        hierarchical_inclusive_scan_expand<<<blocks, threads_per_block>>>(small_buf, big_buf, op);
+        hierarchical_inclusive_scan_expand<<<blocks, threads_per_block, 0, stream>>>(small_buf, big_buf, op);
     }
 }
 
