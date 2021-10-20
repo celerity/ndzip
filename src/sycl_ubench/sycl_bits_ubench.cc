@@ -67,19 +67,16 @@ TEMPLATE_TEST_CASE("Register to global memory inclusive scan", "[scan]", uint32_
         sycl::buffer<TestType> out(group_size * n_groups);
         return q.submit([&](sycl::handler &cgh) {
             auto g = out.template get_access<sam::discard_write>(cgh);
-            cgh.parallel<inclusive_scan_hierarchical_subgroup_kernel<TestType>>(
-                    sycl::range<1>{n_groups}, sycl::range<1>{group_size},
-                    [=](known_size_group<group_size> grp, sycl::physical_item<1>) {
+            cgh.parallel<inclusive_scan_hierarchical_subgroup_kernel<TestType>>(sycl::range<1>{n_groups},
+                    sycl::range<1>{group_size}, [=](known_size_group<group_size> grp, sycl::physical_item<1>) {
                         sycl::local_memory<TestType[group_size]> lm{grp};
-                        grp.distribute_for(group_size,
-                                [&](index_type item, index_type, sycl::logical_item<1> idx) {
-                                    lm[item] = idx.get_global_linear_id();
-                                });
+                        grp.distribute_for(group_size, [&](index_type item, index_type, sycl::logical_item<1> idx) {
+                            lm[item] = idx.get_global_linear_id();
+                        });
                         inclusive_scan<group_size>(grp, lm(), sycl::plus<TestType>{});
-                        grp.distribute_for(group_size,
-                                [&](index_type item, index_type, sycl::logical_item<1> idx) {
-                                    g[idx.get_global_linear_id()] = lm[item];
-                                });
+                        grp.distribute_for(group_size, [&](index_type item, index_type, sycl::logical_item<1> idx) {
+                            g[idx.get_global_linear_id()] = lm[item];
+                        });
                     });
         });
     };
@@ -94,14 +91,12 @@ TEMPLATE_TEST_CASE("Local-memory scan spillage", "[scan][memory]", uint32_t, uin
         constexpr index_type block_size = 4096;
         constexpr index_type group_size = 256;
         return q.submit([&](sycl::handler &cgh) {
-            cgh.parallel<local_memory_scan_spillage_kernel<TestType>>(sycl::range<1>{1},
-                    sycl::range<1>{group_size},
+            cgh.parallel<local_memory_scan_spillage_kernel<TestType>>(sycl::range<1>{1}, sycl::range<1>{group_size},
                     [=](known_size_group<group_size> grp, sycl::physical_item<1>) {
                         sycl::local_memory<TestType[block_size]> lm{grp};
-                        grp.distribute_for(block_size,
-                                [&](index_type item, index_type, sycl::logical_item<1> idx) {
-                                    lm[item] = idx.get_global_linear_id();
-                                });
+                        grp.distribute_for(block_size, [&](index_type item, index_type, sycl::logical_item<1> idx) {
+                            lm[item] = idx.get_global_linear_id();
+                        });
                         inclusive_scan<block_size>(grp, lm(), sycl::plus<TestType>{});
                         black_hole(lm());
                     });
@@ -124,32 +119,28 @@ TEMPLATE_TEST_CASE("Local memory transpose bits", "[transpose]", uint32_t) {
     const auto transpose_harness = [](auto &&transpose) {
         return [=](known_size_group<group_size> grp, sycl::physical_item<1>) {
             sycl::local_memory<TestType[num_group_items]> lm{grp};
-            grp.distribute_for(
-                    num_group_items, [&](index_type item, index_type, sycl::logical_item<1> idx) {
-                        lm[item] = idx.get_global_linear_id();
-                    });
+            grp.distribute_for(num_group_items, [&](index_type item, index_type, sycl::logical_item<1> idx) {
+                lm[item] = idx.get_global_linear_id();
+            });
             sycl::private_memory<TestType> column{grp};
-            grp.distribute_for(num_group_items,
-                    [&](index_type item, index_type, sycl::logical_item<1> idx,
-                            sycl::sub_group sg) { transpose(item, idx, sg, lm(), column); });
             grp.distribute_for(
-                    num_group_items, [&](index_type item, index_type, sycl::logical_item<1> idx) {
-                        lm[item] = column(idx);
+                    num_group_items, [&](index_type item, index_type, sycl::logical_item<1> idx, sycl::sub_group sg) {
+                        transpose(item, idx, sg, lm(), column);
                     });
+            grp.distribute_for(num_group_items,
+                    [&](index_type item, index_type, sycl::logical_item<1> idx) { lm[item] = column(idx); });
             black_hole(lm());
         };
     };
 
     SYCL_BENCHMARK("Every thread loads each row")(sycl::queue & q) {
-        auto kernel = transpose_harness([&](index_type item, sycl::logical_item<1> idx,
-                                                sycl::sub_group, TestType *rows,
+        auto kernel = transpose_harness([&](index_type item, sycl::logical_item<1> idx, sycl::sub_group, TestType *rows,
                                                 sycl::private_memory<TestType> &column) {
             column(idx) = 0;
             const auto chunk_base = floor(item, chunk_size);
             const auto cell = item - chunk_base;
             for (index_type i = 0; i < chunk_size; ++i) {
-                column(idx) |= (rows[chunk_base + i] >> (chunk_size - 1 - cell) & TestType{1})
-                        << (chunk_size - 1 - i);
+                column(idx) |= (rows[chunk_base + i] >> (chunk_size - 1 - cell) & TestType{1}) << (chunk_size - 1 - i);
             }
         });
         return q.submit([&](sycl::handler &cgh) {
@@ -160,18 +151,17 @@ TEMPLATE_TEST_CASE("Local memory transpose bits", "[transpose]", uint32_t) {
 
     // Not that smart...
     SYCL_BENCHMARK("Per-column subgroup reductions")(sycl::queue & q) {
-        auto kernel = transpose_harness(
-                [&](index_type item, sycl::logical_item<1> idx, sycl::sub_group sg, TestType *rows,
-                        sycl::private_memory<TestType> &column) {
-                    const auto chunk_base = floor(item, chunk_size);
-                    const auto cell = item - chunk_base;
-                    const auto row = rows[item];
-                    for (index_type i = 0; i < chunk_size; ++i) {
-                        TestType this_column = sycl::group_reduce(
-                                sg, ((row >> i) & TestType{1}) << cell, sycl::bit_or<TestType>{});
-                        if (cell == i) { column(idx) = this_column; }
-                    }
-                });
+        auto kernel = transpose_harness([&](index_type item, sycl::logical_item<1> idx, sycl::sub_group sg,
+                                                TestType *rows, sycl::private_memory<TestType> &column) {
+            const auto chunk_base = floor(item, chunk_size);
+            const auto cell = item - chunk_base;
+            const auto row = rows[item];
+            for (index_type i = 0; i < chunk_size; ++i) {
+                TestType this_column
+                        = sycl::group_reduce(sg, ((row >> i) & TestType{1}) << cell, sycl::bit_or<TestType>{});
+                if (cell == i) { column(idx) = this_column; }
+            }
+        });
         return q.submit([&](sycl::handler &cgh) {
             cgh.parallel<transpose_via_subgroups_kernel<TestType>>(
                     sycl::range<1>{num_groups}, sycl::range<1>{group_size}, kernel);

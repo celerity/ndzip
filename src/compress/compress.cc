@@ -15,9 +15,8 @@ namespace ndzip::detail {
 using duration = std::chrono::system_clock::duration;
 
 template<typename Encoder>
-void compress_stream(const std::string &in, const std::string &out,
-        const ndzip::extent<Encoder::dimensions> &size, const Encoder &encoder,
-        const ndzip::detail::io_factory &io) {
+void compress_stream(const std::string &in, const std::string &out, const ndzip::extent<Encoder::dimensions> &size,
+        const Encoder &encoder, const ndzip::detail::io_factory &io) {
     using data_type = typename Encoder::data_type;
 
     const auto array_chunk_length = static_cast<size_t>(num_elements(size) * sizeof(data_type));
@@ -32,9 +31,9 @@ void compress_stream(const std::string &in, const std::string &out,
 
         while (auto *chunk = in_stream->read_exact()) {
             auto input_buffer = static_cast<const data_type *>(chunk);
-            auto compressed_chunk_length = encoder.compress(
-                    ndzip::slice<const data_type, Encoder::dimensions>(input_buffer, size),
-                    out_stream->get_write_buffer());
+            auto compressed_chunk_length
+                    = encoder.compress(ndzip::slice<const data_type, Encoder::dimensions>(input_buffer, size),
+                            out_stream->get_write_buffer());
             assert(compressed_chunk_length <= max_compressed_chunk_length);
             out_stream->commit_chunk(compressed_chunk_length);
             compressed_length += compressed_chunk_length;
@@ -45,21 +44,17 @@ void compress_stream(const std::string &in, const std::string &out,
 
     const auto in_file_size = n_chunks * array_chunk_length;
     std::cerr << "raw = " << n_chunks * in_file_size << " bytes";
-    if (n_chunks > 1) {
-        std::cerr << " (" << n_chunks << " chunks à " << array_chunk_length << " bytes)";
-    }
+    if (n_chunks > 1) { std::cerr << " (" << n_chunks << " chunks à " << array_chunk_length << " bytes)"; }
     std::cerr << ", compressed = " << compressed_length << " bytes";
     std::cerr << ", ratio = " << std::fixed << std::setprecision(4)
               << (static_cast<double>(compressed_length) / in_file_size);
     std::cerr << ", time = " << std::setprecision(3) << std::fixed
-              << std::chrono::duration_cast<std::chrono::duration<double>>(duration).count()
-              << "s\n";
+              << std::chrono::duration_cast<std::chrono::duration<double>>(duration).count() << "s\n";
 }
 
 template<typename Encoder>
-void decompress_stream(const std::string &in, const std::string &out,
-        const ndzip::extent<Encoder::dimensions> &size, const Encoder &encoder,
-        const ndzip::detail::io_factory &io) {
+void decompress_stream(const std::string &in, const std::string &out, const ndzip::extent<Encoder::dimensions> &size,
+        const Encoder &encoder, const ndzip::detail::io_factory &io) {
     using data_type = typename Encoder::data_type;
     const auto max_compressed_chunk_length = ndzip::compressed_size_bound<data_type>(size);
     const auto array_chunk_length = static_cast<size_t>(num_elements(size) * sizeof(data_type));
@@ -73,8 +68,8 @@ void decompress_stream(const std::string &in, const std::string &out,
         if (bytes_in_chunk == 0) { break; }
 
         auto output_buffer = static_cast<data_type *>(out_stream->get_write_buffer());
-        auto compressed_size = encoder.decompress(chunk, bytes_in_chunk,
-                ndzip::slice<data_type, Encoder::dimensions>(output_buffer, size));
+        auto compressed_size = encoder.decompress(
+                chunk, bytes_in_chunk, ndzip::slice<data_type, Encoder::dimensions>(output_buffer, size));
         assert(compressed_size <= bytes_in_chunk);
         out_stream->commit_chunk(array_chunk_length);
         compressed_bytes_left = bytes_in_chunk - compressed_size;
@@ -83,8 +78,7 @@ void decompress_stream(const std::string &in, const std::string &out,
 
 template<typename Encoder>
 void process_stream(bool decompress, const std::string &in, const std::string &out,
-        const ndzip::extent<Encoder::dimensions> &size, const Encoder &encoder,
-        const ndzip::detail::io_factory &io) {
+        const ndzip::extent<Encoder::dimensions> &size, const Encoder &encoder, const ndzip::detail::io_factory &io) {
     if (decompress) {
         decompress_stream(in, out, size, encoder, io);
     } else {
@@ -93,19 +87,16 @@ void process_stream(bool decompress, const std::string &in, const std::string &o
 }
 
 template<template<typename, unsigned> typename Encoder, typename Data>
-void process_stream(bool decompress, const std::vector<size_t> &size_components,
-        const std::string &in, const std::string &out, const ndzip::detail::io_factory &io) {
+void process_stream(bool decompress, const std::vector<size_t> &size_components, const std::string &in,
+        const std::string &out, const ndzip::detail::io_factory &io) {
     switch (size_components.size()) {
-        case 1:
-            return process_stream(
-                    decompress, in, out, ndzip::extent{size_components[0]}, Encoder<Data, 1>{}, io);
+        case 1: return process_stream(decompress, in, out, ndzip::extent{size_components[0]}, Encoder<Data, 1>{}, io);
         case 2:
-            return process_stream(decompress, in, out,
-                    ndzip::extent{size_components[0], size_components[1]}, Encoder<Data, 2>{}, io);
+            return process_stream(
+                    decompress, in, out, ndzip::extent{size_components[0], size_components[1]}, Encoder<Data, 2>{}, io);
         case 3:
             return process_stream(decompress, in, out,
-                    ndzip::extent{size_components[0], size_components[1], size_components[2]},
-                    Encoder<Data, 3>{}, io);
+                    ndzip::extent{size_components[0], size_components[1], size_components[2]}, Encoder<Data, 3>{}, io);
         // case 4:
         //     return process_stream(decompress, in, out, ndzip::extent{size_components[0],
         //     size_components[1],
@@ -115,9 +106,8 @@ void process_stream(bool decompress, const std::vector<size_t> &size_components,
 }
 
 template<typename Data>
-void process_stream(bool decompress, const std::vector<size_t> &size_components,
-        const std::string &encoder, const std::string &in, const std::string &out,
-        const ndzip::detail::io_factory &io) {
+void process_stream(bool decompress, const std::vector<size_t> &size_components, const std::string &encoder,
+        const std::string &in, const std::string &out, const ndzip::detail::io_factory &io) {
     if (encoder == "cpu") {
         process_stream<ndzip::cpu_encoder, Data>(decompress, size_components, in, out, io);
 #if NDZIP_OPENMP_SUPPORT
@@ -138,9 +128,9 @@ void process_stream(bool decompress, const std::vector<size_t> &size_components,
 }
 
 
-void process_stream(bool decompress, const std::vector<size_t> &size_components,
-        const std::string &encoder, const std::string &data_type, const std::string &in,
-        const std::string &out, const ndzip::detail::io_factory &io) {
+void process_stream(bool decompress, const std::vector<size_t> &size_components, const std::string &encoder,
+        const std::string &data_type, const std::string &in, const std::string &out,
+        const ndzip::detail::io_factory &io) {
     if (data_type == "float") {
         process_stream<float>(decompress, size_components, encoder, in, out, io);
     } else if (data_type == "double") {
@@ -212,8 +202,7 @@ int main(int argc, char **argv) {
     if (!io_factory) { io_factory = std::make_unique<ndzip::detail::stdio_io_factory>(); }
 
     try {
-        ndzip::detail::process_stream(
-                decompress, size_components, encoder, data_type, input, output, *io_factory);
+        ndzip::detail::process_stream(decompress, size_components, encoder, data_type, input, output, *io_factory);
         return EXIT_SUCCESS;
     } catch (opts::error &e) {
         std::cerr << e.what() << "\n\n" << usage << desc;

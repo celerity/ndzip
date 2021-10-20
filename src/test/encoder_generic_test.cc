@@ -1,9 +1,9 @@
 #include "test_utils.hh"
 
+#include <iostream>
+
 #include <ndzip/common.hh>
 #include <ndzip/cpu_encoder.inl>
-
-#include <iostream>
 
 
 using namespace ndzip;
@@ -96,9 +96,9 @@ TEST_CASE("for_each_border_slice iterates correctly") {
 }
 
 
-TEMPLATE_TEST_CASE("file produces a sane hypercube / header layout", "[file]",
-        (std::integral_constant<unsigned, 1>), (std::integral_constant<unsigned, 2>),
-        (std::integral_constant<unsigned, 3>), (std::integral_constant<unsigned, 4>) ) {
+TEMPLATE_TEST_CASE("file produces a sane hypercube / header layout", "[file]", (std::integral_constant<unsigned, 1>),
+        (std::integral_constant<unsigned, 2>), (std::integral_constant<unsigned, 3>),
+        (std::integral_constant<unsigned, 4>) ) {
     constexpr unsigned dims = TestType::value;
     using profile = detail::profile<float, dims>;
     const index_type n = 100;

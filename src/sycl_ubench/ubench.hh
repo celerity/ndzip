@@ -26,9 +26,8 @@ void operator<<=(SyclBenchmark &&bench, Lambda &&lambda) {
 
     Catch::getResultCapture().benchmarkPreparing(bench.name);
 
-    Catch::BenchmarkInfo info{std::move(bench.name), 0.0, 1, cfg->benchmarkSamples(),
-            cfg->benchmarkResamples(), env.clock_resolution.mean.count(),
-            env.clock_cost.mean.count()};
+    Catch::BenchmarkInfo info{std::move(bench.name), 0.0, 1, cfg->benchmarkSamples(), cfg->benchmarkResamples(),
+            env.clock_resolution.mean.count(), env.clock_cost.mean.count()};
 
     Catch::getResultCapture().benchmarkStarting(info);
 
@@ -37,16 +36,15 @@ void operator<<=(SyclBenchmark &&bench, Lambda &&lambda) {
         sycl::event evt = lambda(q);
         evt.wait();
         if (i >= warmup_runs) {
-            samples[i - warmup_runs] = std::chrono::duration_cast<
-                    duration>(std::chrono::duration<uint64_t, std::nano>(
+            samples[i - warmup_runs] = std::chrono::duration_cast<duration>(std::chrono::duration<uint64_t, std::nano>(
                     evt.get_profiling_info<sycl::info::event_profiling::command_end>()
                     - evt.get_profiling_info<sycl::info::event_profiling::command_start>()));
         }
     }
 
     auto analysis = Catch::Benchmark::Detail::analyse(*cfg, env, samples.begin(), samples.end());
-    Catch::BenchmarkStats<duration> stats{info, analysis.samples, analysis.mean,
-            analysis.standard_deviation, analysis.outliers, analysis.outlier_variance};
+    Catch::BenchmarkStats<duration> stats{info, analysis.samples, analysis.mean, analysis.standard_deviation,
+            analysis.outliers, analysis.outlier_variance};
 
     Catch::getResultCapture().benchmarkEnded(stats);
 }

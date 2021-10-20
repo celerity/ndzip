@@ -111,10 +111,9 @@ static std::vector<metadata> load_metadata_file(const std::filesystem::path &pat
         char data_file_name[100];
         char type_string[10];
         size_t extent[3];
-        auto n_tokens = sscanf(line.c_str(), "%99[^;];%9[^;];%zu %zu %zu", data_file_name,
-                type_string, extent, extent + 1, extent + 2);
-        if (n_tokens >= 3 && n_tokens <= 5
-                && (type_string == "float"sv || type_string == "double"sv)) {
+        auto n_tokens = sscanf(line.c_str(), "%99[^;];%9[^;];%zu %zu %zu", data_file_name, type_string, extent,
+                extent + 1, extent + 2);
+        if (n_tokens >= 3 && n_tokens <= 5 && (type_string == "float"sv || type_string == "double"sv)) {
             metadata.emplace_back(path.parent_path() / data_file_name,
                     type_string == "float"sv ? data_type::t_float : data_type::t_double,
                     std::vector<size_t>(extent, extent + n_tokens - 2));
@@ -161,8 +160,7 @@ class benchmark {
   public:
     explicit benchmark(const benchmark_params &params) : _params(params) {}
 
-    std::chrono::steady_clock::time_point
-    start() const {  // NOLINT(readability-convert-member-functions-to-static)
+    std::chrono::steady_clock::time_point start() const {  // NOLINT(readability-convert-member-functions-to-static)
         return std::chrono::steady_clock::now();
     }
 
@@ -182,15 +180,13 @@ class benchmark {
         _decompression.time(_params, f);
     }
 
-    void record_decompression(std::chrono::microseconds time) {
-        _decompression.record(_params, time);
-    }
+    void record_decompression(std::chrono::microseconds time) { _decompression.record(_params, time); }
 
     benchmark_result result(size_t uncompressed_bytes, size_t compressed_bytes) && {
         assert(_compression.reps > 0);
         assert(_decompression.reps > 0);
-        return benchmark_result{std::move(_compression.times), std::move(_decompression.times),
-                uncompressed_bytes, compressed_bytes};
+        return benchmark_result{
+                std::move(_compression.times), std::move(_decompression.times), uncompressed_bytes, compressed_bytes};
     }
 
   private:
@@ -288,16 +284,14 @@ struct cuda_deleter {
 };
 
 template<typename F>
-static std::chrono::microseconds
-time_cuda_kernel(cudaEvent_t before, cudaEvent_t after, const F &f) {
+static std::chrono::microseconds time_cuda_kernel(cudaEvent_t before, cudaEvent_t after, const F &f) {
     CHECKED_CUDA_CALL(cudaEventRecord, before, nullptr);
     f();
     CHECKED_CUDA_CALL(cudaEventRecord, after, nullptr);
     CHECKED_CUDA_CALL(cudaDeviceSynchronize);
     float ms;
     CHECKED_CUDA_CALL(cudaEventElapsedTime, &ms, before, after);
-    return std::chrono::duration_cast<std::chrono::microseconds>(
-            std::chrono::duration<float, std::milli>{ms});
+    return std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::duration<float, std::milli>{ms});
 }
 
 #endif
@@ -330,18 +324,16 @@ template<template<typename, unsigned> typename Encoder, typename Data, unsigned 
 struct ndzip_benchmark : public benchmark {
     using benchmark::benchmark;
 
-    size_t time_compression(Encoder<Data, Dims> &encoder,
-            ndzip::slice<const Data, Dims> input_slice, void *compress_buffer) {
+    size_t time_compression(
+            Encoder<Data, Dims> &encoder, ndzip::slice<const Data, Dims> input_slice, void *compress_buffer) {
         size_t compressed_size;
-        benchmark::time_compression(
-                [&] { compressed_size = encoder.compress(input_slice, compress_buffer); });
+        benchmark::time_compression([&] { compressed_size = encoder.compress(input_slice, compress_buffer); });
         return compressed_size;
     }
 
-    void time_decompression(Encoder<Data, Dims> &encoder, const void *compress_buffer,
-            size_t compressed_size, ndzip::slice<Data, Dims> decompress_slice) {
-        benchmark::time_decompression(
-                [&] { encoder.decompress(compress_buffer, compressed_size, decompress_slice); });
+    void time_decompression(Encoder<Data, Dims> &encoder, const void *compress_buffer, size_t compressed_size,
+            ndzip::slice<Data, Dims> decompress_slice) {
+        benchmark::time_decompression([&] { encoder.decompress(compress_buffer, compressed_size, decompress_slice); });
     }
 };
 
@@ -349,16 +341,16 @@ template<template<typename, unsigned> typename Encoder, typename Data, unsigned 
 struct kernel_benchmark : public benchmark {
     using benchmark::benchmark;
 
-    size_t time_compression(Encoder<Data, Dims> &encoder,
-            ndzip::slice<const Data, Dims> input_slice, void *compress_buffer) {
+    size_t time_compression(
+            Encoder<Data, Dims> &encoder, ndzip::slice<const Data, Dims> input_slice, void *compress_buffer) {
         ndzip::kernel_duration duration;
         auto compressed_size = encoder.compress(input_slice, compress_buffer, &duration);
         record_compression(std::chrono::duration_cast<std::chrono::microseconds>(duration));
         return compressed_size;
     }
 
-    void time_decompression(Encoder<Data, Dims> &encoder, const void *compress_buffer,
-            size_t compressed_size, ndzip::slice<Data, Dims> decompress_slice) {
+    void time_decompression(Encoder<Data, Dims> &encoder, const void *compress_buffer, size_t compressed_size,
+            ndzip::slice<Data, Dims> decompress_slice) {
         ndzip::kernel_duration duration;
         encoder.decompress(compress_buffer, compressed_size, decompress_slice, &duration);
         record_decompression(std::chrono::duration_cast<std::chrono::microseconds>(duration));
@@ -369,8 +361,7 @@ struct kernel_benchmark : public benchmark {
 #if NDZIP_HIPSYCL_SUPPORT
 
 template<typename Data, unsigned Dims>
-struct ndzip_benchmark<ndzip::sycl_encoder, Data, Dims>
-    : public kernel_benchmark<ndzip::sycl_encoder, Data, Dims> {
+struct ndzip_benchmark<ndzip::sycl_encoder, Data, Dims> : public kernel_benchmark<ndzip::sycl_encoder, Data, Dims> {
     using kernel_benchmark<ndzip::sycl_encoder, Data, Dims>::kernel_benchmark;
 };
 
@@ -379,8 +370,7 @@ struct ndzip_benchmark<ndzip::sycl_encoder, Data, Dims>
 #if NDZIP_CUDA_SUPPORT
 
 template<typename Data, unsigned Dims>
-struct ndzip_benchmark<ndzip::cuda_encoder, Data, Dims>
-    : public kernel_benchmark<ndzip::cuda_encoder, Data, Dims> {
+struct ndzip_benchmark<ndzip::cuda_encoder, Data, Dims> : public kernel_benchmark<ndzip::cuda_encoder, Data, Dims> {
     using kernel_benchmark<ndzip::cuda_encoder, Data, Dims>::kernel_benchmark;
 };
 
@@ -388,8 +378,8 @@ struct ndzip_benchmark<ndzip::cuda_encoder, Data, Dims>
 
 
 template<template<typename, unsigned> typename Encoder, typename Data, unsigned Dims>
-static benchmark_result benchmark_ndzip_3(
-        const Data *input_buffer, const ndzip::extent<Dims> &size, const benchmark_params &params) {
+static benchmark_result
+benchmark_ndzip_3(const Data *input_buffer, const ndzip::extent<Dims> &size, const benchmark_params &params) {
     const auto uncompressed_size = ndzip::num_elements(size) * sizeof(Data);
     const auto input_slice = ndzip::slice{input_buffer, size};
     auto bench = ndzip_benchmark<Encoder, Data, Dims>{params};
@@ -404,8 +394,7 @@ static benchmark_result benchmark_ndzip_3(
     auto decompress_buffer = scratch_buffer<Data>(ndzip::num_elements(size));
     const auto decompress_slice = ndzip::slice{decompress_buffer.data(), size};
     while (bench.decompress_more()) {
-        bench.time_decompression(
-                encoder, compress_buffer.data(), compressed_size, decompress_slice);
+        bench.time_decompression(encoder, compress_buffer.data(), compressed_size, decompress_slice);
     }
 
     assert_buffer_equality(input_buffer, decompress_buffer.data(), uncompressed_size);
@@ -422,8 +411,7 @@ benchmark_ndzip_2(const Data *input_buffer, const metadata &meta, const benchmar
     } else if (e.size() == 2) {
         return benchmark_ndzip_3<Encoder, Data, 2>(input_buffer, ndzip::extent{e[0], e[1]}, params);
     } else if (e.size() == 3) {
-        return benchmark_ndzip_3<Encoder, Data, 3>(
-                input_buffer, ndzip::extent{e[0], e[1], e[2]}, params);
+        return benchmark_ndzip_3<Encoder, Data, 3>(input_buffer, ndzip::extent{e[0], e[1], e[2]}, params);
     } else {
         throw not_implemented{};
     }
@@ -434,11 +422,9 @@ template<template<typename, unsigned> typename Encoder>
 static benchmark_result
 benchmark_ndzip(const void *input_buffer, const metadata &meta, const benchmark_params &params) {
     if (meta.data_type == data_type::t_float) {
-        return benchmark_ndzip_2<Encoder, float>(
-                static_cast<const float *>(input_buffer), meta, params);
+        return benchmark_ndzip_2<Encoder, float>(static_cast<const float *>(input_buffer), meta, params);
     } else {
-        return benchmark_ndzip_2<Encoder, double>(
-                static_cast<const double *>(input_buffer), meta, params);
+        return benchmark_ndzip_2<Encoder, double>(static_cast<const double *>(input_buffer), meta, params);
     }
 }
 
@@ -453,15 +439,13 @@ static benchmark_result benchmark_fpzip(
         fpz->type = meta.data_type == data_type::t_float ? 0 : 1;
         fpz->prec = 0;  // lossless
         auto &e = meta.extent;
-        fpz->nx = e.size() >= 1 ? static_cast<int>(e[e.size() - 1])
-                                : 1;  // NOLINT(readability-container-size-empty)
+        fpz->nx = e.size() >= 1 ? static_cast<int>(e[e.size() - 1]) : 1;  // NOLINT(readability-container-size-empty)
         fpz->ny = e.size() >= 2 ? static_cast<int>(e[e.size() - 2]) : 1;
         fpz->nz = e.size() >= 3 ? static_cast<int>(e[e.size() - 3]) : 1;
         fpz->nf = e.size() >= 4 ? static_cast<int>(e[e.size() - 4]) : 1;
     };
 
-    auto compress_buffer = scratch_buffer{
-            2 * uncompressed_size + 1000};  // no bound function, just guess large enough
+    auto compress_buffer = scratch_buffer{2 * uncompressed_size + 1000};  // no bound function, just guess large enough
     size_t compressed_size;
     while (bench.compress_more()) {
         auto fpz = fpzip_write_to_buffer(compress_buffer.data(), compress_buffer.size());
@@ -472,8 +456,7 @@ static benchmark_result benchmark_fpzip(
         if (compressed_size == 0) { throw std::runtime_error("fpzip_write"); }
     }
 
-    auto decompress_buffer
-            = scratch_buffer{uncompressed_size};  // no bound function, just guess large enough
+    auto decompress_buffer = scratch_buffer{uncompressed_size};  // no bound function, just guess large enough
     while (bench.decompress_more()) {
         auto fpz = fpzip_read_from_buffer(compress_buffer.data());
         auto close_fpz = defer([&] { fpzip_read_close(fpz); });
@@ -498,13 +481,11 @@ static benchmark_result benchmark_fpc(
     const int pred_size = params.tunable;
     auto bench = benchmark{params};
 
-    auto compress_buffer = scratch_buffer{
-            2 * uncompressed_size + 1000};  // no bound function, just guess large enough
+    auto compress_buffer = scratch_buffer{2 * uncompressed_size + 1000};  // no bound function, just guess large enough
     size_t compressed_size;
     while (bench.compress_more()) {
         bench.time_compression([&] {
-            compressed_size = FPC_Compress_Memory(
-                    input_buffer, uncompressed_size, compress_buffer.data(), pred_size);
+            compressed_size = FPC_Compress_Memory(input_buffer, uncompressed_size, compress_buffer.data(), pred_size);
         });
         if (compressed_size == 0) { throw std::runtime_error("FPC_Compress_Memory"); }
     }
@@ -513,8 +494,7 @@ static benchmark_result benchmark_fpc(
     while (bench.decompress_more()) {
         size_t result;
         bench.time_decompression([&] {
-            result = FPC_Decompress_Memory(
-                    compress_buffer.data(), compressed_size, decompress_buffer.data());
+            result = FPC_Decompress_Memory(compress_buffer.data(), compressed_size, decompress_buffer.data());
         });
         if (result == 0) { throw std::runtime_error("FPC_Decompress_Memory"); }
     }
@@ -534,13 +514,12 @@ static benchmark_result benchmark_pfpc(
     const int threads = static_cast<int>(params.num_threads);
     auto bench = benchmark{params};
 
-    auto compress_buffer = scratch_buffer{
-            2 * uncompressed_size + 1000};  // no bound function, just guess large enough
+    auto compress_buffer = scratch_buffer{2 * uncompressed_size + 1000};  // no bound function, just guess large enough
     size_t compressed_size;
     while (bench.compress_more()) {
         bench.time_compression([&] {
-            compressed_size = pFPC_Compress_Memory(input_buffer, uncompressed_size,
-                    compress_buffer.data(), pred_size, threads, chunksize);
+            compressed_size = pFPC_Compress_Memory(
+                    input_buffer, uncompressed_size, compress_buffer.data(), pred_size, threads, chunksize);
         });
         if (compressed_size == 0) { throw std::runtime_error("pFPC_Compress_Memory"); }
     }
@@ -549,8 +528,7 @@ static benchmark_result benchmark_pfpc(
     while (bench.decompress_more()) {
         size_t result;
         bench.time_decompression([&] {
-            result = pFPC_Decompress_Memory(
-                    compress_buffer.data(), compressed_size, decompress_buffer.data());
+            result = pFPC_Decompress_Memory(compress_buffer.data(), compressed_size, decompress_buffer.data());
         });
         if (result == 0) { throw std::runtime_error("pFPC_Decompress_Memory"); }
     }
@@ -566,13 +544,12 @@ static benchmark_result benchmark_spdp(
     const int pred_size = params.tunable;
     auto bench = benchmark{params};
 
-    auto compress_buffer = scratch_buffer{
-            2 * uncompressed_size + 1000};  // no bound function, just guess large enough
+    auto compress_buffer = scratch_buffer{2 * uncompressed_size + 1000};  // no bound function, just guess large enough
     size_t compressed_size;
     while (bench.compress_more()) {
         bench.time_compression([&] {
-            compressed_size = SPDP_Compress_Memory(
-                    input_buffer, metadata.size_in_bytes(), compress_buffer.data(), pred_size);
+            compressed_size
+                    = SPDP_Compress_Memory(input_buffer, metadata.size_in_bytes(), compress_buffer.data(), pred_size);
         });
         if (compressed_size == 0) { throw std::runtime_error("SPDP_Compress_Memory"); }
     }
@@ -581,8 +558,7 @@ static benchmark_result benchmark_spdp(
     while (bench.decompress_more()) {
         size_t result;
         bench.time_decompression([&] {
-            result = SPDP_Decompress_Memory(
-                    compress_buffer.data(), compressed_size, decompress_buffer.data());
+            result = SPDP_Decompress_Memory(compress_buffer.data(), compressed_size, decompress_buffer.data());
         });
         if (result == 0) { throw std::runtime_error("SPDP_Decompress_Memory"); }
     }
@@ -610,16 +586,15 @@ static benchmark_result benchmark_gfc(
     size_t compressed_size;
     while (bench.compress_more()) {
         uint64_t kernel_time_us;
-        compressed_size = GFC_Compress_Memory(input_buffer, metadata.size_in_bytes(),
-                compress_buffer.data(), blocks, warps_per_block, dimensionality, &kernel_time_us);
+        compressed_size = GFC_Compress_Memory(input_buffer, metadata.size_in_bytes(), compress_buffer.data(), blocks,
+                warps_per_block, dimensionality, &kernel_time_us);
         bench.record_compression(std::chrono::microseconds(kernel_time_us));
     }
 
     auto decompress_buffer = scratch_buffer{uncompressed_size};
     while (bench.decompress_more()) {
         uint64_t kernel_time_us;
-        GFC_Decompress_Memory(
-                compress_buffer.data(), compressed_size, decompress_buffer.data(), &kernel_time_us);
+        GFC_Decompress_Memory(compress_buffer.data(), compressed_size, decompress_buffer.data(), &kernel_time_us);
         bench.record_decompression(std::chrono::microseconds(kernel_time_us));
     }
 
@@ -645,19 +620,18 @@ static benchmark_result benchmark_mpc_float(
     int compressed_num_words = 0;
     while (bench.compress_more()) {
         uint64_t kernel_time_us;
-        compressed_num_words = MPC_float_compressMemory(compress_buffer.data(), uncompressed_words,
-                uncompressed_num_words, dimensionality, &kernel_time_us);
+        compressed_num_words = MPC_float_compressMemory(
+                compress_buffer.data(), uncompressed_words, uncompressed_num_words, dimensionality, &kernel_time_us);
         bench.record_compression(std::chrono::microseconds(kernel_time_us));
     }
-    auto compressed_size
-            = static_cast<size_t>(static_cast<long>(compressed_num_words)) * sizeof(int);
+    auto compressed_size = static_cast<size_t>(static_cast<long>(compressed_num_words)) * sizeof(int);
 
     auto decompress_buffer = scratch_buffer<int>{static_cast<size_t>(uncompressed_num_words)};
     int decompressed_num_words = 0;
     while (bench.decompress_more()) {
         uint64_t kernel_time_us;
-        decompressed_num_words = MPC_float_decompressMemory(decompress_buffer.data(),
-                compress_buffer.data(), compressed_num_words, &kernel_time_us);
+        decompressed_num_words = MPC_float_decompressMemory(
+                decompress_buffer.data(), compress_buffer.data(), compressed_num_words, &kernel_time_us);
         bench.record_decompression(std::chrono::microseconds(kernel_time_us));
     }
 
@@ -681,19 +655,18 @@ static benchmark_result benchmark_mpc_double(
     int compressed_num_words = 0;
     while (bench.compress_more()) {
         uint64_t kernel_time_us;
-        compressed_num_words = MPC_double_compressMemory(compress_buffer.data(), uncompressed_words,
-                uncompressed_num_words, dimensionality, &kernel_time_us);
+        compressed_num_words = MPC_double_compressMemory(
+                compress_buffer.data(), uncompressed_words, uncompressed_num_words, dimensionality, &kernel_time_us);
         bench.record_compression(std::chrono::microseconds(kernel_time_us));
     }
-    auto compressed_size
-            = static_cast<size_t>(static_cast<long>(compressed_num_words)) * sizeof(long);
+    auto compressed_size = static_cast<size_t>(static_cast<long>(compressed_num_words)) * sizeof(long);
 
     auto decompress_buffer = scratch_buffer<long>{static_cast<size_t>(uncompressed_num_words)};
     int decompressed_num_words = 0;
     while (bench.decompress_more()) {
         uint64_t kernel_time_us;
-        decompressed_num_words = MPC_double_decompressMemory(decompress_buffer.data(),
-                compress_buffer.data(), compressed_num_words, &kernel_time_us);
+        decompressed_num_words = MPC_double_decompressMemory(
+                decompress_buffer.data(), compress_buffer.data(), compressed_num_words, &kernel_time_us);
         bench.record_decompression(std::chrono::microseconds(kernel_time_us));
     }
 
@@ -735,8 +708,7 @@ static benchmark_result benchmark_cudpp_compress(
     auto destroy_pp = defer([&] { CHECKED_CUDPP_CALL(cudppDestroy, pp); });
 
     CUDPPHandle plan;
-    CUDPPConfiguration config{
-            CUDPP_COMPRESS, CUDPP_OPERATOR_INVALID, CUDPP_UCHAR, 0, CUDPP_DEFAULT_BUCKET_MAPPER};
+    CUDPPConfiguration config{CUDPP_COMPRESS, CUDPP_OPERATOR_INVALID, CUDPP_UCHAR, 0, CUDPP_DEFAULT_BUCKET_MAPPER};
     CHECKED_CUDPP_CALL(cudppPlan, pp, &plan, config, block_size, 0, 0);
     auto destroy_plan = defer([&] { CHECKED_CUDPP_CALL(cudppDestroyPlan, plan); });
 
@@ -761,11 +733,9 @@ static benchmark_result benchmark_cudpp_compress(
     CHECKED_CUDA_CALL(cudaMalloc, &d_compressed, block_size * 2);
     auto free_d_compressed = defer([&] { CHECKED_CUDA_CALL(cudaFree, d_compressed); });
 
-    CHECKED_CUDA_CALL(
-            cudaMemcpy, d_uncompressed, input_buffer, uncompressed_size, cudaMemcpyHostToDevice);
+    CHECKED_CUDA_CALL(cudaMemcpy, d_uncompressed, input_buffer, uncompressed_size, cudaMemcpyHostToDevice);
     // cudPPCompress must be called with exactly block_size elements
-    CHECKED_CUDA_CALL(cudaMemset, d_uncompressed + uncompressed_size, 0,
-            num_blocks * block_size - uncompressed_size);
+    CHECKED_CUDA_CALL(cudaMemset, d_uncompressed + uncompressed_size, 0, num_blocks * block_size - uncompressed_size);
 
     cudaEvent_t begin, end;
     CHECKED_CUDA_CALL(cudaEventCreate, &begin);
@@ -778,9 +748,8 @@ static benchmark_result benchmark_cudpp_compress(
         bench.record_compression(time_cuda_kernel(begin, end, [&] {
             for (size_t i = 0; i < num_blocks; ++i) {
                 auto offset = block_size * i;
-                CHECKED_CUDPP_CALL(cudppCompress, plan, d_uncompressed + offset, d_bwtIndex,
-                        d_histSize, d_hist, d_encodeOffset, d_compressedSize + i, d_compressed,
-                        block_size);
+                CHECKED_CUDPP_CALL(cudppCompress, plan, d_uncompressed + offset, d_bwtIndex, d_histSize, d_hist,
+                        d_encodeOffset, d_compressedSize + i, d_compressed, block_size);
             }
         }));
 
@@ -790,8 +759,7 @@ static benchmark_result benchmark_cudpp_compress(
                     num_blocks * sizeof *d_compressedSize, cudaMemcpyDeviceToHost);
             // Output sizes are reported in words (i.e. "typedef uint" in CUDPP the code)
             compressed_size = sizeof(unsigned int)
-                    * std::accumulate(compressed_block_sizes.begin(), compressed_block_sizes.end(),
-                            size_t{0});
+                    * std::accumulate(compressed_block_sizes.begin(), compressed_block_sizes.end(), size_t{0});
         }
     }
 
@@ -815,13 +783,11 @@ static benchmark_result benchmark_deflate(
         int result;
         uLongf dest_len = compress_buffer.size();
         bench.time_compression([&] {
-            result = compress2(compress_buffer.data(), &dest_len,
-                    static_cast<const Bytef *>(input_buffer), uncompressed_size, level);
+            result = compress2(compress_buffer.data(), &dest_len, static_cast<const Bytef *>(input_buffer),
+                    uncompressed_size, level);
         });
 
-        if (result != Z_OK) {
-            throw std::runtime_error(std::string{"compress2: "} + zError(result));
-        }
+        if (result != Z_OK) { throw std::runtime_error(std::string{"compress2: "} + zError(result)); }
         compressed_size = dest_len;
     }
 
@@ -830,13 +796,10 @@ static benchmark_result benchmark_deflate(
         int result;
         uLongf dest_len = decompress_buffer.size();
         bench.time_decompression([&] {
-            result = uncompress(
-                    decompress_buffer.data(), &dest_len, compress_buffer.data(), compressed_size);
+            result = uncompress(decompress_buffer.data(), &dest_len, compress_buffer.data(), compressed_size);
         });
 
-        if (result != Z_OK) {
-            throw std::runtime_error(std::string{"uncompress: "} + zError(result));
-        }
+        if (result != Z_OK) { throw std::runtime_error(std::string{"uncompress: "} + zError(result)); }
     }
 
     assert_buffer_equality(input_buffer, decompress_buffer.data(), uncompressed_size);
@@ -878,14 +841,11 @@ static benchmark_result benchmark_lz4(
         bench.time_compression([&] {
             // LZ4 API is based on 32-bit signed integers, we need to chunk in case size > 2GB
             for (size_t input_offset = 0; input_offset < uncompressed_size;) {
-                auto input_chunk_size
-                        = std::min(uncompressed_size - input_offset, size_t{LZ4_MAX_INPUT_SIZE});
-                auto result = LZ4_compress_fast_continue(stream,
-                        static_cast<const char *>(input_buffer) + input_offset,
-                        compress_buffer.data() + compressed_size,
-                        static_cast<int>(input_chunk_size),
-                        static_cast<int>(std::min(static_cast<size_t>(INT_MAX),
-                                compress_buffer.size() - compressed_size)),
+                auto input_chunk_size = std::min(uncompressed_size - input_offset, size_t{LZ4_MAX_INPUT_SIZE});
+                auto result = LZ4_compress_fast_continue(stream, static_cast<const char *>(input_buffer) + input_offset,
+                        compress_buffer.data() + compressed_size, static_cast<int>(input_chunk_size),
+                        static_cast<int>(
+                                std::min(static_cast<size_t>(INT_MAX), compress_buffer.size() - compressed_size)),
                         1 /* default */);
                 if (result == 0) { throw std::runtime_error("LZ4_compress_fast_continue"); }
                 auto output_chunk_size = static_cast<size_t>(result);
@@ -905,16 +865,13 @@ static benchmark_result benchmark_lz4(
             size_t input_offset = 0;
             size_t output_offset = 0;
             for (auto input_chunk_size : compressed_chunk_sizes) {
-                auto result = LZ4_decompress_safe_continue(stream,
-                        compress_buffer.data() + input_offset,
-                        decompress_buffer.data() + output_offset,
-                        static_cast<int>(input_chunk_size),
-                        static_cast<int>(std::min(static_cast<size_t>(INT_MAX),
-                                decompress_buffer.size() - output_offset)));
+                auto result = LZ4_decompress_safe_continue(stream, compress_buffer.data() + input_offset,
+                        decompress_buffer.data() + output_offset, static_cast<int>(input_chunk_size),
+                        static_cast<int>(
+                                std::min(static_cast<size_t>(INT_MAX), decompress_buffer.size() - output_offset)));
                 if (result == 0) { throw std::runtime_error("LZ4_decompress_safe_continue"); }
                 auto decompressed_chunk_size = static_cast<size_t>(result);
-                auto expected_chunk_size
-                        = std::min(uncompressed_size - output_offset, size_t{LZ4_MAX_INPUT_SIZE});
+                auto expected_chunk_size = std::min(uncompressed_size - output_offset, size_t{LZ4_MAX_INPUT_SIZE});
                 if (decompressed_chunk_size != expected_chunk_size) {
                     throw std::runtime_error("Expected LZ4_decompress_safe_continue to decode "
                             + std::to_string(expected_chunk_size) + " bytes, got "
@@ -951,16 +908,12 @@ static benchmark_result benchmark_lzma(
         strm.next_out = compress_buffer.data();
         strm.avail_out = compress_buffer.size();
 
-        if (lzma_alone_encoder(&strm, &opts) != LZMA_OK) {
-            throw std::runtime_error("lzma_alone_encoder");
-        }
+        if (lzma_alone_encoder(&strm, &opts) != LZMA_OK) { throw std::runtime_error("lzma_alone_encoder"); }
         auto end_lzma = defer([&] { lzma_end(&strm); });
 
         bench.time_compression([&] {
             lzma_ret ret = lzma_code(&strm, LZMA_RUN);
-            if (ret != LZMA_OK && ret != LZMA_STREAM_END) {
-                throw std::runtime_error("llzma_code(LZMA_RUN)");
-            }
+            if (ret != LZMA_OK && ret != LZMA_STREAM_END) { throw std::runtime_error("llzma_code(LZMA_RUN)"); }
             for (;;) {
                 ret = lzma_code(&strm, LZMA_FINISH);
                 if (ret == LZMA_STREAM_END) { break; }
@@ -986,9 +939,7 @@ static benchmark_result benchmark_lzma(
 
         bench.time_decompression([&] {
             lzma_ret ret = lzma_code(&strm, LZMA_RUN);
-            if (ret != LZMA_OK && ret != LZMA_STREAM_END) {
-                throw std::runtime_error("llzma_code(LZMA_RUN)");
-            }
+            if (ret != LZMA_OK && ret != LZMA_STREAM_END) { throw std::runtime_error("llzma_code(LZMA_RUN)"); }
         });
     }
 
@@ -1009,12 +960,11 @@ static benchmark_result benchmark_zstd(
     size_t compressed_size;
     while (bench.compress_more()) {
         bench.time_compression([&] {
-            compressed_size = ZSTD_compress(compress_buffer.data(), compress_buffer.size(),
-                    input_buffer, uncompressed_size, level);
+            compressed_size = ZSTD_compress(
+                    compress_buffer.data(), compress_buffer.size(), input_buffer, uncompressed_size, level);
         });
         if (ZSTD_isError(compressed_size)) {
-            throw std::runtime_error(
-                    std::string{"ZSTD_compress: "} + ZSTD_getErrorName(compressed_size));
+            throw std::runtime_error(std::string{"ZSTD_compress: "} + ZSTD_getErrorName(compressed_size));
         }
     }
 
@@ -1022,8 +972,8 @@ static benchmark_result benchmark_zstd(
     while (bench.decompress_more()) {
         size_t result;
         bench.time_decompression([&] {
-            result = ZSTD_decompress(decompress_buffer.data(), decompress_buffer.size(),
-                    compress_buffer.data(), compressed_size);
+            result = ZSTD_decompress(
+                    decompress_buffer.data(), decompress_buffer.size(), compress_buffer.data(), compressed_size);
         });
         if (ZSTD_isError(result)) {
             throw std::runtime_error(std::string{"ZSTD_decompress: "} + ZSTD_getErrorName(result));
@@ -1038,9 +988,8 @@ static benchmark_result benchmark_zstd(
 
 #if NDZIP_BENCHMARK_HAVE_NVCOMP
 
-static benchmark_result benchmark_nvcomp_compressor(nvcomp::Compressor &compressor,
-        nvcomp::Decompressor &decompressor, const void *input_buffer /* host */,
-        const void *uncompressed_buffer /* device */, const metadata &metadata,
+static benchmark_result benchmark_nvcomp_compressor(nvcomp::Compressor &compressor, nvcomp::Decompressor &decompressor,
+        const void *input_buffer /* host */, const void *uncompressed_buffer /* device */, const metadata &metadata,
         const benchmark_params &params) {
     const auto uncompressed_size = metadata.size_in_bytes();
     auto bench = benchmark{params};
@@ -1064,14 +1013,13 @@ static benchmark_result benchmark_nvcomp_compressor(nvcomp::Compressor &compress
         CHECKED_CUDA_CALL(cudaMalloc, &compress_temp_buffer, compress_temp_size);
         auto free_compress_temp_buffer = defer([&] { cudaFree(compress_temp_buffer); });
 
-        compressor.compress_async(uncompressed_buffer, uncompressed_size, compress_temp_buffer,
-                compress_temp_size, compress_buffer, compressed_size_buffer, nullptr);
-        CHECKED_CUDA_CALL(cudaMemcpy, &compressed_size, compressed_size_buffer,
-                sizeof compressed_size, cudaMemcpyDeviceToHost);
+        compressor.compress_async(uncompressed_buffer, uncompressed_size, compress_temp_buffer, compress_temp_size,
+                compress_buffer, compressed_size_buffer, nullptr);
+        CHECKED_CUDA_CALL(
+                cudaMemcpy, &compressed_size, compressed_size_buffer, sizeof compressed_size, cudaMemcpyDeviceToHost);
 
         size_t decompressed_size;
-        decompressor.configure(compress_buffer, compressed_size, &decompress_temp_size,
-                &decompressed_size, nullptr);
+        decompressor.configure(compress_buffer, compressed_size, &decompress_temp_size, &decompressed_size, nullptr);
         if (decompressed_size != uncompressed_size) { throw buffer_mismatch(); }
     }
 
@@ -1095,21 +1043,20 @@ static benchmark_result benchmark_nvcomp_compressor(nvcomp::Compressor &compress
 
     while (bench.compress_more()) {
         bench.record_compression(time_cuda_kernel(before, after, [&] {
-            compressor.compress_async(uncompressed_buffer, uncompressed_size, temp_buffer,
-                    temp_size, compress_buffer, compressed_size_buffer, nullptr);
+            compressor.compress_async(uncompressed_buffer, uncompressed_size, temp_buffer, temp_size, compress_buffer,
+                    compressed_size_buffer, nullptr);
         }));
     }
 
     while (bench.decompress_more()) {
         bench.record_decompression(time_cuda_kernel(before, after, [&] {
-            decompressor.decompress_async(compress_buffer, compressed_size, temp_buffer, temp_size,
-                    decompress_buffer, uncompressed_size, nullptr);
+            decompressor.decompress_async(compress_buffer, compressed_size, temp_buffer, temp_size, decompress_buffer,
+                    uncompressed_size, nullptr);
         }));
     }
 
     auto output_buffer = scratch_buffer{uncompressed_size};
-    CHECKED_CUDA_CALL(cudaMemcpy, output_buffer.data(), decompress_buffer, uncompressed_size,
-            cudaMemcpyDeviceToHost);
+    CHECKED_CUDA_CALL(cudaMemcpy, output_buffer.data(), decompress_buffer, uncompressed_size, cudaMemcpyDeviceToHost);
 
     assert_buffer_equality(input_buffer, output_buffer.data(), uncompressed_size);
     return std::move(bench).result(uncompressed_size, compressed_size);
@@ -1122,14 +1069,12 @@ static benchmark_result benchmark_nvcomp_lz4(
     void *uncompressed_buffer;
     CHECKED_CUDA_CALL(cudaMalloc, &uncompressed_buffer, uncompressed_size);
     auto free_uncompressed_buffer = defer([&] { cudaFree(uncompressed_buffer); });
-    CHECKED_CUDA_CALL(cudaMemcpyAsync, uncompressed_buffer, input_buffer, uncompressed_size,
-            cudaMemcpyHostToDevice);
+    CHECKED_CUDA_CALL(cudaMemcpyAsync, uncompressed_buffer, input_buffer, uncompressed_size, cudaMemcpyHostToDevice);
 
     nvcomp::LZ4Compressor compressor;
     nvcomp::LZ4Decompressor decompressor;
 
-    return benchmark_nvcomp_compressor(
-            compressor, decompressor, input_buffer, uncompressed_buffer, metadata, params);
+    return benchmark_nvcomp_compressor(compressor, decompressor, input_buffer, uncompressed_buffer, metadata, params);
 }
 
 template<typename Integer>
@@ -1150,11 +1095,9 @@ static nvcompCascadedFormatOpts select_optimal_nvcomp_cascaded_options(
         const void *uncompressed_buffer, const metadata &metadata) {
     // NVCOMP Cascaded only handles integers
     if (metadata.data_type == data_type::t_float) {
-        return select_optimal_nvcomp_cascaded_options<uint32_t>(
-                uncompressed_buffer, metadata.size_in_bytes());
+        return select_optimal_nvcomp_cascaded_options<uint32_t>(uncompressed_buffer, metadata.size_in_bytes());
     } else {
-        return select_optimal_nvcomp_cascaded_options<uint64_t>(
-                uncompressed_buffer, metadata.size_in_bytes());
+        return select_optimal_nvcomp_cascaded_options<uint64_t>(uncompressed_buffer, metadata.size_in_bytes());
     }
 }
 
@@ -1165,26 +1108,23 @@ static benchmark_result benchmark_nvcomp_cascaded(
     void *uncompressed_buffer;
     CHECKED_CUDA_CALL(cudaMalloc, &uncompressed_buffer, uncompressed_size);
     auto free_uncompressed_buffer = defer([&] { cudaFree(uncompressed_buffer); });
-    CHECKED_CUDA_CALL(cudaMemcpyAsync, uncompressed_buffer, input_buffer, uncompressed_size,
-            cudaMemcpyHostToDevice);
+    CHECKED_CUDA_CALL(cudaMemcpyAsync, uncompressed_buffer, input_buffer, uncompressed_size, cudaMemcpyHostToDevice);
 
     nvcompCascadedFormatOpts options;
     if (params.auto_tune) {
         options = select_optimal_nvcomp_cascaded_options(uncompressed_buffer, metadata);
-        fprintf(stderr, "nvCOMP Cascaded selected num_RLEs=%d, num_deltas=%d, use_bp=%d for %s\n",
-                options.num_RLEs, options.num_deltas, options.use_bp,
-                metadata.path.filename().c_str());
+        fprintf(stderr, "nvCOMP Cascaded selected num_RLEs=%d, num_deltas=%d, use_bp=%d for %s\n", options.num_RLEs,
+                options.num_deltas, options.use_bp, metadata.path.filename().c_str());
     } else {
         options = {1, 0, 1};
     }
 
     nvcomp::CascadedCompressor compressor(
-            metadata.data_type == data_type::t_float ? NVCOMP_TYPE_UINT : NVCOMP_TYPE_ULONGLONG,
-            options.num_RLEs, options.num_deltas, options.use_bp);
+            metadata.data_type == data_type::t_float ? NVCOMP_TYPE_UINT : NVCOMP_TYPE_ULONGLONG, options.num_RLEs,
+            options.num_deltas, options.use_bp);
     nvcomp::CascadedDecompressor decompressor;
 
-    return benchmark_nvcomp_compressor(
-            compressor, decompressor, input_buffer, uncompressed_buffer, metadata, params);
+    return benchmark_nvcomp_compressor(compressor, decompressor, input_buffer, uncompressed_buffer, metadata, params);
 }
 #endif
 
@@ -1202,19 +1142,15 @@ static benchmark_result benchmark_zfp(
     auto type = metadata.data_type == data_type::t_float ? zfp_type_float : zfp_type_double;
     switch (metadata.extent.size()) {
         case 1:
-            field = zfp_field_1d(const_cast<void *>(input_buffer), type,
-                    static_cast<unsigned>(metadata.extent[0]));
+            field = zfp_field_1d(const_cast<void *>(input_buffer), type, static_cast<unsigned>(metadata.extent[0]));
             break;
         case 2:
-            field = zfp_field_2d(const_cast<void *>(input_buffer), type,
-                    static_cast<unsigned>(metadata.extent[0]),
+            field = zfp_field_2d(const_cast<void *>(input_buffer), type, static_cast<unsigned>(metadata.extent[0]),
                     static_cast<unsigned>(metadata.extent[1]));
             break;
         case 3:
-            field = zfp_field_3d(const_cast<void *>(input_buffer), type,
-                    static_cast<unsigned>(metadata.extent[0]),
-                    static_cast<unsigned>(metadata.extent[1]),
-                    static_cast<unsigned>(metadata.extent[2]));
+            field = zfp_field_3d(const_cast<void *>(input_buffer), type, static_cast<unsigned>(metadata.extent[0]),
+                    static_cast<unsigned>(metadata.extent[1]), static_cast<unsigned>(metadata.extent[2]));
             break;
     }
     auto free_field = defer([&] { zfp_field_free(field); });
@@ -1268,15 +1204,12 @@ static benchmark_result benchmark_memcpy(
 
     auto compress_buffer = scratch_buffer{uncompressed_size};
     while (bench.compress_more()) {
-        bench.time_compression(
-                [&] { memcpy(compress_buffer.data(), input_buffer, uncompressed_size); });
+        bench.time_compression([&] { memcpy(compress_buffer.data(), input_buffer, uncompressed_size); });
     }
 
     auto decompress_buffer = scratch_buffer{uncompressed_size};
     while (bench.decompress_more()) {
-        bench.time_decompression([&] {
-            memcpy(decompress_buffer.data(), compress_buffer.data(), uncompressed_size);
-        });
+        bench.time_decompression([&] { memcpy(decompress_buffer.data(), compress_buffer.data(), uncompressed_size); });
     }
 
     assert_buffer_equality(input_buffer, decompress_buffer.data(), uncompressed_size);
@@ -1291,8 +1224,7 @@ void memcpy_mt(void *dst, const void *src, size_t n, size_t num_threads) {
 #pragma omp parallel num_threads(num_threads)
 #pragma omp for schedule(static)
     for (size_t i = 0; i < n; i += chunk_size) {
-        memcpy(static_cast<std::byte *>(dst) + i, static_cast<const std::byte *>(src) + i,
-                std::min(chunk_size, n - i));
+        memcpy(static_cast<std::byte *>(dst) + i, static_cast<const std::byte *>(src) + i, std::min(chunk_size, n - i));
     }
 }
 
@@ -1303,16 +1235,14 @@ static benchmark_result benchmark_memcpy_mt(
 
     auto compress_buffer = scratch_buffer{uncompressed_size};
     while (bench.compress_more()) {
-        bench.time_compression([&] {
-            memcpy_mt(compress_buffer.data(), input_buffer, uncompressed_size, params.num_threads);
-        });
+        bench.time_compression(
+                [&] { memcpy_mt(compress_buffer.data(), input_buffer, uncompressed_size, params.num_threads); });
     }
 
     auto decompress_buffer = scratch_buffer{uncompressed_size};
     while (bench.decompress_more()) {
         bench.time_decompression([&] {
-            memcpy_mt(decompress_buffer.data(), compress_buffer.data(), uncompressed_size,
-                    params.num_threads);
+            memcpy_mt(decompress_buffer.data(), compress_buffer.data(), uncompressed_size, params.num_threads);
         });
     }
 
@@ -1426,8 +1356,7 @@ struct join {
 static void benchmark_file(const metadata &metadata, const algorithm_map &algorithms, bool warm_up,
         std::chrono::microseconds min_time, unsigned min_reps, unsigned max_reps, tuning tunables,
         bool benchmark_scaling, bool auto_tune, const ndzip::detail::io_factory &io_factory) {
-    auto input_stream
-            = io_factory.create_input_stream(metadata.path.string(), metadata.size_in_bytes());
+    auto input_stream = io_factory.create_input_stream(metadata.path.string(), metadata.size_in_bytes());
     auto input_buffer = input_stream->read_exact();
 
     for (auto &[name, algo] : algorithms) {
@@ -1454,35 +1383,29 @@ static void benchmark_file(const metadata &metadata, const algorithm_map &algori
         }
 
         for (auto tunable : tunable_values) {
-            for (size_t num_threads = min_num_threads; num_threads <= max_num_threads;
-                    ++num_threads) {
-                auto params = benchmark_params{
-                        tunable, num_threads, min_time, min_reps, max_reps, warm_up, auto_tune};
+            for (size_t num_threads = min_num_threads; num_threads <= max_num_threads; ++num_threads) {
+                auto params = benchmark_params{tunable, num_threads, min_time, min_reps, max_reps, warm_up, auto_tune};
 
                 benchmark_result result;
                 try {
                     result = algo.benchmark(input_buffer, metadata, params);
                 } catch (not_implemented &) { continue; } catch (buffer_mismatch &) {
                     std::ostringstream msg;
-                    msg << "mismatch between input and decompressed buffer for "
-                        << metadata.path.filename().string() << " with " << name
-                        << " (tunable=" << tunable << ")";
+                    msg << "mismatch between input and decompressed buffer for " << metadata.path.filename().string()
+                        << " with " << name << " (tunable=" << tunable << ")";
                     throw std::logic_error(msg.str());
                 } catch (std::exception &e) {
                     std::ostringstream msg;
-                    msg << "exception raised by " << name << " benchmark (tunable=" << tunable
-                        << ") with " << metadata.path.filename().string() << ": " << e.what();
+                    msg << "exception raised by " << name << " benchmark (tunable=" << tunable << ") with "
+                        << metadata.path.filename().string() << ": " << e.what();
                     throw std::runtime_error(msg.str());
                 }
                 std::cout << metadata.path.filename().string() << ";"
                           << (metadata.data_type == data_type::t_float ? "float" : "double") << ";"
-                          << metadata.extent.size() << ";" << name << ";" << tunable << ";"
-                          << num_threads << ";"
-                          << join(",", result.compression_times, [](auto d) { return d.count(); })
-                          << ";"
-                          << join(",", result.decompression_times, [](auto d) { return d.count(); })
-                          << ";" << result.uncompressed_bytes << ";" << result.compressed_bytes
-                          << "\n";
+                          << metadata.extent.size() << ";" << name << ";" << tunable << ";" << num_threads << ";"
+                          << join(",", result.compression_times, [](auto d) { return d.count(); }) << ";"
+                          << join(",", result.decompression_times, [](auto d) { return d.count(); }) << ";"
+                          << result.uncompressed_bytes << ";" << result.compressed_bytes << "\n";
             }
         }
     }
@@ -1549,24 +1472,17 @@ int main(int argc, char **argv) {
     desc.add_options()
             ("help", "show this help")
             ("version", "show library versions")
-            ("csv-file", opts::value(&metadata_csv_file)->required(),
-                    "csv file with benchmark file metadata")
-            ("algorithms,a", opts::value(&include_algorithms)->multitoken(),
-                    "algorithms to evaluate (see --help)")
+            ("csv-file", opts::value(&metadata_csv_file)->required(), "csv file with benchmark file metadata")
+            ("algorithms,a", opts::value(&include_algorithms)->multitoken(), "algorithms to evaluate (see --help)")
             ("skip-algorithms,A", opts::value(&exclude_algorithms)->multitoken(),
                     "algorithms to NOT evaluate (see --help)")
-            ("time-each,t", opts::value(&benchmark_ms),
-                    "repeat each for at least t ms (default 1000)")
-            ("min-reps,r", opts::value(&benchmark_min_reps),
-                    "repeat each at least n times (default 1)")
-            ("max-reps,R", opts::value(&benchmark_max_reps),
-                    "repeat each at most n times (default 100)")
+            ("time-each,t", opts::value(&benchmark_ms), "repeat each for at least t ms (default 1000)")
+            ("min-reps,r", opts::value(&benchmark_min_reps), "repeat each at least n times (default 1)")
+            ("max-reps,R", opts::value(&benchmark_max_reps), "repeat each at most n times (default 100)")
             ("tunables", opts::value<std::string>(), "tunables good|minmax|max|full (default good)")
-            ("scaling", opts::bool_switch(&benchmark_scaling),
-                    "vary number of threads for multi-threaded algorithms")
+            ("scaling", opts::bool_switch(&benchmark_scaling), "vary number of threads for multi-threaded algorithms")
             ("no-mmap", opts::bool_switch(&no_mmap), "do not use memory-mapped I/O")
-            ("no-warmup", opts::bool_switch(&no_warmup),
-                    "do not perform an additional warm-up step per benchmark")
+            ("no-warmup", opts::bool_switch(&no_warmup), "do not perform an additional warm-up step per benchmark")
             ("auto-tune", opts::bool_switch(&auto_tune),
                     "auto-select optimal configuration per dataset (nvCOMP Cascaded)");
     // clang-format on
@@ -1582,8 +1498,7 @@ int main(int argc, char **argv) {
 
         if (vars.count("help")) {
             std::cout << "Benchmark compression algorithms on float data\n\n"
-                      << usage << desc
-                      << "\nAvailable algorithms: " << available_algorithms_string() << "\n";
+                      << usage << desc << "\nAvailable algorithms: " << available_algorithms_string() << "\n";
             return EXIT_SUCCESS;
         }
 
@@ -1616,13 +1531,11 @@ int main(int argc, char **argv) {
     algorithm_map selected_algorithms;
     if (!include_algorithms.empty()) {
         for (auto &name : include_algorithms) {
-            if (auto iter = available_algorithms().find(name);
-                    iter != available_algorithms().end()) {
+            if (auto iter = available_algorithms().find(name); iter != available_algorithms().end()) {
                 selected_algorithms.insert(*iter);
             } else {
                 std::cerr << "Unknown algorithm \"" << name
-                          << "\".\nAvailable algorithms are: " << available_algorithms_string()
-                          << "\n";
+                          << "\".\nAvailable algorithms are: " << available_algorithms_string() << "\n";
                 return EXIT_FAILURE;
             }
         }
@@ -1646,9 +1559,8 @@ int main(int argc, char **argv) {
                      "compression times (microseconds);decompression times (microseconds);"
                      "uncompressed bytes;compressed bytes\n";
         for (auto &metadata : load_metadata_file(metadata_csv_file)) {
-            benchmark_file(metadata, selected_algorithms, !no_warmup,
-                    std::chrono::milliseconds(benchmark_ms), benchmark_min_reps, benchmark_max_reps,
-                    tunables, benchmark_scaling, auto_tune, *io_factory);
+            benchmark_file(metadata, selected_algorithms, !no_warmup, std::chrono::milliseconds(benchmark_ms),
+                    benchmark_min_reps, benchmark_max_reps, tunables, benchmark_scaling, auto_tune, *io_factory);
         }
         return EXIT_SUCCESS;
     } catch (std::exception &e) {

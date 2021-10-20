@@ -3,9 +3,8 @@
 // We don't use <complex>, but a Clang/glibcxx bug causes the build to fail when <random> is
 // included before <complex> (__host__/__device__ mismatch for glibcxx internal __failed_assertion()
 // prototype)
-#include <complex>
-
 #include <algorithm>
+#include <complex>
 #include <random>
 #include <sstream>
 #include <vector>
@@ -40,8 +39,8 @@ void check_for_vector_equality(const T *lhs, const T *rhs, size_t size, const ch
 
     if (first_mismatch <= last_mismatch) {
         std::ostringstream ss;
-        ss << file << ":" << line << ": vectors of size " << size << " mismatch between index "
-           << first_mismatch << " and " << last_mismatch << ":\n    {";
+        ss << file << ":" << line << ": vectors of size " << size << " mismatch between index " << first_mismatch
+           << " and " << last_mismatch << ":\n    {";
         for (auto *vec : {&lhs, &rhs}) {
             for (size_t i = first_mismatch; i <= last_mismatch;) {
                 ss << (*vec)[i];
@@ -62,10 +61,10 @@ void check_for_vector_equality(const T *lhs, const T *rhs, size_t size, const ch
 
 
 template<typename T>
-void check_for_vector_equality(const std::vector<T> &lhs, const std::vector<T> &rhs,
-        const char *file, int line) {
+void check_for_vector_equality(const std::vector<T> &lhs, const std::vector<T> &rhs, const char *file, int line) {
     if (lhs.size() != rhs.size()) {
-        FAIL_CHECK(file << ":" << line << ": vectors differ in size: " << lhs.size() << " vs. " << rhs.size() << " elements\n");
+        FAIL_CHECK(file << ":" << line << ": vectors differ in size: " << lhs.size() << " vs. " << rhs.size()
+                        << " elements\n");
     } else {
         check_for_vector_equality(lhs.data(), rhs.data(), lhs.size(), file, line);
     }
@@ -84,8 +83,8 @@ void black_hole(T *datum) {
 // std::inclusive_scan is not available on all platforms
 template<typename InputIt, typename OutputIt, typename BinaryOperation = std::plus<>,
         typename T = typename std::iterator_traits<OutputIt>::value_type>
-constexpr OutputIt iter_inclusive_scan(InputIt first, InputIt last, OutputIt d_first,
-        BinaryOperation binary_op = {}, T init = {}) {
+constexpr OutputIt
+iter_inclusive_scan(InputIt first, InputIt last, OutputIt d_first, BinaryOperation binary_op = {}, T init = {}) {
     while (first != last) {
         *d_first = init = binary_op(init, *first);
         ++first;
@@ -97,8 +96,8 @@ constexpr OutputIt iter_inclusive_scan(InputIt first, InputIt last, OutputIt d_f
 // std::exclusive_scan is not available on all platforms
 template<typename InputIt, typename OutputIt, typename BinaryOperation = std::plus<>,
         typename T = typename std::iterator_traits<OutputIt>::value_type>
-constexpr OutputIt iter_exclusive_scan(InputIt first, InputIt last, OutputIt d_first,
-        BinaryOperation binary_op = {}, T init = {}) {
+constexpr OutputIt
+iter_exclusive_scan(InputIt first, InputIt last, OutputIt d_first, BinaryOperation binary_op = {}, T init = {}) {
     while (first != last) {
         *d_first = init;
         init = binary_op(init, *first);

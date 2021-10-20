@@ -20,11 +20,11 @@
 #else
 #define NDZIP_ENDIAN NDZIP_LITTLE_ENDIAN
 #endif
-#elif defined(__BIG_ENDIAN__) || defined(__ARMEB__) || defined(__THUMBEB__) \
-        || defined(__AARCH64EB__) || defined(_MIBSEB) || defined(__MIBSEB) || defined(__MIBSEB__)
+#elif defined(__BIG_ENDIAN__) || defined(__ARMEB__) || defined(__THUMBEB__) || defined(__AARCH64EB__) \
+        || defined(_MIBSEB) || defined(__MIBSEB) || defined(__MIBSEB__)
 #define NDZIP_ENDIAN NDZIP_BIG_ENDIAN
-#elif defined(__LITTLE_ENDIAN__) || defined(__ARMEL__) || defined(__THUMBEL__) \
-        || defined(__AARCH64EL__) || defined(_MIPSEL) || defined(__MIPSEL) || defined(__MIPSEL__)
+#elif defined(__LITTLE_ENDIAN__) || defined(__ARMEL__) || defined(__THUMBEL__) || defined(__AARCH64EL__) \
+        || defined(_MIPSEL) || defined(__MIPSEL) || defined(__MIPSEL__)
 #define NDZIP_ENDIAN NDZIP_LITTLE_ENDIAN
 #else
 #error "Unknown endianess"
@@ -47,8 +47,7 @@ NDZIP_UNIVERSAL constexpr inline Integer ipow(Integer base, unsigned exponent) {
 template<typename T>
 using bits_type = std::conditional_t<sizeof(T) == 1, uint8_t,
         std::conditional_t<sizeof(T) == 2, uint16_t,
-                std::conditional_t<sizeof(T) == 4, uint32_t,
-                        std::conditional_t<sizeof(T) == 8, uint64_t, void>>>>;
+                std::conditional_t<sizeof(T) == 4, uint32_t, std::conditional_t<sizeof(T) == 8, uint64_t, void>>>>;
 
 template<typename Integer>
 NDZIP_UNIVERSAL constexpr Integer div_ceil(Integer p, Integer q) {
@@ -156,15 +155,14 @@ template<typename POD, typename Memory>
 }
 
 template<unsigned Dims, typename Fn>
-void for_each_border_slice_recursive(const extent<Dims> &size, extent<Dims> pos,
-        unsigned side_length, unsigned d, unsigned smallest_dim_with_border, const Fn &fn) {
+void for_each_border_slice_recursive(const extent<Dims> &size, extent<Dims> pos, unsigned side_length, unsigned d,
+        unsigned smallest_dim_with_border, const Fn &fn) {
     auto border_begin = size[d] / side_length * side_length;
     auto border_end = size[d];
 
     if (d < smallest_dim_with_border) {
         for (pos[d] = 0; pos[d] < border_begin; ++pos[d]) {
-            for_each_border_slice_recursive(
-                    size, pos, side_length, d + 1, smallest_dim_with_border, fn);
+            for_each_border_slice_recursive(size, pos, side_length, d + 1, smallest_dim_with_border, fn);
         }
     }
 
@@ -191,32 +189,27 @@ void for_each_border_slice(const extent<Dims> &size, unsigned side_length, const
         if (size[d] % side_length != 0) { smallest_dim_with_border = static_cast<int>(d); }
     }
     if (smallest_dim_with_border) {
-        for_each_border_slice_recursive(
-                size, extent<Dims>{}, side_length, 0, *smallest_dim_with_border, fn);
+        for_each_border_slice_recursive(size, extent<Dims>{}, side_length, 0, *smallest_dim_with_border, fn);
     }
 }
 
 template<typename DataType, unsigned Dims>
-[[gnu::noinline]] size_t
-pack_border(void *dest, const slice<DataType, Dims> &src, unsigned side_length) {
+[[gnu::noinline]] size_t pack_border(void *dest, const slice<DataType, Dims> &src, unsigned side_length) {
     static_assert(std::is_trivially_copyable_v<DataType>);
     size_t dest_offset = 0;
     for_each_border_slice(src.size(), side_length, [&](index_type src_offset, index_type count) {
-        memcpy(static_cast<char *>(dest) + dest_offset, src.data() + src_offset,
-                count * sizeof(DataType));
+        memcpy(static_cast<char *>(dest) + dest_offset, src.data() + src_offset, count * sizeof(DataType));
         dest_offset += count * sizeof(DataType);
     });
     return dest_offset;
 }
 
 template<typename DataType, unsigned Dims>
-[[gnu::noinline]] size_t
-unpack_border(const slice<DataType, Dims> &dest, const void *src, unsigned side_length) {
+[[gnu::noinline]] size_t unpack_border(const slice<DataType, Dims> &dest, const void *src, unsigned side_length) {
     static_assert(std::is_trivially_copyable_v<DataType>);
     size_t src_offset = 0;
     for_each_border_slice(dest.size(), side_length, [&](index_type dest_offset, index_type count) {
-        memcpy(dest.data() + dest_offset, static_cast<const char *>(src) + src_offset,
-                count * sizeof(DataType));
+        memcpy(dest.data() + dest_offset, static_cast<const char *>(src) + src_offset, count * sizeof(DataType));
         src_offset += count * sizeof(DataType);
     });
     return src_offset;
@@ -234,8 +227,8 @@ index_type border_element_count(const extent<Dims> &e, unsigned side_length) {
 }
 
 template<typename Profile, unsigned ThisDim, typename F>
-[[gnu::always_inline]] void iter_hypercubes(const extent<Profile::dimensions> &size,
-        extent<Profile::dimensions> &off, index_type &i, F &f) {
+[[gnu::always_inline]] void
+iter_hypercubes(const extent<Profile::dimensions> &size, extent<Profile::dimensions> &off, index_type &i, F &f) {
     if constexpr (ThisDim == Profile::dimensions) {
         invoke_for_element(f, i, off);
         ++i;
@@ -249,13 +242,12 @@ template<typename Profile, unsigned ThisDim, typename F>
 
 template<typename Profile>
 struct stream {
-    using bits_type = std::conditional_t<std::is_const_v<Profile>,
-            const typename Profile::bits_type, typename Profile::bits_type>;
+    using bits_type = std::conditional_t<std::is_const_v<Profile>, const typename Profile::bits_type,
+            typename Profile::bits_type>;
     using offset_type = std::conditional_t<std::is_const_v<Profile>, const index_type, index_type>;
     using byte_type = std::conditional_t<std::is_const_v<Profile>, const std::byte, std::byte>;
 
-    static_assert(
-            sizeof(bits_type) >= sizeof(offset_type) && alignof(bits_type) >= alignof(offset_type));
+    static_assert(sizeof(bits_type) >= sizeof(offset_type) && alignof(bits_type) >= alignof(offset_type));
 
     index_type num_hypercubes;
     bits_type *buffer;
@@ -272,8 +264,7 @@ struct stream {
     // requires header() to be initialized
     NDZIP_UNIVERSAL bits_type *hypercube(index_type hc_index) {
         auto base_byte_offset = ceil(num_hypercubes * bytes_of<offset_type>, bytes_of<bits_type>);
-        auto *base = reinterpret_cast<bits_type *>(
-                reinterpret_cast<byte_type *>(buffer) + base_byte_offset);
+        auto *base = reinterpret_cast<bits_type *>(reinterpret_cast<byte_type *>(buffer) + base_byte_offset);
         if (hc_index == 0) {
             return base;
         } else {
@@ -282,8 +273,7 @@ struct stream {
     }
 
     NDZIP_UNIVERSAL index_type hypercube_size(index_type hc_index) {
-        return hc_index == 0 ? offset_after(0)
-                             : offset_after(hc_index) - offset_after(hc_index - 1);
+        return hc_index == 0 ? offset_after(0) : offset_after(hc_index) - offset_after(hc_index - 1);
     }
 
     // requires header() to be initialized

@@ -27,9 +27,7 @@ class extent {
     constexpr extent() noexcept = default;
 
     template<typename... Init,
-            std::enable_if_t<((sizeof...(Init) == Dims) && ...
-                                     && std::is_convertible_v<Init, index_type>),
-                    int> = 0>
+            std::enable_if_t<((sizeof...(Init) == Dims) && ... && std::is_convertible_v<Init, index_type>), int> = 0>
     NDZIP_UNIVERSAL constexpr extent(const Init &...components) noexcept
         : _components{static_cast<index_type>(components)...} {}
 
@@ -111,9 +109,7 @@ class extent {
         return eq;
     }
 
-    NDZIP_UNIVERSAL friend bool operator!=(const extent &left, const extent &right) {
-        return !operator==(left, right);
-    }
+    NDZIP_UNIVERSAL friend bool operator!=(const extent &left, const extent &right) { return !operator==(left, right); }
 
     NDZIP_UNIVERSAL iterator begin() { return _components; }
 
@@ -156,8 +152,7 @@ NDZIP_UNIVERSAL index_type linear_offset(extent<Dims> position, extent<Dims> spa
 namespace ndzip::detail {
 
 template<unsigned Dims>
-NDZIP_UNIVERSAL index_type linear_index(
-        const ndzip::extent<Dims> &size, const ndzip::extent<Dims> &pos) {
+NDZIP_UNIVERSAL index_type linear_index(const ndzip::extent<Dims> &size, const ndzip::extent<Dims> &pos) {
     index_type l = pos[0];
     for (unsigned d = 1; d < Dims; ++d) {
         l = l * size[d] + pos[d];
@@ -182,17 +177,13 @@ class slice {
         return detail::linear_index(_size, pos);
     }
 
-    NDZIP_UNIVERSAL T &operator[](const ndzip::extent<Dims> &pos) const {
-        return _data[linear_index(pos)];
-    }
+    NDZIP_UNIVERSAL T &operator[](const ndzip::extent<Dims> &pos) const { return _data[linear_index(pos)]; }
 
 #ifdef __NVCC__
 #pragma diag_suppress 554  //  will not be called if T == const T
 #endif
     // NVCC breaks on a SFINAE'd constructor slice(slice<U, Dims>) with U == std::remove_const_t<T>
-    NDZIP_UNIVERSAL operator slice<const T, Dims>() const {
-        return slice<const T, Dims>{_data, _size};
-    }
+    NDZIP_UNIVERSAL operator slice<const T, Dims>() const { return slice<const T, Dims>{_data, _size}; }
 #ifdef __NVCC__
 #pragma diag_default 554
 #endif

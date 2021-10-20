@@ -48,8 +48,7 @@ class io_factory {
 
 class stdio_io_factory : public io_factory {
   public:
-    std::unique_ptr<input_stream> create_input_stream(
-            const std::string &file_name, size_t chunk_length) const override;
+    std::unique_ptr<input_stream> create_input_stream(const std::string &file_name, size_t chunk_length) const override;
 
     std::unique_ptr<output_stream> create_output_stream(
             const std::string &file_name, size_t max_chunk_length) const override;
@@ -59,8 +58,7 @@ class stdio_io_factory : public io_factory {
 
 class mmap_io_factory : public io_factory {
   public:
-    std::unique_ptr<input_stream> create_input_stream(
-            const std::string &file_name, size_t chunk_length) const override;
+    std::unique_ptr<input_stream> create_input_stream(const std::string &file_name, size_t chunk_length) const override;
 
     std::unique_ptr<output_stream> create_output_stream(
             const std::string &file_name, size_t max_chunk_length) const override;

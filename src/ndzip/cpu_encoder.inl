@@ -73,28 +73,24 @@ class simd_aligned_buffer {
 
 template<typename Profile>
 [[gnu::noinline]] void load_hypercube(const extent<Profile::dimensions> &hc_offset,
-        const slice<const typename Profile::data_type, Profile::dimensions> &data,
-        typename Profile::bits_type *cube) {
+        const slice<const typename Profile::data_type, Profile::dimensions> &data, typename Profile::bits_type *cube) {
     using data_type = typename Profile::data_type;
     using bits_type = typename Profile::bits_type;
 
-    for_each_hypercube_slice<Profile>(
-            hc_offset, data, cube, [](const data_type *src, bits_type *dest, size_t n_elems) {
-                memcpy(assume_simd_aligned(dest), src, n_elems * sizeof(data_type));
-            });
+    for_each_hypercube_slice<Profile>(hc_offset, data, cube, [](const data_type *src, bits_type *dest, size_t n_elems) {
+        memcpy(assume_simd_aligned(dest), src, n_elems * sizeof(data_type));
+    });
 }
 
 template<typename Profile>
 [[gnu::noinline]] void store_hypercube(const extent<Profile::dimensions> &hc_offset,
-        const typename Profile::bits_type *cube,
-        const slice<typename Profile::data_type, Profile::dimensions> &data) {
+        const typename Profile::bits_type *cube, const slice<typename Profile::data_type, Profile::dimensions> &data) {
     using data_type = typename Profile::data_type;
     using bits_type = typename Profile::bits_type;
 
-    for_each_hypercube_slice<Profile>(
-            hc_offset, data, cube, [](data_type *dest, const bits_type *src, size_t n_elems) {
-                memcpy(dest, assume_simd_aligned(src), n_elems * sizeof(data_type));
-            });
+    for_each_hypercube_slice<Profile>(hc_offset, data, cube, [](data_type *dest, const bits_type *src, size_t n_elems) {
+        memcpy(dest, assume_simd_aligned(src), n_elems * sizeof(data_type));
+    });
 }
 
 
@@ -151,8 +147,7 @@ template<unsigned SideLength, typename Bits>
         store_aligned_256(line + j * words_per_256bit_lane, subtract_packed<Bits>(bottom, top));
     }
     auto bottom = load_aligned_256(line + (n_256bit_lanes - 1) * words_per_256bit_lane);
-    store_aligned_256(line + (n_256bit_lanes - 1) * words_per_256bit_lane,
-            subtract_packed<Bits>(bottom, top_n));
+    store_aligned_256(line + (n_256bit_lanes - 1) * words_per_256bit_lane, subtract_packed<Bits>(bottom, top_n));
 }
 
 template<unsigned SideLength, typename Bits>
@@ -217,8 +212,7 @@ void block_transform_avx2(typename Profile::bits_type *x) {
         for (size_t i = 0; i < side_length * side_length * side_length; i += side_length) {
             block_transform_horizontal_avx2<side_length>(x + i);
         }
-        for (size_t i = 0; i < side_length * side_length * side_length;
-                i += side_length * side_length) {
+        for (size_t i = 0; i < side_length * side_length * side_length; i += side_length * side_length) {
             block_transform_vertical_avx2<side_length>(x + i);
         }
         block_transform_planes_avx2<side_length>(x);
@@ -366,8 +360,7 @@ template<typename T>
 
 #ifdef __AVX2__
 
-[[gnu::always_inline]] inline void transpose_bits_avx2(
-        const uint32_t *__restrict vs, uint32_t *__restrict out) {
+[[gnu::always_inline]] inline void transpose_bits_avx2(const uint32_t *__restrict vs, uint32_t *__restrict out) {
     __m256i unpck0[4];
     __builtin_memcpy(unpck0, assume_simd_aligned(vs), sizeof unpck0);
 
@@ -431,8 +424,7 @@ template<typename T>
     }
 }
 
-[[gnu::always_inline]] inline void transpose_bits_avx2(
-        const uint64_t *__restrict vs, uint64_t *__restrict out) {
+[[gnu::always_inline]] inline void transpose_bits_avx2(const uint64_t *__restrict vs, uint64_t *__restrict out) {
     __m256i in[16];
     __builtin_memcpy(in, __builtin_assume_aligned(vs, 32), sizeof in);
 
@@ -602,8 +594,7 @@ template<typename T, unsigned Dims>
 ndzip::cpu_encoder<T, Dims>::~cpu_encoder() = default;
 
 template<typename T, unsigned Dims>
-size_t ndzip::cpu_encoder<T, Dims>::compress(
-        const slice<const data_type, dimensions> &data, void *raw_stream) const {
+size_t ndzip::cpu_encoder<T, Dims>::compress(const slice<const data_type, dimensions> &data, void *raw_stream) const {
     using profile = detail::profile<T, Dims>;
     using bits_type = typename profile::bits_type;
 
@@ -614,17 +605,15 @@ size_t ndzip::cpu_encoder<T, Dims>::compress(
     detail::file<profile> file(data.size());
     auto hc_size = detail::ipow(profile::hypercube_side_length, profile::dimensions);
 
-    detail::stream<profile> stream{
-            file.num_hypercubes(), static_cast<bits_type *>(raw_stream)};
+    detail::stream<profile> stream{file.num_hypercubes(), static_cast<bits_type *>(raw_stream)};
 
     auto &cube = _pimpl->cube;
     index_type offset = 0;
     file.for_each_hypercube([&](auto hc_offset, auto hc_index) {
         detail::cpu::load_hypercube<profile>(hc_offset, data, cube.data());
         detail::cpu::block_transform<profile>(cube.data());
-        offset += detail::cpu::zero_bit_encode<bits_type>(cube.data(),
-                          reinterpret_cast<std::byte *>(stream.hypercube(hc_index)) /* TODO */,
-                          hc_size)
+        offset += detail::cpu::zero_bit_encode<bits_type>(
+                          cube.data(), reinterpret_cast<std::byte *>(stream.hypercube(hc_index)) /* TODO */, hc_size)
                 / sizeof(bits_type);
         stream.set_offset_after(hc_index, offset);
     });
@@ -647,17 +636,16 @@ size_t ndzip::cpu_encoder<T, Dims>::decompress(
     detail::file<profile> file(data.size());
     auto hc_size = detail::ipow(profile::hypercube_side_length, profile::dimensions);
 
-    detail::stream<const profile> stream{
-            file.num_hypercubes(), static_cast<const bits_type *>(raw_stream)};
+    detail::stream<const profile> stream{file.num_hypercubes(), static_cast<const bits_type *>(raw_stream)};
 
     auto &cube = _pimpl->cube;
     file.for_each_hypercube([&](auto hc_offset, auto hc_index) {
-        detail::cpu::zero_bit_decode<bits_type>(reinterpret_cast<const std::byte*>(stream.hypercube(hc_index)), cube.data(), hc_size);
+        detail::cpu::zero_bit_decode<bits_type>(
+                reinterpret_cast<const std::byte *>(stream.hypercube(hc_index)), cube.data(), hc_size);
         detail::cpu::inverse_block_transform<profile>(cube.data());
         detail::cpu::store_hypercube<profile>(hc_offset, cube.data(), data);
     });
-    auto border_bytes = detail::unpack_border(data, stream.border(),
-            profile::hypercube_side_length);
+    auto border_bytes = detail::unpack_border(data, stream.border(), profile::hypercube_side_length);
     return (stream.border() - stream.buffer) * sizeof(bits_type) + border_bytes;
 }
 
@@ -684,8 +672,7 @@ struct ndzip::mt_cpu_encoder<T, Dims>::impl {
 
     struct write_buffer {
         size_t first_hc_index = SIZE_MAX;
-        alignas(8) std::array<std::byte,
-                profile::compressed_block_size_bound * num_hcs_per_chunk> stream;
+        alignas(8) std::array<std::byte, profile::compressed_block_size_bound * num_hcs_per_chunk> stream;
         boost::container::static_vector<uint32_t, num_hcs_per_chunk> offsets_after_hcs;
 
         size_t num_hypercubes() const { return offsets_after_hcs.size(); }
@@ -702,14 +689,11 @@ struct ndzip::mt_cpu_encoder<T, Dims>::impl {
     const size_t num_threads;
     std::vector<cube_buffer> thread_cubes{num_threads};
     std::vector<write_buffer> write_buffers{num_write_buffers};
-    std::priority_queue<write_buffer *, std::vector<write_buffer *>, hc_index_order>
-            write_task_queue;
-    boost::lockfree::queue<write_buffer *, boost::lockfree::capacity<num_write_buffers>>
-            free_write_buffers;
+    std::priority_queue<write_buffer *, std::vector<write_buffer *>, hc_index_order> write_task_queue;
+    boost::lockfree::queue<write_buffer *, boost::lockfree::capacity<num_write_buffers>> free_write_buffers;
 
     impl(std::optional<size_t> opt_num_threads)
-        : num_threads(
-                opt_num_threads ? opt_num_threads.value() : boost::thread::physical_concurrency()) {
+        : num_threads(opt_num_threads ? opt_num_threads.value() : boost::thread::physical_concurrency()) {
         // priority_queue does not expose vector::reserve, push nonsense instead which will be
         // cleared by prepare()
         for (auto &wb : write_buffers) {
@@ -734,16 +718,15 @@ ndzip::mt_cpu_encoder<T, Dims>::mt_cpu_encoder() : _pimpl(std::make_unique<impl>
 }
 
 template<typename T, unsigned Dims>
-ndzip::mt_cpu_encoder<T, Dims>::mt_cpu_encoder(size_t num_threads)
-    : _pimpl(std::make_unique<impl>(num_threads)) {
+ndzip::mt_cpu_encoder<T, Dims>::mt_cpu_encoder(size_t num_threads) : _pimpl(std::make_unique<impl>(num_threads)) {
 }
 
 template<typename T, unsigned Dims>
 ndzip::mt_cpu_encoder<T, Dims>::~mt_cpu_encoder() = default;
 
 template<typename T, unsigned Dims>
-size_t ndzip::mt_cpu_encoder<T, Dims>::compress(
-        const slice<const data_type, dimensions> &data, void *raw_stream) const {
+size_t
+ndzip::mt_cpu_encoder<T, Dims>::compress(const slice<const data_type, dimensions> &data, void *raw_stream) const {
     using profile = detail::profile<T, Dims>;
     using bits_type = typename profile::bits_type;
     using write_buffer = typename impl::write_buffer;
@@ -763,8 +746,7 @@ size_t ndzip::mt_cpu_encoder<T, Dims>::compress(
     const detail::file<profile> file(data.size());
     const auto num_threads = _pimpl->num_threads;
 
-    detail::stream<profile> stream{
-            file.num_hypercubes(), static_cast<bits_type *>(raw_stream)};
+    detail::stream<profile> stream{file.num_hypercubes(), static_cast<bits_type *>(raw_stream)};
 
     std::atomic<size_t> next_hc_index_to_read = 0;
     std::atomic<size_t> next_hc_index_to_write = 0;
@@ -789,8 +771,7 @@ size_t ndzip::mt_cpu_encoder<T, Dims>::compress(
             size_t task_stream_offset = 0;
 
             if (next_available_write_task_hc_index.load(std::memory_order_relaxed)
-                    == next_hc_index_to_write.load(
-                            std::memory_order_relaxed))  // reduce contention of critical section
+                    == next_hc_index_to_write.load(std::memory_order_relaxed))  // reduce contention of critical section
 #pragma omp critical(queue)
             {
                 if (!write_task_queue.empty()
@@ -798,12 +779,10 @@ size_t ndzip::mt_cpu_encoder<T, Dims>::compress(
                                 == next_hc_index_to_write.load(std::memory_order_relaxed)) {
                     write_task = write_task_queue.top();
                     write_task_queue.pop();
-                    next_available_write_task_hc_index.store(write_task_queue.empty()
-                                    ? SIZE_MAX
-                                    : write_task_queue.top()->first_hc_index,
+                    next_available_write_task_hc_index.store(
+                            write_task_queue.empty() ? SIZE_MAX : write_task_queue.top()->first_hc_index,
                             std::memory_order_relaxed);
-                    next_hc_index_to_write.fetch_add(
-                            write_task->num_hypercubes(), std::memory_order_relaxed);
+                    next_hc_index_to_write.fetch_add(write_task->num_hypercubes(), std::memory_order_relaxed);
                     task_stream_offset = stream_offset;
                     stream_offset += write_task->compressed_size();
                 }
@@ -811,11 +790,9 @@ size_t ndzip::mt_cpu_encoder<T, Dims>::compress(
 
             if (write_task) {
                 auto task_file_offset = task_stream_offset;
-                for (size_t task_hc_index = 0; task_hc_index < write_task->num_hypercubes();
-                        ++task_hc_index) {
+                for (size_t task_hc_index = 0; task_hc_index < write_task->num_hypercubes(); ++task_hc_index) {
                     auto hc_index = write_task->first_hc_index + task_hc_index;
-                    task_file_offset
-                            = task_stream_offset + write_task->offsets_after_hcs[task_hc_index];
+                    task_file_offset = task_stream_offset + write_task->offsets_after_hcs[task_hc_index];
                     stream.set_offset_after(hc_index, task_file_offset);
                 }
                 memcpy(stream.hypercube(write_task->first_hc_index), write_task->stream.data(),
@@ -828,27 +805,23 @@ size_t ndzip::mt_cpu_encoder<T, Dims>::compress(
                     // memory_order_relaxed: There is no synchronization involved, only atomicity is
                     // required. The ordering of the following operations is determined by the
                     // returned value.
-                    auto first_hc_index = next_hc_index_to_read.fetch_add(
-                            num_hcs_per_chunk, std::memory_order_relaxed);
+                    auto first_hc_index = next_hc_index_to_read.fetch_add(num_hcs_per_chunk, std::memory_order_relaxed);
 
                     if (first_hc_index < num_hypercubes) {
                         write_task->first_hc_index = first_hc_index;
                         write_task->offsets_after_hcs.clear();
                         for (size_t task_hc_index = 0;
-                                task_hc_index + first_hc_index < num_hypercubes
-                                && task_hc_index < num_hcs_per_chunk;
+                                task_hc_index + first_hc_index < num_hypercubes && task_hc_index < num_hcs_per_chunk;
                                 ++task_hc_index) {
                             auto hc_index = first_hc_index + task_hc_index;
-                            auto hc_offset = detail::extent_from_linear_id(
-                                                     hc_index, data.size() / side_length)
-                                    * side_length;
+                            auto hc_offset
+                                    = detail::extent_from_linear_id(hc_index, data.size() / side_length) * side_length;
                             detail::cpu::load_hypercube<profile>(hc_offset, data, cube.data());
                             detail::cpu::block_transform<profile>(cube.data());
 
                             task_stream_offset
                                     += detail::cpu::zero_bit_encode<bits_type>(cube.data(),
-                                               write_task->stream.data()
-                                                       + task_stream_offset * sizeof(bits_type),
+                                               write_task->stream.data() + task_stream_offset * sizeof(bits_type),
                                                hc_size)
                                     / sizeof(bits_type);
                             write_task->offsets_after_hcs.push_back(task_stream_offset);
@@ -858,8 +831,7 @@ size_t ndzip::mt_cpu_encoder<T, Dims>::compress(
                         {
                             write_task_queue.push(write_task);
                             next_available_write_task_hc_index.store(
-                                    write_task_queue.top()->first_hc_index,
-                                    std::memory_order_relaxed);
+                                    write_task_queue.top()->first_hc_index, std::memory_order_relaxed);
                         }
                     } else {
                         free_write_buffers.push(write_task);
@@ -891,8 +863,7 @@ size_t ndzip::mt_cpu_encoder<T, Dims>::decompress(
     const auto num_hypercubes = file.num_hypercubes();
     const auto num_threads = _pimpl->num_threads;
 
-    detail::stream<const profile> stream{
-            file.num_hypercubes(), static_cast<const bits_type *>(raw_stream)};
+    detail::stream<const profile> stream{file.num_hypercubes(), static_cast<const bits_type *>(raw_stream)};
 
 #pragma omp parallel num_threads(num_threads)
     {
@@ -901,19 +872,16 @@ size_t ndzip::mt_cpu_encoder<T, Dims>::decompress(
 
 #pragma omp for schedule(static) nowait
         for (size_t hc_index = 0; hc_index < num_hypercubes; ++hc_index) {
-            auto hc_offset = detail::extent_from_linear_id(hc_index, data.size() / side_length)
-                    * side_length;
+            auto hc_offset = detail::extent_from_linear_id(hc_index, data.size() / side_length) * side_length;
 
             detail::cpu::zero_bit_decode<bits_type>(
-                    reinterpret_cast<const std::byte *>(stream.hypercube(hc_index)), cube.data(),
-                    hc_size);
+                    reinterpret_cast<const std::byte *>(stream.hypercube(hc_index)), cube.data(), hc_size);
             detail::cpu::inverse_block_transform<profile>(cube.data());
             detail::cpu::store_hypercube<profile>(hc_offset, cube.data(), data);
         }
     }
 
-    auto border_bytes = detail::unpack_border(data, stream.border(),
-                                              profile::hypercube_side_length);
+    auto border_bytes = detail::unpack_border(data, stream.border(), profile::hypercube_side_length);
     return (stream.border() - stream.buffer) * sizeof(bits_type) + border_bytes;
 }
 

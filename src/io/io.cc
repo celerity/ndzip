@@ -44,13 +44,9 @@ class stdio_input_stream final : public input_stream {
         assert(_n_chunks > 0 || remainder_from_last_chunk == 0);
         assert(remainder_from_last_chunk <= _chunk_size);
         size_t bytes_to_read = _chunk_size - remainder_from_last_chunk;
-        memmove(_chunk, static_cast<std::byte *>(_chunk) + remainder_from_last_chunk,
-                remainder_from_last_chunk);
-        auto bytes_read = fread(static_cast<std::byte *>(_chunk) + remainder_from_last_chunk, 1,
-                bytes_to_read, _file);
-        if (bytes_read < bytes_to_read && ferror(_file)) {
-            throw io_error("fread: "s + strerror(errno));
-        }
+        memmove(_chunk, static_cast<std::byte *>(_chunk) + remainder_from_last_chunk, remainder_from_last_chunk);
+        auto bytes_read = fread(static_cast<std::byte *>(_chunk) + remainder_from_last_chunk, 1, bytes_to_read, _file);
+        if (bytes_read < bytes_to_read && ferror(_file)) { throw io_error("fread: "s + strerror(errno)); }
         auto bytes_in_chunk = remainder_from_last_chunk + bytes_read;
         if (bytes_in_chunk > 0) { ++_n_chunks; }
         return {_chunk, bytes_in_chunk};
@@ -107,9 +103,7 @@ class stdio_output_stream final : public output_stream {
 
     void commit_chunk(size_t length) override {
         _should_zero_buffer = true;
-        if (fwrite(_buffer, length, 1, _file) < 1) {
-            throw io_error("fwrite: "s + strerror(errno));
-        }
+        if (fwrite(_buffer, length, 1, _file) < 1) { throw io_error("fwrite: "s + strerror(errno)); }
     }
 
   private:
@@ -123,8 +117,7 @@ class stdio_output_stream final : public output_stream {
 
 class mmap_input_stream final : public input_stream {
   public:
-    explicit mmap_input_stream(const std::string &file_name, size_t max_chunk_size)
-        : _max_chunk_size(max_chunk_size) {
+    explicit mmap_input_stream(const std::string &file_name, size_t max_chunk_size) : _max_chunk_size(max_chunk_size) {
         if (!file_name.empty() && file_name != "-") {
             _fd = open(file_name.c_str(), O_RDONLY);
             if (_fd == -1) { throw io_error("open: " + file_name + ": " + strerror(errno)); }
@@ -183,8 +176,7 @@ class mmap_input_stream final : public input_stream {
 
 class mmap_output_stream final : public output_stream {
   public:
-    explicit mmap_output_stream(const std::string &file_name, size_t max_chunk_size)
-        : _max_chunk_size(max_chunk_size) {
+    explicit mmap_output_stream(const std::string &file_name, size_t max_chunk_size) : _max_chunk_size(max_chunk_size) {
         if (!file_name.empty() && file_name != "-") {
             _fd = open(file_name.c_str(), O_RDWR | O_TRUNC | O_CREAT, (mode_t) 0666);
             if (_fd == -1) { throw io_error("open: " + file_name + ": " + strerror(errno)); }
@@ -234,9 +226,7 @@ class mmap_output_stream final : public output_stream {
 
     void truncate(size_t new_capacity) {
         unmap_if_mapped();
-        if (ftruncate(_fd, new_capacity) == -1) {
-            throw io_error("ftruncate: "s + strerror(errno));
-        }
+        if (ftruncate(_fd, new_capacity) == -1) { throw io_error("ftruncate: "s + strerror(errno)); }
         _capacity = new_capacity;
     }
 
