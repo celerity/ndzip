@@ -345,13 +345,11 @@ struct ndzip_benchmark : public benchmark {
     }
 };
 
-#if NDZIP_HIPSYCL_SUPPORT
-
-template<typename Data, unsigned Dims>
-struct ndzip_benchmark<ndzip::sycl_encoder, Data, Dims> : public benchmark {
+template<template<typename, unsigned> typename Encoder, typename Data, unsigned Dims>
+struct kernel_benchmark : public benchmark {
     using benchmark::benchmark;
 
-    size_t time_compression(ndzip::sycl_encoder<Data, Dims> &encoder,
+    size_t time_compression(Encoder<Data, Dims> &encoder,
             ndzip::slice<const Data, Dims> input_slice, void *compress_buffer) {
         ndzip::kernel_duration duration;
         auto compressed_size = encoder.compress(input_slice, compress_buffer, &duration);
@@ -359,7 +357,7 @@ struct ndzip_benchmark<ndzip::sycl_encoder, Data, Dims> : public benchmark {
         return compressed_size;
     }
 
-    void time_decompression(ndzip::sycl_encoder<Data, Dims> &encoder, const void *compress_buffer,
+    void time_decompression(Encoder<Data, Dims> &encoder, const void *compress_buffer,
             size_t compressed_size, ndzip::slice<Data, Dims> decompress_slice) {
         ndzip::kernel_duration duration;
         encoder.decompress(compress_buffer, compressed_size, decompress_slice, &duration);
@@ -367,7 +365,27 @@ struct ndzip_benchmark<ndzip::sycl_encoder, Data, Dims> : public benchmark {
     }
 };
 
-#endif  // NDZIP_HIPSYCL_SUPPORT
+
+#if NDZIP_HIPSYCL_SUPPORT
+
+template<typename Data, unsigned Dims>
+struct ndzip_benchmark<ndzip::sycl_encoder, Data, Dims>
+    : public kernel_benchmark<ndzip::sycl_encoder, Data, Dims> {
+    using kernel_benchmark<ndzip::sycl_encoder, Data, Dims>::kernel_benchmark;
+};
+
+#endif
+
+#if NDZIP_CUDA_SUPPORT
+
+template<typename Data, unsigned Dims>
+struct ndzip_benchmark<ndzip::cuda_encoder, Data, Dims>
+    : public kernel_benchmark<ndzip::cuda_encoder, Data, Dims> {
+    using kernel_benchmark<ndzip::cuda_encoder, Data, Dims>::kernel_benchmark;
+};
+
+#endif
+
 
 template<template<typename, unsigned> typename Encoder, typename Data, unsigned Dims>
 static benchmark_result benchmark_ndzip_3(
@@ -1328,7 +1346,10 @@ const algorithm_map &available_algorithms() {
         {"ndzip-mt", {benchmark_ndzip<ndzip::mt_cpu_encoder>, 1, 1, 1, true /* multithreaded */}},
 #endif
 #if NDZIP_HIPSYCL_SUPPORT
-        {"ndzip-gpu", {benchmark_ndzip<ndzip::sycl_encoder>}},
+        {"ndzip-sycl", {benchmark_ndzip<ndzip::sycl_encoder>}},
+#endif
+#if NDZIP_CUDA_SUPPORT
+        {"ndzip-cuda", {benchmark_ndzip<ndzip::cuda_encoder>}},
 #endif
 #if NDZIP_BENCHMARK_HAVE_3RDPARTY
         {"fpc", {benchmark_fpc, 1, 15, 25}},
