@@ -1,8 +1,14 @@
 # ndzip: A High-Throughput Parallel Lossless Compressor for Scientific Data
 
 ndzip compresses and decompresses multidimensional univariate grids of single- and double-precision IEEE 754
-floating-point data. We implement a single-threaded CPU compressor, an OpenMP-backed multi-threaded compressor and a
-SYCL-based GPU compressor. All three variants generate and decode bit-identical compressed stream.
+floating-point data. We implement
+
+- a single-threaded CPU compressor
+- an OpenMP-backed multi-threaded compressor
+- a SYCL-based GPU compressor (currently hipSYCL + NVIDIA only)
+- a CUDA-based GPU compressor (experimental)
+
+All variants generate and decode bit-identical compressed stream.
 
 ndzip is currently a research project with the primary use case of speeding up distributed HPC applications by
 increasing effective interconnect bandwidth.
@@ -18,8 +24,9 @@ increasing effective interconnect bandwidth.
 ### Additionaly, for GPU support
 
 - CUDA >= 11.0 (not officially compatible with Clang 10/11, but a lower version will optimize insufficiently!)
-- A [fork of hipSYCL](https://github.com/fknorr/hipSYCL/tree/rt-profiling) which includes kernel profiling functionality
-- An Nvidia GPU of Compute Capability >= 6.1
+- An Nvidia GPU with Compute Capability >= 6.1
+- For the SYCL version: A [fork of hipSYCL](https://github.com/fknorr/hipSYCL/tree/rt-profiling) which includes kernel
+  profiling functionality
 
 ## Building
 
@@ -35,7 +42,7 @@ If unit tests and microbenchmarks should also be built, add
 -DNDZIP_BUILD_TEST=YES
 ```
 
-### For GPU support
+### For GPU support with SYCL
 
 1. Build and install the required [custom hipSYCL](https://github.com/fknorr/hipSYCL/tree/rt-profiling) version
 
@@ -46,7 +53,7 @@ cmake -B build -DCMAKE_INSTALL_PREFIX=../hipSYCL-rt-profiling -DWITH_CUDA_BACKEN
 cmake --build build --target install -j
 ```
 
-2. Build ndzip with GPU support
+2. Build ndzip with SYCL
 
 ```
 cmake -B build -DCMAKE_PREFIX_PATH='../hipSYCL-rt-profiling/lib/cmake' -DHIPSYCL_PLATFORM=cuda -DCMAKE_CUDA_ARCHITECTURES=75 -DHIPSYCL_GPU_ARCH=sm_75 -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_FLAGS="-U__FLOAT128__ -U__SIZEOF_FLOAT128__ -march=native"
@@ -55,6 +62,26 @@ cmake --build build -j
 
 Replace `sm_75` and `75` with the string matching your GPU's Compute Capability. The `-U__FLOAT128__` define is required
 due to an [open bug in Clang](https://bugs.llvm.org/show_bug.cgi?id=47559).
+
+### For GPU support with CUDA (experimental)
+
+a) Either build ndzip with CUDA + NVCC ...
+
+```
+cmake -B build -DCMAKE_CUDA_ARCHITECTURES=75 -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_FLAGS="-march=native"
+cmake --build build -j
+```
+
+Replace `sm_75` and `75` with the string matching your GPU's Compute Capability.
+
+b) ... or with CUDA + Clang
+
+```
+cmake -B build -DCMAKE_CUDA_COMPILER="$(which clang++)" -DCMAKE_CUDA_ARCHITECTURES=75 -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_FLAGS="-U__FLOAT128__ -U__SIZEOF_FLOAT128__ -march=native"
+cmake --build build -j
+```
+
+The `-U__FLOAT128__` define is required due to an [open bug in Clang](https://bugs.llvm.org/show_bug.cgi?id=47559).
 
 ## Compressing and decompressing files
 
@@ -66,7 +93,7 @@ build/compress -d -n <size> -i <compressed-file> -o <decompressed-file> [-t floa
 `<size>` are one to three arguments depending on the dimensionality of the input grid. In the multi-dimensional case,
 the first number specifies the width of the slowest-iterating dimension.
 
-By default, `compress` uses the single-threaded CPU compressor. Passing `-e cpu-mt` or `-e gpu` selects the
+By default, `compress` uses the single-threaded CPU compressor. Passing `-e cpu-mt` or `-e sycl` / `-e cuda` selects the
 multi-threaded CPU compressor or the GPU compressor if available, respectively.
 
 ## Running unit tests
@@ -75,8 +102,9 @@ Only available if tests have been enabled during build.
 
 ```sh
 build/encoder_test
-build/gpu_bits_test  # only if built with GPU support
-build/gpu_ubench     # GPU microbenchmarks, only if built with GPU support
+build/sycl_bits_test  # only if built with SYCL support
+build/sycl_ubench     # GPU microbenchmarks, only if built with SYCL support
+build/cuda_bits_test  # only if built with CUDA support
 ```
 
 ## See also
