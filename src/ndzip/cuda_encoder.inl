@@ -16,7 +16,7 @@ using namespace ndzip::detail::gpu;
 
 template<typename T, index_type N>
 struct vec {
-    alignas(sizeof(T) * N) T elements[N]{{}};
+    alignas(sizeof(T) * N) T elements[N];
 
     __device__ T &operator[](index_type i) { return elements[i]; }
     __device__ const T &operator[](index_type i) const { return elements[i]; }
@@ -248,6 +248,7 @@ __device__ void write_transposed_chunks(hypercube_block<Profile> block,
             // Note that this makes assumptions about the endianness of uint64_t.
             static_assert(warp_size == 32);  // implicit assumption with uint32_t
             vec<uint32_t, warps_per_col_chunk> columns[warps_per_col_chunk];
+            memset(&columns, 0, sizeof columns);
 #pragma unroll
             for (index_type i = 0; i < warps_per_col_chunk; ++i) {
                 for (index_type j = 0; j < warp_size; ++j) {

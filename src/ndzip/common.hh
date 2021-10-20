@@ -114,36 +114,45 @@ template<typename POD>
 [[gnu::always_inline]] NDZIP_UNIVERSAL POD load_unaligned(const void *src) {
     static_assert(std::is_trivially_copyable_v<POD>);
     POD a;
-    memcpy(&a, src, sizeof(POD));
+    __builtin_memcpy(&a, src, sizeof(POD));
     return a;
-}
-
-template<size_t Align, typename POD, typename Memory>
-[[gnu::always_inline]] NDZIP_UNIVERSAL POD load_aligned(const Memory *src) {
-    assert(reinterpret_cast<uintptr_t>(src) % Align == 0);
-    return load_unaligned<POD>(__builtin_assume_aligned(src, Align));
 }
 
 template<typename POD, typename Memory>
 [[gnu::always_inline]] NDZIP_UNIVERSAL POD load_aligned(const Memory *src) {
-    return load_aligned<alignof(POD), POD>(src);
+    static_assert(sizeof(POD) >= sizeof(Memory) && sizeof(POD) % sizeof(Memory) == 0);
+
+    // GCC explicitly allows type punning through unions
+    union pun {
+        Memory mem[sizeof(POD) / sizeof(Memory)];
+        POD value;
+        NDZIP_UNIVERSAL pun() : mem{{}} {}
+    } pun;
+    for (size_t i = 0; i < sizeof(POD) / sizeof(Memory); ++i) {
+        pun.mem[i] = src[i];
+    }
+    return pun.value;
 }
 
 template<typename POD>
 [[gnu::always_inline]] NDZIP_UNIVERSAL void store_unaligned(void *dest, POD a) {
     static_assert(std::is_trivially_copyable_v<POD>);
-    memcpy(dest, &a, sizeof(POD));
-}
-
-template<size_t Align, typename POD, typename Memory>
-[[gnu::always_inline]] NDZIP_UNIVERSAL void store_aligned(Memory *dest, POD a) {
-    assert(reinterpret_cast<uintptr_t>(dest) % Align == 0);
-    store_unaligned(__builtin_assume_aligned(dest, Align), a);
+    __builtin_memcpy(dest, &a, sizeof(POD));
 }
 
 template<typename POD, typename Memory>
 [[gnu::always_inline]] NDZIP_UNIVERSAL void store_aligned(Memory *dest, POD a) {
-    store_aligned<alignof(POD), POD>(dest, a);
+    static_assert(sizeof(POD) >= sizeof(Memory) && sizeof(POD) % sizeof(Memory) == 0);
+
+    // GCC explicitly allows type punning through unions
+    union pun {
+        POD value{};
+        Memory mem[sizeof(POD) / sizeof(Memory)];
+        NDZIP_UNIVERSAL explicit pun(POD v) : value(v) {}
+    } pun(a);
+    for (size_t i = 0; i < sizeof(POD) / sizeof(Memory); ++i) {
+        dest[i] = pun.mem[i];
+    }
 }
 
 template<unsigned Dims, typename Fn>
@@ -516,8 +525,7 @@ template<typename U, typename T>
     return cast;
 }
 
-inline bool verbose()
-{
+inline bool verbose() {
     auto env = getenv("NDZIP_VERBOSE");
     return env && *env;
 }

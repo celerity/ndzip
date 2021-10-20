@@ -84,7 +84,7 @@ set(NDZIP_CXX_FLAGS ${NDZIP_COMPILE_FLAGS} -Werror=return-type -Werror=init-self
 
 if (NDZIP_USE_HIPSYCL)
     # Aggressive inlining avoids GPU call stack allocation == global memory access bottleneck
-    set(NDZIP_HIPSYCL_FLAGS ${NDZIP_COMPILE_FLAGS} -mllvm -inline-threshold=2000 -Xarch_device -DNDEBUG=1)
+    set(NDZIP_HIPSYCL_FLAGS ${NDZIP_CXX_FLAGS} -mllvm -inline-threshold=2000 -Xarch_device -DNDEBUG=1)
 endif()
 
 if (NDZIP_USE_CUDA)
@@ -99,7 +99,7 @@ if (NDZIP_USE_CUDA)
             -Xcudafe --diag_suppress=940 # missing return statement at end of non-void function
         )
     else ()
-        set(NDZIP_CUDA_FLAGS ${NDZIP_CXX_FLAGS})
+        set(NDZIP_CUDA_FLAGS ${NDZIP_CXX_FLAGS} -mllvm -inline-threshold=2000 -Xarch_device -DNDEBUG=1)
     endif ()
 endif ()
 

@@ -266,13 +266,13 @@ struct hypercube_ptr {
     template<typename T = bits_type>
     NDZIP_UNIVERSAL T load(index_type i) const {
         static_assert(sizeof(T) == sizeof(bits_type));
-        return load_aligned<alignof(uint_bank_t), T>(memory + layout::pad(i));
+        return load_aligned<T>(memory + layout::pad(i));
     }
 
     template<typename T = bits_type>
     NDZIP_UNIVERSAL void store(index_type i, std::common_type_t<T> bits) {
         static_assert(sizeof(T) == sizeof(bits_type));
-        store_aligned<alignof(uint_bank_t), T>(memory + layout::pad(i), bits);
+        store_aligned<T>(memory + layout::pad(i), bits);
     }
 };
 
