@@ -119,6 +119,4 @@ If you are using ndzip as part of your research, we kindly ask you to cite
   Scientific Data". In _2021 Data Compression Conference (DCC)_, IEEE,
   2021. [[DOI]](https://doi.org/10.1109/DCC50243.2021.00018) [Preprint PDF](https://dps.uibk.ac.at/~fabian/publications/2021-ndzip-a-high-throughput-parallel-lossless-compressor-for-scientific-data.pdf)
 
-- Fabian Knorr, Peter Thoman, and Thomas Fahringer. "ndzip-gpu: Efficient Lossless Compression of Scientific
-  Floating-Point Data on GPUs". Accepted at Supercomputing
-  2021. [Preprint PDF](https://dps.uibk.ac.at/~fabian/publications/2021-ndzip-gpu-efficient-lossless-compression-of-scientific-floating-point-data-on-gpus.pdf)
+- Knorr, Fabian, Peter Thoman, and Thomas Fahringer. "ndzip-gpu: efficient lossless compression of scientific floating-point data on GPUs". In _SC'21: Proceedings of the International Conference for High Performance Computing, Networking, Storage and Analysis_, ACM, 2021. [[DOI]](https://doi.org/10.1145/3458817.3476224) [[Preprint PDF]](https://dps.uibk.ac.at/~fabian/publications/2021-ndzip-gpu-efficient-lossless-compression-of-scientific-floating-point-data-on-gpus.pdf)
