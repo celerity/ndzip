@@ -297,7 +297,7 @@ TEMPLATE_TEST_CASE("SYCL store_hypercube is the inverse of load_hypercube", "[sy
         const auto data_size = input.size();
         cgh.parallel(range<1>{file.num_hypercubes()}, range<1>{gpu::hypercube_group_size<TestType>},
                 [=](gpu_sycl::hypercube_group<TestType> grp, physical_item<1>) {
-                    auto hc_index = grp.get_id(0);
+                    auto hc_index = grp.get_group_id(0);
                     slice<const data_type, TestType::dimensions> input{input_acc.get_pointer(), data_size};
                     gpu_sycl::hypercube_memory<TestType, gpu::forward_transform_tag> lm{grp};
                     gpu::hypercube_ptr<TestType, gpu::forward_transform_tag> hc{lm()};
@@ -311,7 +311,7 @@ TEMPLATE_TEST_CASE("SYCL store_hypercube is the inverse of load_hypercube", "[sy
         const auto data_size = input.size();
         cgh.parallel(range<1>{file.num_hypercubes()}, range<1>{gpu::hypercube_group_size<TestType>},
                 [=](gpu_sycl::hypercube_group<TestType> grp, physical_item<1>) {
-                    auto hc_index = grp.get_id(0);
+                    auto hc_index = grp.get_group_id(0);
                     slice<data_type, TestType::dimensions> output{output_acc.get_pointer(), data_size};
                     gpu_sycl::hypercube_memory<TestType, gpu::inverse_transform_tag> lm{grp};
                     gpu::hypercube_ptr<TestType, gpu::inverse_transform_tag> hc{lm()};
@@ -342,7 +342,7 @@ class sycl_transform_test_kernel;
 template<typename T>
 static __global__ void cuda_fill_kernel(T *dest, T value, index_type count) {
     const auto i = static_cast<index_type>(blockIdx.x * blockDim.x + threadIdx.x);
-    if (i < count) { dest[i] = 0; }
+    if (i < count) { dest[i] = value; }
 }
 
 template<typename T>
@@ -629,7 +629,10 @@ TEMPLATE_TEST_CASE("Residual encodings from different encoders are equivalent", 
              cgh.copy(chunk_lengths_buf.get_access<sam::read>(cgh), sycl_chunk_lengths.data());
          }).wait();
 
-        gpu_sycl::hierarchical_inclusive_scan(q, chunk_lengths_buf, sycl::plus<index_type>{});
+        {
+            auto scratch = gpu_sycl::hierarchical_inclusive_scan_allocate<index_type>(chunk_lengths_buf_size);
+            gpu_sycl::hierarchical_inclusive_scan(q, chunk_lengths_buf, scratch, sycl::plus<index_type>{});
+        }
 
         q.submit([&](handler &cgh) {
              cgh.copy(chunk_lengths_buf.get_access<sam::read>(cgh), sycl_chunk_offsets.data());
@@ -648,7 +651,7 @@ TEMPLATE_TEST_CASE("Residual encodings from different encoders are equivalent", 
             cgh.parallel<gpu_hypercube_compact_test_kernel<TestType>>(sycl::range<1>{1 /* num_hypercubes */},
                     sycl::range<1>{gpu::hypercube_group_size<TestType>},
                     [=](gpu_sycl::hypercube_group<TestType> grp, sycl::physical_item<1> phys_idx) {
-                        const auto hc_index = grp.get_id(0);
+                        const auto hc_index = grp.get_group_id(0);
                         gpu_sycl::compact_chunks<TestType>(grp,
                                 &chunks_acc.get_pointer()[hc_index * hc_total_chunks_size],
                                 &chunk_offsets_acc.get_pointer()[hc_index * chunks_per_hc], &length_acc[0],
@@ -944,13 +947,13 @@ TEMPLATE_TEST_CASE("Single block compresses identically on all encoders", "[omp]
 
     std::vector<bits_type> cpu_output(max_output_words);
     auto cpu_output_bytes = cpu_encoder<data_type, dimensions>{}.compress(input_slice, cpu_output.data());
-    cpu_output.resize(cpu_output_bytes / sizeof(data_type));
+    cpu_output.resize(cpu_output_bytes / sizeof(bits_type));
 
 #if NDZIP_OPENMP_SUPPORT
     SECTION("Multi-threaded vs single-threaded CPU", "[omp]") {
         std::vector<bits_type> mt_cpu_output(max_output_words);
         auto mt_cpu_output_bytes = mt_cpu_encoder<data_type, dimensions>{}.compress(input_slice, mt_cpu_output.data());
-        mt_cpu_output.resize(mt_cpu_output_bytes / sizeof(data_type));
+        mt_cpu_output.resize(mt_cpu_output_bytes / sizeof(bits_type));
         CHECK_FOR_VECTOR_EQUALITY(mt_cpu_output, cpu_output);
     }
 #endif
@@ -959,7 +962,7 @@ TEMPLATE_TEST_CASE("Single block compresses identically on all encoders", "[omp]
     SECTION("SYCL vs CPU", "[sycl]") {
         std::vector<bits_type> sycl_output(max_output_words);
         auto sycl_output_bytes = sycl_encoder<data_type, dimensions>{}.compress(input_slice, sycl_output.data());
-        sycl_output.resize(sycl_output_bytes / sizeof(data_type));
+        sycl_output.resize(sycl_output_bytes / sizeof(bits_type));
         CHECK_FOR_VECTOR_EQUALITY(sycl_output, cpu_output);
     }
 #endif
@@ -968,7 +971,7 @@ TEMPLATE_TEST_CASE("Single block compresses identically on all encoders", "[omp]
     SECTION("CUDA vs CPU", "[cuda]") {
         std::vector<bits_type> cuda_output(max_output_words);
         auto cuda_output_bytes = cuda_encoder<data_type, dimensions>{}.compress(input_slice, cuda_output.data());
-        cuda_output.resize(cuda_output_bytes / sizeof(data_type));
+        cuda_output.resize(cuda_output_bytes / sizeof(bits_type));
         CHECK_FOR_VECTOR_EQUALITY(cuda_output, cpu_output);
     }
 #endif

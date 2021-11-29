@@ -52,7 +52,9 @@ TEMPLATE_TEST_CASE("hierarchical_inclusive_scan produces the expected results", 
     sycl::buffer<uint32_t> prefix_sum_buffer(sycl::range<1>(input.size()));
     q.submit(
             [&](sycl::handler &cgh) { cgh.copy(input.data(), prefix_sum_buffer.get_access<sam::discard_write>(cgh)); });
-    hierarchical_inclusive_scan(q, prefix_sum_buffer, TestType{});
+
+    auto scratch = hierarchical_inclusive_scan_allocate<uint32_t>(input.size());
+    hierarchical_inclusive_scan(q, prefix_sum_buffer, scratch, TestType{});
 
     std::vector<uint32_t> gpu_prefix_sum(input.size());
     q.submit(

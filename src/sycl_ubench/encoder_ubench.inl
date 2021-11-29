@@ -65,7 +65,7 @@ TEMPLATE_TEST_CASE("Loading", "[load]", ALL_PROFILES) {
                     [=](hypercube_group<TestType> grp, sycl::physical_item<1>) {
                         hypercube_memory<TestType, gpu::forward_transform_tag> lm{grp};
                         hypercube_ptr<TestType, gpu::forward_transform_tag> hc{lm()};
-                        index_type hc_index = grp.get_id(0);
+                        index_type hc_index = grp.get_group_id(0);
                         slice<const data_type, dimensions> data{data_acc.get_pointer(), grid_extent};
 
                         load_hypercube(grp, hc_index, data, hc);
@@ -166,7 +166,7 @@ TEMPLATE_TEST_CASE("Chunk encoding", "[encode]", ALL_PROFILES) {
                         gpu::hypercube_ptr<TestType, forward_transform_tag> hc{lm()};
                         // Set some to zero - test zero-head shortcut optimization
                         grp.distribute_for(hc_size, [&](index_type i) { hc.store(i, (i > 512 ? i * 199 : 0)); });
-                        const auto hc_index = grp.get_id(0);
+                        const auto hc_index = grp.get_group_id(0);
                         write_transposed_chunks(
                                 grp, hc, &c[hc_index * hc_total_chunks_size], &l[1 + hc_index * chunks_per_hc]);
                         // hack
@@ -179,7 +179,8 @@ TEMPLATE_TEST_CASE("Chunk encoding", "[encode]", ALL_PROFILES) {
 
     {
         sycl::queue q;
-        hierarchical_inclusive_scan(q, lengths, sycl::plus<index_type>{});
+        auto scratch = hierarchical_inclusive_scan_allocate<index_type>(lengths.get_count());
+        hierarchical_inclusive_scan(q, lengths, scratch, sycl::plus<index_type>{});
     }
 
     sycl::buffer<bits_type> stream(n_blocks * hc_total_chunks_size);
@@ -192,7 +193,7 @@ TEMPLATE_TEST_CASE("Chunk encoding", "[encode]", ALL_PROFILES) {
             cgh.parallel<chunk_compact_kernel<TestType>>(sycl::range<1>{n_blocks},
                     sycl::range<1>{hypercube_group_size<TestType>},
                     [=](hypercube_group<TestType> grp, sycl::physical_item<1>) {
-                        auto hc_index = static_cast<index_type>(grp.get_id(0));
+                        auto hc_index = static_cast<index_type>(grp.get_group_id(0));
                         index_type offset_after;
                         compact_chunks<TestType>(grp, &c.get_pointer()[hc_index * hc_total_chunks_size],
                                 &l.get_pointer()[hc_index * chunks_per_hc], &offset_after, &s.get_pointer()[0]);
@@ -222,7 +223,7 @@ TEMPLATE_TEST_CASE("Chunk decoding", "[decode]", ALL_PROFILES) {
                     [=](hypercube_group<TestType> grp, sycl::physical_item<1>) {
                         hypercube_memory<TestType, inverse_transform_tag> lm{grp};
                         gpu::hypercube_ptr<TestType, gpu::inverse_transform_tag> hc{lm()};
-                        const auto hc_index = grp.get_id(0);
+                        const auto hc_index = grp.get_group_id(0);
                         const bits_type *column = c.get_pointer();
                         read_transposed_chunks(grp, hc, &column[hc_index * hc_size]);
                     });

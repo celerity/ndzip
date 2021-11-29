@@ -12,17 +12,40 @@ namespace ndzip::detail::gpu_sycl {
 
 using namespace ndzip::detail::gpu;
 
+inline uint64_t earliest_event_start(const sycl::event &evt) {
+    return evt.get_profiling_info<sycl::info::event_profiling::command_start>();
+}
+
+inline uint64_t earliest_event_start(const std::vector<sycl::event> &events) {
+    uint64_t start = UINT64_MAX;
+    for (auto &evt : events) {
+        start = std::min(start, evt.get_profiling_info<sycl::info::event_profiling::command_start>());
+    }
+    return start;
+}
+
+inline uint64_t latest_event_end(const sycl::event &evt) {
+    return evt.get_profiling_info<sycl::info::event_profiling::command_end>();
+}
+
+inline uint64_t latest_event_end(const std::vector<sycl::event> &events) {
+    uint64_t end = 0;
+    for (auto &evt : events) {
+        end = std::max(end, evt.get_profiling_info<sycl::info::event_profiling::command_end>());
+    }
+    return end;
+}
+
 template<typename... Events>
 std::tuple<uint64_t, uint64_t, kernel_duration> measure_duration(const Events &...events) {
-    auto early
-            = std::min<uint64_t>({events.template get_profiling_info<sycl::info::event_profiling::command_start>()...});
-    auto late = std::max<uint64_t>({events.template get_profiling_info<sycl::info::event_profiling::command_end>()}...);
+    auto early = std::min<uint64_t>({earliest_event_start(events)...});
+    auto late = std::max<uint64_t>({latest_event_end(events)...});
     return {early, late, kernel_duration{late - early}};
 }
 
 template<typename CGF>
 auto submit_and_profile(sycl::queue &q, const char *label, CGF &&cgf) {
-    if (verbose()) {
+    if (verbose() && q.has_property<sycl::property::queue::enable_profiling>()) {
         auto evt = q.submit(std::forward<CGF>(cgf));
         auto [early, late, duration] = measure_duration(evt, evt);
         printf("[profile] %8lu %8lu %s: %.3fms\n", early, late, label, duration.count() * 1e-6);
@@ -106,7 +129,7 @@ std::enable_if_t<(Range <= warp_size)> inclusive_scan(known_size_group<LocalSize
     grp.template distribute_for<ceil(Range, warp_size)>(
             [&](index_type item, index_type, sycl::logical_item<1>, sycl::sub_group sg) {
                 auto a = item < Range ? acc[item] : 0;
-                auto b = sycl::group_inclusive_scan(sg, a, op);
+                auto b = sycl::inclusive_scan_over_group(sg, a, op);
                 if (item < Range) { acc[item] = b; }
             });
 }
@@ -120,7 +143,7 @@ std::enable_if_t<(Range > warp_size)> inclusive_scan(known_size_group<LocalSize>
     sycl::local_memory<value_type[div_ceil(Range, warp_size)]> coarse{grp};
     grp.template distribute_for<ceil(Range, warp_size)>(
             [&](index_type item, index_type iteration, sycl::logical_item<1> idx, sycl::sub_group sg) {
-                fine(idx)[iteration] = sycl::group_inclusive_scan(sg, item < Range ? acc[item] : 0, op);
+                fine(idx)[iteration] = sycl::inclusive_scan_over_group(sg, item < Range ? acc[item] : 0, op);
                 if (item % warp_size == warp_size - 1) { coarse[item / warp_size] = fine(idx)[iteration]; }
             });
     inclusive_scan<div_ceil(Range, warp_size)>(grp, coarse(), op);
@@ -131,6 +154,22 @@ std::enable_if_t<(Range > warp_size)> inclusive_scan(known_size_group<LocalSize>
     });
 }
 
+template<typename Scalar>
+std::vector<sycl::buffer<Scalar>> hierarchical_inclusive_scan_allocate(index_type in_out_buffer_size) {
+    constexpr index_type granularity = hierarchical_inclusive_scan_granularity;
+
+    std::vector<sycl::buffer<Scalar>> intermediate_bufs;
+    assert(in_out_buffer_size % granularity == 0);  // otherwise we will overrun the in_out buffer bounds
+
+    auto n_elems = in_out_buffer_size;
+    while (n_elems > 1) {
+        n_elems = div_ceil(n_elems, granularity);
+        intermediate_bufs.emplace_back(ceil(n_elems, granularity));
+    }
+
+    return intermediate_bufs;
+}
+
 template<typename, typename>
 class hierarchical_inclusive_scan_reduction_kernel;
 
@@ -138,22 +177,12 @@ template<typename, typename>
 class hierarchical_inclusive_scan_expansion_kernel;
 
 template<typename Scalar, typename BinaryOp>
-auto hierarchical_inclusive_scan(sycl::queue &queue, sycl::buffer<Scalar> &in_out_buffer, BinaryOp op = {}) {
+void hierarchical_inclusive_scan(sycl::queue &queue, sycl::buffer<Scalar> &in_out_buffer,
+        std::vector<sycl::buffer<Scalar>> &intermediate_bufs, BinaryOp op = {}) {
     using sam = sycl::access::mode;
 
     constexpr index_type granularity = hierarchical_inclusive_scan_granularity;
     constexpr index_type local_size = 256;
-
-    std::vector<sycl::buffer<Scalar>> intermediate_bufs;
-    {
-        auto n_elems = static_cast<index_type>(in_out_buffer.get_count());
-        assert(n_elems % granularity == 0);  // otherwise we will overrun the in_out buffer bounds
-
-        while (n_elems > 1) {
-            n_elems = div_ceil(n_elems, granularity);
-            intermediate_bufs.emplace_back(ceil(n_elems, granularity));
-        }
-    }
 
     for (index_type i = 0; i < intermediate_bufs.size(); ++i) {
         auto &big_buffer = i > 0 ? intermediate_bufs[i - 1] : in_out_buffer;
@@ -201,10 +230,6 @@ auto hierarchical_inclusive_scan(sycl::queue &queue, sycl::buffer<Scalar> &in_ou
                     });
         });
     }
-
-    // (optionally) keep buffers alive so that cudaFree does not mess up profiling
-    // TODO keep state in `scanner` type to avoid delayed allocation
-    return intermediate_bufs;
 }
 
 template<unsigned Dims, typename U, typename T>
