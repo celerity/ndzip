@@ -123,10 +123,24 @@ class known_size_group : public sycl::group<1> {
     }
 };
 
+
+template<index_type LocalSize, typename F>
+[[gnu::always_inline]] void
+distribute_for(index_type range, known_size_group<LocalSize> group, F &&f) {
+    group.distribute_for(range, f);
+}
+
+template<index_type Range, index_type LocalSize, typename F>
+[[gnu::always_inline]] void
+distribute_for(known_size_group<LocalSize> group, F &&f) {
+    return group.template distribute_for<Range>(f);
+}
+
+
 template<index_type Range, index_type LocalSize, typename Accessor, typename BinaryOp>
 std::enable_if_t<(Range <= warp_size)> inclusive_scan(known_size_group<LocalSize> grp, Accessor acc, BinaryOp op) {
     static_assert(LocalSize % warp_size == 0);
-    grp.template distribute_for<ceil(Range, warp_size)>(
+    distribute_for<ceil(Range, warp_size)>(grp,
             [&](index_type item, index_type, sycl::logical_item<1>, sycl::sub_group sg) {
                 auto a = item < Range ? acc[item] : 0;
                 auto b = sycl::inclusive_scan_over_group(sg, a, op);
@@ -141,13 +155,13 @@ std::enable_if_t<(Range > warp_size)> inclusive_scan(known_size_group<LocalSize>
 
     sycl::private_memory<value_type[div_ceil(Range, LocalSize)]> fine{grp};
     sycl::local_memory<value_type[div_ceil(Range, warp_size)]> coarse{grp};
-    grp.template distribute_for<ceil(Range, warp_size)>(
+    distribute_for<ceil(Range, warp_size)>(grp,
             [&](index_type item, index_type iteration, sycl::logical_item<1> idx, sycl::sub_group sg) {
                 fine(idx)[iteration] = sycl::inclusive_scan_over_group(sg, item < Range ? acc[item] : 0, op);
                 if (item % warp_size == warp_size - 1) { coarse[item / warp_size] = fine(idx)[iteration]; }
             });
     inclusive_scan<div_ceil(Range, warp_size)>(grp, coarse(), op);
-    grp.template distribute_for<Range>([&](index_type item, index_type iteration, sycl::logical_item<1> idx) {
+    distribute_for<Range>(grp, [&](index_type item, index_type iteration, sycl::logical_item<1> idx) {
         auto value = fine(idx)[iteration];
         if (item >= warp_size) { value = op(value, coarse[item / warp_size - 1]); }
         acc[item] = value;
@@ -226,7 +240,7 @@ void hierarchical_inclusive_scan(sycl::queue &queue, sycl::buffer<Scalar> &in_ou
                         auto group_index = static_cast<index_type>(grp.get_group_id(0));
                         Scalar *big = &big_acc[(group_index + 1) * granularity];
                         Scalar small = small_acc[group_index];
-                        grp.distribute_for(granularity, [&](index_type i) { big[i] = op(big[i], small); });
+                        distribute_for(granularity, grp, [&](index_type i) { big[i] = op(big[i], small); });
                     });
         });
     }

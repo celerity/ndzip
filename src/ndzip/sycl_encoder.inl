@@ -31,7 +31,7 @@ void for_hypercube_indices(
     const auto hc_offset = detail::extent_from_linear_id(hc_index, data_size / side_length) * side_length;
 
     index_type initial_offset = linear_offset(hc_offset, data_size);
-    grp.distribute_for(hc_size, [&](index_type local_idx) {
+    distribute_for(hc_size, grp, [&](index_type local_idx) {
         index_type global_idx = initial_offset + global_offset<Profile>(local_idx, data_size);
         f(global_idx, local_idx);
     });
@@ -76,7 +76,7 @@ void forward_transform_lanes(hypercube_group<Profile> grp, hypercube_ptr<Profile
             grp};
 
     if constexpr (needs_carry) {
-        grp.template distribute_for<layout::num_lanes>(
+        distribute_for<layout::num_lanes>(grp,
                 [&](index_type lane, index_type iteration, sycl::logical_item<1> idx) {
                     if (auto prev_lane = accessor::prev_lane_in_row(lane); prev_lane != no_such_lane) {
                         // TODO this load causes a bank conflict in the 1-dimensional case. Why?
@@ -88,7 +88,7 @@ void forward_transform_lanes(hypercube_group<Profile> grp, hypercube_ptr<Profile
                 });
     }
 
-    grp.template distribute_for<layout::num_lanes>(
+    distribute_for<layout::num_lanes>(grp,
             [&](index_type lane, index_type iteration, sycl::logical_item<1> idx) {
                 bits_type a = needs_carry ? carry(idx)[iteration] : 0;
                 index_type index = accessor::offset(lane);
@@ -113,7 +113,7 @@ void forward_block_transform(hypercube_group<Profile> grp, hypercube_ptr<Profile
     if constexpr (dims >= 3) { forward_transform_lanes<2>(grp, hc); }
 
     // TODO move complement operation elsewhere to avoid local memory round-trip
-    grp.distribute_for(hc_size, [&](index_type item) { hc.store(item, complement_negative(hc.load(item))); });
+    distribute_for(hc_size, grp, [&](index_type item) { hc.store(item, complement_negative(hc.load(item))); });
 }
 
 
@@ -123,7 +123,7 @@ void inverse_transform_lanes(hypercube_group<Profile> grp, hypercube_ptr<Profile
     using accessor = directional_accessor<Profile, Direction, inverse_transform_tag>;
     using layout = typename accessor::layout;
 
-    grp.template distribute_for<layout::num_lanes>([&](index_type lane) {
+    distribute_for<layout::num_lanes>(grp, [&](index_type lane) {
         index_type index = accessor::offset(lane);
         bits_type a = hc.load(index);
         for (index_type i = 1; i < layout::lane_length; ++i) {
@@ -142,7 +142,7 @@ void inverse_block_transform(hypercube_group<Profile> grp, hypercube_ptr<Profile
     constexpr index_type hc_size = ipow(Profile::hypercube_side_length, dims);
 
     // TODO move complement operation elsewhere to avoid local memory round-trip
-    grp.distribute_for(hc_size, [&](index_type item) { hc.store(item, complement_negative(hc.load(item))); });
+    distribute_for(hc_size, grp, [&](index_type item) { hc.store(item, complement_negative(hc.load(item))); });
 
     // TODO how to do 2D?
     //   For 2D we have 64 parallel work items but we _probably_ want at least 256 threads per SM
@@ -187,7 +187,7 @@ void write_transposed_chunks(hypercube_group<Profile> grp, hypercube_ptr<Profile
     sycl::local_memory<sycl::vec<uint32_t, warps_per_col_chunk>[hypercube_group_size<Profile>]> row_stage { grp };
 
     // Schedule one warp per chunk to allow subgroup reductions
-    grp.distribute_for(num_col_chunks * warp_size,
+    distribute_for(num_col_chunks * warp_size, grp,
             [&](index_type item, index_type, sycl::logical_item<1> idx, sycl::sub_group sg) {
                 const auto col_chunk_index = item / warp_size;
                 const auto in_col_chunk_base = col_chunk_index * col_chunk_size;
@@ -280,13 +280,13 @@ void read_transposed_chunks(hypercube_group<Profile> grp, hypercube_ptr<Profile,
 
     sycl::local_memory<index_type[1 + num_col_chunks]> chunk_offsets{grp};
     grp.single_item([&] { chunk_offsets[0] = num_col_chunks; });  // single_item has no barrier
-    grp.distribute_for(num_col_chunks, [&](index_type item) { chunk_offsets[1 + item] = popcount(stream[item]); });
+    distribute_for(num_col_chunks, grp, [&](index_type item) { chunk_offsets[1 + item] = popcount(stream[item]); });
     inclusive_scan<num_col_chunks + 1>(grp, chunk_offsets(), sycl::plus<index_type>());
 
     sycl::local_memory<index_type[hypercube_group_size<Profile> * ipow(words_per_col, 2)]> stage_mem{grp};
 
     // See write_transposed_chunks for the optimization of the 64-bit case
-    grp.distribute_for(num_col_chunks * warp_size,
+    distribute_for(num_col_chunks * warp_size, grp,
             [&](index_type item0, index_type, sycl::logical_item<1> idx, sycl::sub_group sg) {
                 auto col_chunk_index = item0 / warp_size;
                 auto head = stream[col_chunk_index];  // TODO this has been read before, stage?
@@ -368,13 +368,13 @@ void compact_chunks(hypercube_group<Profile> grp, const typename Profile::bits_t
     constexpr index_type chunks_per_hc = 1 /* header */ + hc_size / col_chunk_size;
 
     sycl::local_memory<index_type[chunks_per_hc + 1]> hc_offsets{grp};
-    grp.distribute_for(chunks_per_hc + 1, [&](index_type i) { hc_offsets[i] = offsets[i]; });
+    distribute_for(chunks_per_hc + 1, grp, [&](index_type i) { hc_offsets[i] = offsets[i]; });
 
     grp.single_item([&] {
         *stream_header_entry = hc_offsets[chunks_per_hc];  // header encodes offset *after*
     });
 
-    grp.distribute_for(hc_total_chunks_size, [&](index_type item) {
+    distribute_for(hc_total_chunks_size, grp, [&](index_type item) {
         index_type chunk_rel_item = item;
         index_type chunk_index = 0;
         if (item >= header_chunk_size) {
