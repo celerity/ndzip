@@ -42,7 +42,7 @@ TEMPLATE_TEST_CASE("Register to global memory inclusive scan", "[scan]", uint32_
             cgh.parallel<inclusive_scan_sycl_subgroup_kernel<TestType>>(sycl::range<1>{n_groups},
                     sycl::range<1>{group_size}, [=](sycl::group<1> &grp, sycl::physical_item<1>) {
                         grp.distribute_for([&](sycl::sub_group sg, sycl::logical_item<1> idx) {
-                            g[idx.get_global_linear_id()] = sycl::group_inclusive_scan(
+                            g[idx.get_global_linear_id()] = sycl::inclusive_scan_over_group(
                                     sg, idx.get_global_linear_id(), sycl::plus<TestType>{});
                         });
                     });
@@ -56,7 +56,7 @@ TEMPLATE_TEST_CASE("Register to global memory inclusive scan", "[scan]", uint32_
             cgh.parallel<inclusive_scan_sycl_group_kernel<TestType>>(sycl::range<1>{n_groups},
                     sycl::range<1>{group_size}, [=](sycl::group<1> &grp, sycl::physical_item<1>) {
                         grp.distribute_for([&](sycl::sub_group, sycl::logical_item<1> idx) {
-                            g[idx.get_global_linear_id()] = sycl::group_inclusive_scan(
+                            g[idx.get_global_linear_id()] = sycl::inclusive_scan_over_group(
                                     grp, idx.get_global_linear_id(), sycl::plus<TestType>{});
                         });
                     });
@@ -81,6 +81,49 @@ TEMPLATE_TEST_CASE("Register to global memory inclusive scan", "[scan]", uint32_
         });
     };
 }
+
+template<typename>
+class ndzip_inclusive_scan_kernel;
+
+template<typename>
+class joint_inclusive_scan_kernel;
+
+TEMPLATE_TEST_CASE("Joint inclusive scan", "[scan][memory]", uint32_t, uint64_t) {
+    SYCL_BENCHMARK("ndzip::detail::gpu_sycl::inclusive_scan")(sycl::queue & q) {
+        constexpr index_type block_size = 4096;
+        constexpr index_type group_size = 256;
+        sycl::buffer<TestType> buf(block_size);
+        return q.submit([&](sycl::handler &cgh) {
+            sycl::accessor g{buf, cgh, sycl::read_write, sycl::no_init};
+            cgh.parallel<ndzip_inclusive_scan_kernel<TestType>>(sycl::range<1>{1}, sycl::range<1>{group_size},
+                    [=](known_size_group<group_size> grp, sycl::physical_item<1>) {
+                        distribute_for(block_size, grp, [&](index_type item, index_type, sycl::logical_item<1> idx) {
+                            g[item] = idx.get_global_linear_id();
+                        });
+                        inclusive_scan<block_size>(grp, g, sycl::plus<TestType>{});
+                    });
+        });
+    };
+
+    SYCL_BENCHMARK("sycl::joint_inclusive_scan")(sycl::queue & q) {
+        constexpr index_type block_size = 4096;
+        constexpr index_type group_size = 256;
+        sycl::buffer<TestType> buf(block_size);
+        return q.submit([&](sycl::handler &cgh) {
+            sycl::accessor g{buf, cgh, sycl::read_write, sycl::no_init};
+            cgh.parallel_for<joint_inclusive_scan_kernel<TestType>>(
+                    sycl::nd_range<1>{group_size, group_size}, [=](sycl::nd_item<1> item) {
+                        known_size_group<group_size> grp{item.get_group()};
+                        distribute_for(block_size, grp, [&](index_type item, index_type, sycl::logical_item<1> idx) {
+                            g[item] = idx.get_global_linear_id();
+                        });
+                        sycl::joint_inclusive_scan(
+                                item.get_group(), &g[0], &g[block_size], &g[0], sycl::plus<TestType>{});
+                    });
+        });
+    };
+}
+
 
 template<typename>
 class local_memory_scan_spillage_kernel;
@@ -158,7 +201,7 @@ TEMPLATE_TEST_CASE("Local memory transpose bits", "[transpose]", uint32_t) {
             const auto row = rows[item];
             for (index_type i = 0; i < chunk_size; ++i) {
                 TestType this_column
-                        = sycl::group_reduce(sg, ((row >> i) & TestType{1}) << cell, sycl::bit_or<TestType>{});
+                        = sycl::reduce_over_group(sg, ((row >> i) & TestType{1}) << cell, sycl::bit_or<TestType>{});
                 if (cell == i) { column(idx) = this_column; }
             }
         });
