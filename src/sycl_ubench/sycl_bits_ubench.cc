@@ -164,7 +164,7 @@ TEMPLATE_TEST_CASE("Local memory transpose bits", "[transpose]", uint32_t) {
             grp.distribute_for(num_group_items, [&](index_type item, index_type, sycl::logical_item<1> idx) {
                 lm[item] = idx.get_global_linear_id();
             });
-            sycl::private_memory<TestType> column{grp};
+            TestType column;  // per-thread
             grp.distribute_for(
                     num_group_items, [&](index_type item, index_type, sycl::logical_item<1> idx, sycl::sub_group sg) {
                         transpose(item, idx, sg, &lm[0], column);
@@ -177,12 +177,12 @@ TEMPLATE_TEST_CASE("Local memory transpose bits", "[transpose]", uint32_t) {
 
     SYCL_BENCHMARK("Every thread loads each row")(sycl::queue & q) {
         auto transpose = [&](index_type item, sycl::logical_item<1> idx, sycl::sub_group, TestType *rows,
-                                 sycl::private_memory<TestType> &column) {
-            column(idx) = 0;
+                                 TestType &column) {
+            column = 0;
             const auto chunk_base = floor(item, chunk_size);
             const auto cell = item - chunk_base;
             for (index_type i = 0; i < chunk_size; ++i) {
-                column(idx) |= (rows[chunk_base + i] >> (chunk_size - 1 - cell) & TestType{1}) << (chunk_size - 1 - i);
+                column |= (rows[chunk_base + i] >> (chunk_size - 1 - cell) & TestType{1}) << (chunk_size - 1 - i);
             }
         };
         return q.submit([&](sycl::handler &cgh) {
@@ -193,15 +193,15 @@ TEMPLATE_TEST_CASE("Local memory transpose bits", "[transpose]", uint32_t) {
 
     // Not that smart...
     SYCL_BENCHMARK("Per-column subgroup reductions")(sycl::queue & q) {
-        auto transpose = [&](index_type item, sycl::logical_item<1> idx, sycl::sub_group sg,
-                                                TestType *rows, sycl::private_memory<TestType> &column) {
+        auto transpose = [&](index_type item, sycl::logical_item<1> idx, sycl::sub_group sg, TestType *rows,
+                                 TestType &column) {
             const auto chunk_base = floor(item, chunk_size);
             const auto cell = item - chunk_base;
             const auto row = rows[item];
             for (index_type i = 0; i < chunk_size; ++i) {
                 TestType this_column
                         = sycl::reduce_over_group(sg, ((row >> i) & TestType{1}) << cell, sycl::bit_or<TestType>{});
-                if (cell == i) { column(idx) = this_column; }
+                if (cell == i) { column = this_column; }
             }
         };
         return q.submit([&](sycl::handler &cgh) {

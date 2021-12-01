@@ -51,7 +51,7 @@ __device__ void load_hypercube(hypercube_block<Profile> block, index_type hc_ind
     for_hypercube_indices<Profile>(block, hc_index, data.size(), [&](index_type global_idx, index_type local_idx) {
         hc.store(local_idx, rotate_left_1(bit_cast<bits_type>(data.data()[global_idx])));
         // TODO merge with block_transform to avoid LM round-trip?
-        //  we could assign directly to private_memory
+        //  we could assign directly to registers
     });
 }
 
