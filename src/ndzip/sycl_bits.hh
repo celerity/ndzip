@@ -137,8 +137,20 @@ distribute_for(known_size_group<LocalSize> group, F &&f) {
 }
 
 
+template<typename Value, index_type Range, typename Enable=void>
+struct inclusive_scan_local_allocation {};
+
+template<typename Value, index_type Range>
+struct inclusive_scan_local_allocation<Value, Range, std::enable_if_t<(Range > warp_size)>>
+{
+    Value memory[div_ceil(Range, warp_size)];
+    inclusive_scan_local_allocation<Value, div_ceil(Range, warp_size)> next;
+};
+
+
 template<index_type Range, index_type LocalSize, typename Accessor, typename BinaryOp>
-std::enable_if_t<(Range <= warp_size)> inclusive_scan(known_size_group<LocalSize> grp, Accessor acc, BinaryOp op) {
+std::enable_if_t<(Range <= warp_size)> inclusive_scan_over_group(known_size_group<LocalSize> grp, Accessor acc,
+        inclusive_scan_local_allocation<std::decay_t<decltype(acc[index_type{}])>, Range> &, BinaryOp op) {
     static_assert(LocalSize % warp_size == 0);
     distribute_for<ceil(Range, warp_size)>(grp,
             [&](index_type item, index_type, sycl::logical_item<1>, sycl::sub_group sg) {
@@ -149,20 +161,22 @@ std::enable_if_t<(Range <= warp_size)> inclusive_scan(known_size_group<LocalSize
 }
 
 template<index_type Range, index_type LocalSize, typename Accessor, typename BinaryOp>
-std::enable_if_t<(Range > warp_size)> inclusive_scan(known_size_group<LocalSize> grp, Accessor acc, BinaryOp op) {
+std::enable_if_t<(Range > warp_size)> inclusive_scan_over_group(known_size_group<LocalSize> grp, Accessor acc,
+        inclusive_scan_local_allocation<std::decay_t<decltype(acc[index_type{}])>, Range> &lm,
+        BinaryOp op) {
     static_assert(LocalSize % warp_size == 0);
     using value_type = std::decay_t<decltype(acc[index_type{}])>;
 
-    sycl::private_memory<value_type[div_ceil(Range, LocalSize)]> fine{grp};
-    sycl::local_memory<value_type[div_ceil(Range, warp_size)]> coarse{grp};
+    value_type fine[div_ceil(Range, LocalSize)]; // per-thread
+    const auto coarse = lm.memory;
     distribute_for<ceil(Range, warp_size)>(grp,
-            [&](index_type item, index_type iteration, sycl::logical_item<1> idx, sycl::sub_group sg) {
-                fine(idx)[iteration] = sycl::inclusive_scan_over_group(sg, item < Range ? acc[item] : 0, op);
-                if (item % warp_size == warp_size - 1) { coarse[item / warp_size] = fine(idx)[iteration]; }
+            [&](index_type item, index_type iteration, sycl::logical_item<1>, sycl::sub_group sg) {
+                fine[iteration] = sycl::inclusive_scan_over_group(sg, item < Range ? acc[item] : 0, op);
+                if (item % warp_size == warp_size - 1) { coarse[item / warp_size] = fine[iteration]; }
             });
-    inclusive_scan<div_ceil(Range, warp_size)>(grp, coarse(), op);
-    distribute_for<Range>(grp, [&](index_type item, index_type iteration, sycl::logical_item<1> idx) {
-        auto value = fine(idx)[iteration];
+    inclusive_scan_over_group(grp, coarse, lm.next, op);
+    distribute_for<Range>(grp, [&](index_type item, index_type iteration) {
+        auto value = fine[iteration];
         if (item >= warp_size) { value = op(value, coarse[item / warp_size - 1]); }
         acc[item] = value;
     });
@@ -209,12 +223,13 @@ void hierarchical_inclusive_scan(sycl::queue &queue, sycl::buffer<Scalar> &in_ou
         submit_and_profile(queue, label, [&](sycl::handler &cgh) {
             auto big_acc = big_buffer.template get_access<sam::read_write>(cgh);
             auto small_acc = small_buffer.template get_access<sam::discard_write>(cgh);
+            sycl::local_accessor<inclusive_scan_local_allocation<Scalar, granularity>> lm{1, cgh};
             cgh.parallel<hierarchical_inclusive_scan_reduction_kernel<Scalar, BinaryOp>>(group_range, local_range,
-                    [big_acc, small_acc, op](known_size_group<local_size> grp, sycl::physical_item<1>) {
+                    [big_acc, small_acc, lm, op](known_size_group<local_size> grp, sycl::physical_item<1>) {
                         auto group_index = static_cast<index_type>(grp.get_group_id(0));
                         Scalar *big = &big_acc[group_index * granularity];
                         Scalar &small = small_acc[group_index];
-                        inclusive_scan<granularity>(grp, big, op);
+                        inclusive_scan_over_group(grp, big, lm[0], op);
                         // TODO unnecessary GM read from big -- maybe return final sum
                         //  in the last item? Or allow additional accessor in inclusive_scan?
                         grp.single_item([&] { small = big[granularity - 1]; });

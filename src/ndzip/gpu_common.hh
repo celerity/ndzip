@@ -222,37 +222,53 @@ struct directional_accessor<profile<T, 3>, 2, Transform> {
 };
 
 
-template<typename Layout>
+template<typename Profile, typename Transform>
 struct hypercube_allocation {
+    using layout = hypercube_layout<Profile, Transform>;
     using backing_type = uint_bank_t;
-    constexpr static index_type size = ceil(Layout::pad(Layout::hc_size), Layout::value_width);
+
+    constexpr static index_type size = ceil(layout::pad(layout::hc_size), layout::value_width);
+
+    backing_type memory[size];
 };
 
 template<typename T>
-struct hypercube_allocation<hypercube_layout<profile<T, 1>, inverse_transform_tag>> {
+struct hypercube_allocation<profile<T, 1>, inverse_transform_tag> {
+    using layout = hypercube_layout<profile<T, 1>, inverse_transform_tag>;
     using backing_type = typename profile<T, 1>::bits_type;
-    constexpr static index_type size = hypercube_layout<profile<T, 1>, inverse_transform_tag>::hc_size;
+
+    constexpr static index_type size = layout::hc_size;
+
+    backing_type memory[size];
 };
 
 
 template<typename Profile, typename Transform>
-struct hypercube_ptr {
+class hypercube_ptr {
+  public:
     using bits_type = typename Profile::bits_type;
     using layout = hypercube_layout<Profile, Transform>;
 
-    uint_bank_t *memory;
+    NDZIP_UNIVERSAL
+    hypercube_ptr(hypercube_allocation<Profile, Transform> &allocation)  // NOLINT(google-explicit-constructor)
+        : _memory(allocation.memory) {}
+
+    NDZIP_UNIVERSAL uint_bank_t *memory() const { return _memory; }
 
     template<typename T = bits_type>
     NDZIP_UNIVERSAL T load(index_type i) const {
         static_assert(sizeof(T) == sizeof(bits_type));
-        return load_aligned<T>(memory + layout::pad(i));
+        return load_aligned<T>(_memory + layout::pad(i));
     }
 
     template<typename T = bits_type>
     NDZIP_UNIVERSAL void store(index_type i, std::common_type_t<T> bits) {
         static_assert(sizeof(T) == sizeof(bits_type));
-        store_aligned<T>(memory + layout::pad(i), bits);
+        store_aligned<T>(_memory + layout::pad(i), bits);
     }
+
+  private:
+    uint_bank_t *_memory;
 };
 
 
@@ -327,15 +343,23 @@ class border_map {
 // We guarantee that memory is laid out sequentially for 1D inverse transform, which is implemented
 // using gpu_bits prefix_sum
 template<typename Data>
-struct hypercube_ptr<profile<Data, 1>, inverse_transform_tag> {
+class hypercube_ptr<profile<Data, 1>, inverse_transform_tag> {
+  public:
     using bits_type = typename profile<Data, 1>::bits_type;
     using layout = hypercube_layout<profile<bits_type, 1>, inverse_transform_tag>;
 
-    bits_type *memory;
+    NDZIP_UNIVERSAL hypercube_ptr(hypercube_allocation<profile<Data, 1>, inverse_transform_tag>
+                    &allocation)  // NOLINT(google-explicit-constructor)
+        : _memory(allocation.memory) {}
 
-    NDZIP_UNIVERSAL bits_type load(index_type i) const { return memory[i]; }
+    NDZIP_UNIVERSAL bits_type *memory() const { return _memory; }
 
-    NDZIP_UNIVERSAL void store(index_type i, bits_type bits) { memory[i] = bits; }
+    NDZIP_UNIVERSAL bits_type load(index_type i) const { return _memory[i]; }
+
+    NDZIP_UNIVERSAL void store(index_type i, bits_type bits) { _memory[i] = bits; }
+
+  private:
+    bits_type *_memory;
 };
 
 

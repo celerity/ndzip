@@ -26,10 +26,6 @@ struct vec {
 template<typename Profile>
 using hypercube_block = known_size_block<hypercube_group_size<Profile>>;
 
-template<typename Profile, typename Transform>
-using hypercube_memory = typename hypercube_allocation<hypercube_layout<Profile,
-        Transform>>::backing_type[hypercube_allocation<hypercube_layout<Profile, Transform>>::size];
-
 
 template<typename Profile, typename F>
 __device__ void for_hypercube_indices(
@@ -170,7 +166,7 @@ inverse_block_transform(hypercube_block<Profile> block, hypercube_ptr<Profile, i
 
     if constexpr (dims == 1) {
         // 1D inverse hypercube_ptr guarantees linear layout of hc.memory
-        inclusive_scan<Profile::hypercube_side_length>(block, hc.memory, plus<bits_type>{});
+        inclusive_scan<Profile::hypercube_side_length>(block, hc.memory(), plus<bits_type>{});
     }
     if constexpr (dims == 2) {
         // TODO inefficient, see above
@@ -407,9 +403,8 @@ __global__ void compress_block(slice<const typename Profile::data_type, Profile:
     constexpr index_type chunks_per_hc = 1 /* header */ + hc_size / col_chunk_size;
     constexpr index_type hc_total_chunks_size = hc_size + header_chunk_size;
 
-    __shared__ hypercube_memory<Profile, forward_transform_tag> lm;
-    auto *lmp = lm;  // workaround for https://bugs.llvm.org/show_bug.cgi?id=50316
-    hypercube_ptr<Profile, forward_transform_tag> hc{lmp};
+    __shared__ hypercube_allocation<Profile, forward_transform_tag> lm;
+    hypercube_ptr<Profile, forward_transform_tag> hc{lm};
 
     auto hc_index = static_cast<index_type>(blockIdx.x);
     auto block = hypercube_block<Profile>{};
@@ -470,9 +465,8 @@ template<typename Profile>
 __global__ void decompress_block(
         const typename Profile::bits_type *stream_buf, slice<typename Profile::data_type, Profile::dimensions> data) {
     auto block = hypercube_block<Profile>{};
-    __shared__ hypercube_memory<Profile, inverse_transform_tag> lm;
-    auto *lmp = lm;  // workaround for https://bugs.llvm.org/show_bug.cgi?id=50316
-    hypercube_ptr<Profile, inverse_transform_tag> hc{lmp};
+    __shared__ hypercube_allocation<Profile, inverse_transform_tag> lm;
+    hypercube_ptr<Profile, inverse_transform_tag> hc{lm};
 
     const auto num_hypercubes = static_cast<index_type>(gridDim.x);
     const auto hc_index = static_cast<index_type>(blockIdx.x);

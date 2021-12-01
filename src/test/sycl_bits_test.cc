@@ -19,11 +19,12 @@ TEMPLATE_TEST_CASE("Subgroup hierarchical inclusive scan works", "[sycl][scan]",
     sycl::buffer<TestType> out(range);
     q.submit([&](sycl::handler &cgh) {
         auto out_acc = out.template get_access<sam::discard_write>(cgh);
+        sycl::local_accessor<inclusive_scan_local_allocation<TestType, range>> lm{1, cgh};
         cgh.parallel(sycl::range<1>{1}, sycl::range<1>{group_size},
                 [=](known_size_group<group_size> grp, sycl::physical_item<1>) {
                     TestType *out = out_acc.get_pointer();
                     grp.distribute_for(range, [&](index_type item) { out[item] = 1; });
-                    inclusive_scan<range>(grp, out, sycl::plus<TestType>{});
+                    inclusive_scan_over_group<range>(grp, out, lm[0], sycl::plus<TestType>{});
                 });
     });
 
