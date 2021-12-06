@@ -123,7 +123,7 @@ forward_block_transform(hypercube_block<Profile> block, hypercube_ptr<Profile, f
     }
 
     // TODO move complement operation elsewhere to avoid local memory round-trip
-    block.distribute_for(hc_size, [&](index_type item) { hc.store(item, complement_negative(hc.load(item))); });
+    distribute_for(hc_size, block, [&](index_type item) { hc.store(item, complement_negative(hc.load(item))); });
 }
 
 

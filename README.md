@@ -25,8 +25,7 @@ increasing effective interconnect bandwidth.
 
 - CUDA >= 11.0 (not officially compatible with Clang 10/11, but a lower version will optimize insufficiently!)
 - An Nvidia GPU with Compute Capability >= 6.1
-- For the SYCL version: A recent version of [hipSYCL](https://github.com/illuhad/hipSYCL)
-  profiling functionality
+- For the SYCL version: [hipSYCL](https://github.com/illuhad/hipSYCL) >= `8756087f`
 
 ## Building
 

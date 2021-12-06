@@ -18,6 +18,9 @@ using namespace ndzip::detail::gpu;
 template<typename Profile>
 using hypercube_group = known_size_group<hypercube_group_size<Profile>>;
 
+template<typename Profile>
+using hypercube_item = known_group_size_item<hypercube_group_size<Profile>>;
+
 
 template<typename Profile, typename F>
 void for_hypercube_indices(
@@ -140,14 +143,15 @@ struct inverse_transform_local_allocation<profile<Data, 1>> {
 
 
 template<typename Profile>
-void inverse_block_transform(hypercube_group<Profile> grp, hypercube_ptr<Profile, inverse_transform_tag> hc,
+void inverse_block_transform(hypercube_item<Profile> item, hypercube_ptr<Profile, inverse_transform_tag> hc,
         inverse_transform_local_allocation<Profile> &lm) {
     using bits_type = typename Profile::bits_type;
     constexpr auto dims = Profile::dimensions;
     constexpr index_type hc_size = ipow(Profile::hypercube_side_length, dims);
 
     // TODO move complement operation elsewhere to avoid local memory round-trip
-    distribute_for(hc_size, grp, [&](index_type item) { hc.store(item, complement_negative(hc.load(item))); });
+    distribute_for(
+            hc_size, item.get_group(), [&](index_type item) { hc.store(item, complement_negative(hc.load(item))); });
 
     // TODO how to do 2D?
     //   For 2D we have 64 parallel work items but we _probably_ want at least 256 threads per SM
@@ -158,17 +162,17 @@ void inverse_block_transform(hypercube_group<Profile> grp, hypercube_ptr<Profile
 
     if constexpr (dims == 1) {
         // 1D inverse hypercube_ptr guarantees linear layout of hc.memory
-        inclusive_scan_over_group(grp, hc.memory(), lm.scan, sycl::plus<bits_type>{});
+        inclusive_scan_over_group(item, hc.memory(), lm.scan, sycl::plus<bits_type>{});
     }
     if constexpr (dims == 2) {
         // TODO inefficient, see above
-        inverse_transform_lanes<0>(grp, hc);
-        inverse_transform_lanes<1>(grp, hc);
+        inverse_transform_lanes<0>(item.get_group(), hc);
+        inverse_transform_lanes<1>(item.get_group(), hc);
     }
     if constexpr (dims == 3) {
-        inverse_transform_lanes<0>(grp, hc);
-        inverse_transform_lanes<1>(grp, hc);
-        inverse_transform_lanes<2>(grp, hc);
+        inverse_transform_lanes<0>(item.get_group(), hc);
+        inverse_transform_lanes<1>(item.get_group(), hc);
+        inverse_transform_lanes<2>(item.get_group(), hc);
     }
 }
 
@@ -184,7 +188,7 @@ struct writer_local_allocation {
 
 
 template<typename Profile>
-void write_transposed_chunks(hypercube_group<Profile> grp, hypercube_ptr<Profile, forward_transform_tag> hc,
+void write_transposed_chunks(hypercube_item<Profile> item, hypercube_ptr<Profile, forward_transform_tag> hc,
         typename Profile::bits_type *out_chunks, index_type *out_lengths, writer_local_allocation<Profile> &lm) {
     using bits_type = typename Profile::bits_type;
     constexpr index_type hc_size = ipow(Profile::hypercube_side_length, Profile::dimensions);
@@ -195,90 +199,86 @@ void write_transposed_chunks(hypercube_group<Profile> grp, hypercube_ptr<Profile
 
     static_assert(col_chunk_size % warp_size == 0);
 
-    grp.single_item([&] {  // single_item does not introduce a barrier
-        out_lengths[0] = header_chunk_size;
-    });
+    if (item.get_group().leader()) { out_lengths[0] = header_chunk_size; }
 
     const auto out_header_chunk = out_chunks;
     const auto row_stage = lm.row_stage;
 
     // Schedule one warp per chunk to allow subgroup reductions
-    distribute_for(num_col_chunks * warp_size, grp,
-            [&](index_type item, index_type, sycl::logical_item<1> idx, sycl::sub_group sg) {
-                const auto col_chunk_index = item / warp_size;
-                const auto in_col_chunk_base = col_chunk_index * col_chunk_size;
+    distribute_for(num_col_chunks * warp_size, item.get_group(), [&](index_type i) {
+        auto sg = item.get_sub_group();
 
-                // Collectively determine the head for a chunk
-                bits_type head = 0;
-                for (index_type w = 0; w < warps_per_col_chunk; ++w) {
-                    auto row = hc.load(in_col_chunk_base + w * warp_size + item % warp_size);
-                    head |= sycl::reduce_over_group(sg, row, sycl::bit_or<bits_type>{});
-                }
+        const auto col_chunk_index = i / warp_size;
+        const auto in_col_chunk_base = col_chunk_index * col_chunk_size;
 
-                index_type chunk_compact_size = 0;
+        // Collectively determine the head for a chunk
+        bits_type head = 0;
+        for (index_type w = 0; w < warps_per_col_chunk; ++w) {
+            auto row = hc.load(in_col_chunk_base + w * warp_size + i % warp_size);
+            head |= sycl::reduce_over_group(sg, row, sycl::bit_or<bits_type>{});
+        }
 
-                if (head != 0) {  // short-circuit the entire warp
-                    const auto out_col_chunk = out_chunks + header_chunk_size + in_col_chunk_base;
+        index_type chunk_compact_size = 0;
 
-                    // Each thread computes 1 column for 32 bit and 2 columns for 64 bit. For the
-                    // 2-iteration scenario, we compute the relative output position of the second
-                    // column directly, so that one warp-collective prefix sum is enough to
-                    // determine the final position within the chunk.
-                    index_type compact_warp_offset[1 + warps_per_col_chunk];
-                    compact_warp_offset[0] = 0;
+        if (head != 0) {  // short-circuit the entire warp
+            const auto out_col_chunk = out_chunks + header_chunk_size + in_col_chunk_base;
+
+            // Each thread computes 1 column for 32 bit and 2 columns for 64 bit. For the
+            // 2-iteration scenario, we compute the relative output position of the second
+            // column directly, so that one warp-collective prefix sum is enough to
+            // determine the final position within the chunk.
+            index_type compact_warp_offset[1 + warps_per_col_chunk];
+            compact_warp_offset[0] = 0;
+#pragma unroll
+            for (index_type w = 0; w < warps_per_col_chunk; ++w) {
+                static_assert(warp_size == bits_of<uint32_t>);
+                compact_warp_offset[1 + w] = compact_warp_offset[w]
+                        + popcount(static_cast<uint32_t>(head >> ((warps_per_col_chunk - 1 - w) * warp_size)));
+            }
+            chunk_compact_size = compact_warp_offset[warps_per_col_chunk];
+
+            // Transposition is relatively simple in the 32-bit case, but for 64-bit, we
+            // achieve considerable speedup (> 2x) by operating on 32-bit values. This
+            // requires two outer loop iterations, one computing the lower and one computing
+            // the upper word of each column. The number of shifts/adds remains the same.
+            // Note that this makes assumptions about the endianness of uint64_t.
+            static_assert(warp_size == 32);  // implicit assumption with uint32_t
+            sycl::vec<uint32_t, warps_per_col_chunk> columns[warps_per_col_chunk];
+
+            for (index_type j = 0; j < warps_per_col_chunk; ++j) {
+                // Stage rows through local memory to avoid repeated hypercube_ptr index
+                // calculations inside the loop
+                row_stage[item.get_local_id(0)] = hc.template load<sycl::vec<uint32_t, warps_per_col_chunk>>(
+                        in_col_chunk_base + col_chunk_size - 1 - (warp_size * j + sg.get_local_linear_id()));
+                sycl::group_barrier(sg);
+
+                for (index_type k = 0; k < warp_size; ++k) {
+                    auto row = row_stage[floor<index_type>(item.get_local_id(0), warp_size) + k];
 #pragma unroll
                     for (index_type w = 0; w < warps_per_col_chunk; ++w) {
-                        static_assert(warp_size == bits_of<uint32_t>);
-                        compact_warp_offset[1 + w] = compact_warp_offset[w]
-                                + popcount(static_cast<uint32_t>(head >> ((warps_per_col_chunk - 1 - w) * warp_size)));
-                    }
-                    chunk_compact_size = compact_warp_offset[warps_per_col_chunk];
-
-                    // Transposition is relatively simple in the 32-bit case, but for 64-bit, we
-                    // achieve considerable speedup (> 2x) by operating on 32-bit values. This
-                    // requires two outer loop iterations, one computing the lower and one computing
-                    // the upper word of each column. The number of shifts/adds remains the same.
-                    // Note that this makes assumptions about the endianness of uint64_t.
-                    static_assert(warp_size == 32);  // implicit assumption with uint32_t
-                    sycl::vec<uint32_t, warps_per_col_chunk> columns[warps_per_col_chunk];
-
-                    for (index_type i = 0; i < warps_per_col_chunk; ++i) {
-                        // Stage rows through local memory to avoid repeated hypercube_ptr index
-                        // calculations inside the loop
-                        row_stage[idx.get_local_id(0)] = hc.template load<sycl::vec<uint32_t, warps_per_col_chunk>>(
-                                in_col_chunk_base + col_chunk_size - 1 - (warp_size * i + sg.get_local_linear_id()));
-                        sycl::group_barrier(
-                                sg, sycl::sub_group::fence_scope /* TODO hipSYCL workaround, remove parameter */);
-
-                        for (index_type j = 0; j < warp_size; ++j) {
-                            auto row = row_stage[floor<index_type>(idx.get_local_id(0), warp_size) + j];
-#pragma unroll
-                            for (index_type w = 0; w < warps_per_col_chunk; ++w) {
-                                columns[w][i]
-                                        |= ((row[warps_per_col_chunk - 1 - w] >> (31 - item % warp_size)) & uint32_t{1})
-                                        << j;
-                            }
-                        }
-                    }
-
-#pragma unroll
-                    for (index_type w = 0; w < warps_per_col_chunk; ++w) {
-                        auto column_bits = bit_cast<bits_type>(columns[w]);
-                        auto pos_in_out_col_chunk = compact_warp_offset[w]
-                                + sycl::exclusive_scan_over_group(
-                                        sg, index_type{column_bits != 0}, sycl::plus<index_type>{});
-                        if (column_bits != 0) { out_col_chunk[pos_in_out_col_chunk] = column_bits; }
+                        columns[w][j] |= ((row[warps_per_col_chunk - 1 - w] >> (31 - i % warp_size)) & uint32_t{1})
+                                << k;
                     }
                 }
+            }
 
-                if (sg.leader()) {
-                    // TODO collect in local memory, write coalesced - otherwise 3 full GM
-                    //  transaction per HC instead of 1! => But only if WC does not resolve this
-                    //  anyway
-                    out_header_chunk[col_chunk_index] = head;
-                    out_lengths[1 + col_chunk_index] = chunk_compact_size;
-                }
-            });
+#pragma unroll
+            for (index_type w = 0; w < warps_per_col_chunk; ++w) {
+                auto column_bits = bit_cast<bits_type>(columns[w]);
+                auto pos_in_out_col_chunk = compact_warp_offset[w]
+                        + sycl::exclusive_scan_over_group(sg, index_type{column_bits != 0}, sycl::plus<index_type>{});
+                if (column_bits != 0) { out_col_chunk[pos_in_out_col_chunk] = column_bits; }
+            }
+        }
+
+        if (sg.leader()) {
+            // TODO collect in local memory, write coalesced - otherwise 3 full GM
+            //  transaction per HC instead of 1! => But only if WC does not resolve this
+            //  anyway
+            out_header_chunk[col_chunk_index] = head;
+            out_lengths[1 + col_chunk_index] = chunk_compact_size;
+        }
+    });
 }
 
 
@@ -301,7 +301,7 @@ struct reader_local_allocation {
 
 
 template<typename Profile>
-void read_transposed_chunks(hypercube_group<Profile> grp, hypercube_ptr<Profile, inverse_transform_tag> hc,
+void read_transposed_chunks(hypercube_item<Profile> item, hypercube_ptr<Profile, inverse_transform_tag> hc,
         const typename Profile::bits_type *stream, reader_local_allocation<Profile> &lm) {
     using bits_type = typename Profile::bits_type;
     using word_type = uint32_t;
@@ -313,79 +313,77 @@ void read_transposed_chunks(hypercube_group<Profile> grp, hypercube_ptr<Profile,
     constexpr index_type words_per_col = sizeof(bits_type) / sizeof(word_type);
 
     const auto chunk_offsets = lm.chunk_offsets;
-    grp.single_item([&] { chunk_offsets[0] = num_col_chunks; });  // single_item has no barrier
-    distribute_for(num_col_chunks, grp, [&](index_type item) { chunk_offsets[1 + item] = popcount(stream[item]); });
-    inclusive_scan_over_group(grp, chunk_offsets, lm.scan, sycl::plus<index_type>());
+    if (item.get_group().leader()) { chunk_offsets[0] = num_col_chunks; }
+    distribute_for(num_col_chunks, item.get_group(),
+            [&](index_type item) { chunk_offsets[1 + item] = popcount(stream[item]); });
+    inclusive_scan_over_group(item, chunk_offsets, lm.scan, sycl::plus<index_type>());
 
     // See write_transposed_chunks for the optimization of the 64-bit case
-    distribute_for(num_col_chunks * warp_size, grp,
-            [&](index_type item0, index_type, sycl::logical_item<1> idx, sycl::sub_group sg) {
-                auto col_chunk_index = item0 / warp_size;
-                auto head = stream[col_chunk_index];  // TODO this has been read before, stage?
+    distribute_for(num_col_chunks * warp_size, item.get_group(), [&](index_type i0) {
+        auto sg = item.get_sub_group();
 
-                if (head != 0) {
-                    word_type head_col[words_per_col];
-                    __builtin_memcpy(head_col, &head, sizeof head_col);
-                    auto offset = chunk_offsets[col_chunk_index];
+        auto col_chunk_index = i0 / warp_size;
+        auto head = stream[col_chunk_index];  // TODO this has been read before, stage?
 
-                    // TODO this can be hoisted out of the loop within distribute_for. Maybe
-                    //  write that loop explicitly for this purpose?
-                    auto *stage = &lm.stage[ipow(words_per_col, 2)
-                            * floor(static_cast<index_type>(idx.get_local_linear_id()), warp_size)];
+        if (head != 0) {
+            word_type head_col[words_per_col];
+            __builtin_memcpy(head_col, &head, sizeof head_col);
+            auto offset = chunk_offsets[col_chunk_index];
+
+            // TODO this can be hoisted out of the loop within distribute_for. Maybe
+            //  write that loop explicitly for this purpose?
+            auto *stage = &lm.stage[ipow(words_per_col, 2)
+                    * floor(static_cast<index_type>(item.get_local_linear_id()), warp_size)];
 
             // TODO There is an excellent opportunity to hide global memory latencies by
             //  starting to read values for outer-loop iteration n+1 into registers and then
             //  just committing the reads to shared memory in the next iteration
 #pragma unroll
-                    for (index_type w = 0; w < ipow(words_per_col, 2); ++w) {
-                        auto i = w * warp_size + item0 % warp_size;
-                        if (offset + i / words_per_col < chunk_offsets[col_chunk_index + 1]) {
-                            // TODO this load is uncoalesced since offsets are not warp-aligned
-                            stage[i]
-                                    = load_aligned<word_type>(reinterpret_cast<const word_type *>(stream + offset) + i);
-                        }
-                    }
-                    sycl::group_barrier(
-                            sg, sycl::sub_group::fence_scope /* TODO hipSYCL workaround, remove parameter */);
+            for (index_type w = 0; w < ipow(words_per_col, 2); ++w) {
+                auto i = w * warp_size + i0 % warp_size;
+                if (offset + i / words_per_col < chunk_offsets[col_chunk_index + 1]) {
+                    // TODO this load is uncoalesced since offsets are not warp-aligned
+                    stage[i] = load_aligned<word_type>(reinterpret_cast<const word_type *>(stream + offset) + i);
+                }
+            }
+            sycl::group_barrier(sg, sycl::sub_group::fence_scope /* TODO hipSYCL workaround, remove parameter */);
 
-                    for (index_type w = 0; w < warps_per_col_chunk; ++w) {
-                        index_type item
-                                = floor(item0, warp_size) * warps_per_col_chunk + w * warp_size + item0 % warp_size;
-                        const auto outer_cell = words_per_col - 1 - w;
-                        const auto inner_cell = word_size - 1 - item0 % warp_size;
+            for (index_type w = 0; w < warps_per_col_chunk; ++w) {
+                index_type item = floor(i0, warp_size) * warps_per_col_chunk + w * warp_size + i0 % warp_size;
+                const auto outer_cell = words_per_col - 1 - w;
+                const auto inner_cell = word_size - 1 - i0 % warp_size;
 
-                        index_type local_offset = 0;
-                        word_type row[words_per_col] = {0};
+                index_type local_offset = 0;
+                word_type row[words_per_col] = {0};
 #pragma unroll
-                        for (index_type i = 0; i < words_per_col; ++i) {
-                            const auto ii = words_per_col - 1 - i;
+                for (index_type i = 0; i < words_per_col; ++i) {
+                    const auto ii = words_per_col - 1 - i;
 #pragma unroll  // TODO this unroll significantly reduces the computational complexity of the loop,
                 //  but I'm uncomfortable with the increased instruction cache pressure. We might
                 //  resolve this by decoding in the opposite direction offsets[i+1] => offsets[i]
                 //  which should allow us to get rid of the repeated N-1-i terms here.
-                            for (index_type j = 0; j < word_size; ++j) {
-                                const auto jj = word_size - 1 - j;
-                                const auto stage_idx = words_per_col * local_offset + outer_cell;
-                                auto col_word = stage[stage_idx];
-                                if ((head_col[ii] >> jj) & word_type{1}) {
-                                    row[ii] |= ((col_word >> inner_cell) & word_type{1}) << jj;
-                                    local_offset += 1;
-                                }
-                            }
+                    for (index_type j = 0; j < word_size; ++j) {
+                        const auto jj = word_size - 1 - j;
+                        const auto stage_idx = words_per_col * local_offset + outer_cell;
+                        auto col_word = stage[stage_idx];
+                        if ((head_col[ii] >> jj) & word_type{1}) {
+                            row[ii] |= ((col_word >> inner_cell) & word_type{1}) << jj;
+                            local_offset += 1;
                         }
-                        bits_type row_bits;
-                        __builtin_memcpy(&row_bits, row, sizeof row_bits);
-                        hc.store(item, row_bits);
-                    }
-                } else {
-                    // TODO duplication of the `item` calculation above. The term can be simplified!
-                    for (index_type w = 0; w < warps_per_col_chunk; ++w) {
-                        index_type item
-                                = floor(item0, warp_size) * warps_per_col_chunk + w * warp_size + item0 % warp_size;
-                        hc.store(item, 0);
                     }
                 }
-            });
+                bits_type row_bits;
+                __builtin_memcpy(&row_bits, row, sizeof row_bits);
+                hc.store(item, row_bits);
+            }
+        } else {
+            // TODO duplication of the `item` calculation above. The term can be simplified!
+            for (index_type w = 0; w < warps_per_col_chunk; ++w) {
+                index_type item = floor(i0, warp_size) * warps_per_col_chunk + w * warp_size + i0 % warp_size;
+                hc.store(item, 0);
+            }
+        }
+    });
 }
 
 
@@ -415,19 +413,19 @@ void compact_chunks(hypercube_group<Profile> grp, const typename Profile::bits_t
     const auto hc_offsets = lm.hc_offsets;
     distribute_for(chunks_per_hc + 1, grp, [&](index_type i) { hc_offsets[i] = offsets[i]; });
 
-    grp.single_item([&] {
+    if (grp.leader()) {
         *stream_header_entry = hc_offsets[chunks_per_hc];  // header encodes offset *after*
-    });
+    }
 
-    distribute_for(hc_total_chunks_size, grp, [&](index_type item) {
-        index_type chunk_rel_item = item;
+    distribute_for(hc_total_chunks_size, grp, [&](index_type i) {
+        index_type chunk_rel_item = i;
         index_type chunk_index = 0;
-        if (item >= header_chunk_size) {
-            chunk_index += 1 + (item - header_chunk_size) / col_chunk_size;
-            chunk_rel_item = (item - header_chunk_size) % col_chunk_size;
+        if (i >= header_chunk_size) {
+            chunk_index += 1 + (i - header_chunk_size) / col_chunk_size;
+            chunk_rel_item = (i - header_chunk_size) % col_chunk_size;
         }
         auto stream_offset = hc_offsets[chunk_index] + chunk_rel_item;
-        if (stream_offset < hc_offsets[chunk_index + 1]) { stream_hc[stream_offset] = chunks[item]; }
+        if (stream_offset < hc_offsets[chunk_index + 1]) { stream_hc[stream_offset] = chunks[i]; }
     });
 }
 
@@ -543,26 +541,25 @@ ndzip_sycl::compress_events ndzip_sycl::compress_async(sycl::buffer<T, Dims> &in
 
     compress_events events;
     events.start = submit_and_profile(q, "transform + chunk encode", [&](sycl::handler &cgh) {
-        auto data_acc = in_data.template get_access<sam::read>(cgh);
-        auto chunks_acc = scratch.chunks_buf.template get_access<sam::discard_write>(cgh);
-        auto chunk_lengths_acc = scratch.chunk_lengths_buf.template get_access<sam::discard_write>(cgh);
-        sycl::local_accessor<compressor_local_allocation<profile>> lm{1, cgh};
-        cgh.parallel<block_compression_kernel<T, dimensions>>(sycl::range<1>{file.num_hypercubes()},
-                sycl::range<1>{hypercube_group_size<profile>},
-                [=](hypercube_group<profile> grp, sycl::physical_item<1> phys_idx) {
-                    slice<const T, dimensions> data{data_acc.get_pointer(), data_size};
-                    hypercube_ptr<profile, forward_transform_tag> hc{lm[0].hc};
+        const auto data_acc = in_data.template get_access<sam::read>(cgh);
+        const auto chunks_acc = scratch.chunks_buf.template get_access<sam::discard_write>(cgh);
+        const auto chunk_lengths_acc = scratch.chunk_lengths_buf.template get_access<sam::discard_write>(cgh);
+        const auto group_size = hypercube_group_size<profile>;
+        const auto nd_range = make_nd_range(num_hypercubes, group_size);
 
-                    auto hc_index = static_cast<index_type>(grp.get_group_id(0));
-                    load_hypercube(grp, hc_index, {data}, hc);
-                    forward_block_transform(grp, hc);
-                    write_transposed_chunks(grp, hc, &chunks_acc[hc_index * hc_total_chunks_size],
-                            &chunk_lengths_acc[1 + hc_index * chunks_per_hc], lm[0].writer);
-                    // hack
-                    if (phys_idx.get_global_linear_id() == 0) {
-                        grp.single_item([&] { chunk_lengths_acc[0] = 0; });
-                    }
-                });
+        sycl::local_accessor<compressor_local_allocation<profile>> lm{1, cgh};
+        cgh.parallel_for<block_compression_kernel<T, dimensions>>(nd_range, [=](hypercube_item<profile> item) {
+            slice<const T, dimensions> data{data_acc.get_pointer(), data_size};
+            hypercube_ptr<profile, forward_transform_tag> hc{lm[0].hc};
+
+            auto hc_index = static_cast<index_type>(item.get_group_id(0));
+            load_hypercube(item.get_group(), hc_index, {data}, hc);
+            forward_block_transform(item.get_group(), hc);
+            write_transposed_chunks(item, hc, &chunks_acc[hc_index * hc_total_chunks_size],
+                    &chunk_lengths_acc[1 + hc_index * chunks_per_hc], lm[0].writer);
+            // hack
+            if (item.get_global_linear_id() == 0) { chunk_lengths_acc[0] = 0; }
+        });
     });
 
     hierarchical_inclusive_scan(q, scratch.chunk_lengths_buf, scratch.hierarchical_scan_bufs, sycl::plus<index_type>{});
@@ -570,29 +567,29 @@ ndzip_sycl::compress_events ndzip_sycl::compress_async(sycl::buffer<T, Dims> &in
     const auto num_compressed_words_offset = sycl::id<1>{num_hypercubes * chunks_per_hc};
 
     auto compact_kernel_evt = submit_and_profile(q, "compact chunks", [&](sycl::handler &cgh) {
-        auto chunks_acc = scratch.chunks_buf.template get_access<sam::read>(cgh);
-        auto offsets_acc = scratch.chunk_lengths_buf.template get_access<sam::read>(cgh);
-        auto stream_acc = out_stream.template get_access<sam::discard_write>(cgh);
+        const auto chunks_acc = scratch.chunks_buf.template get_access<sam::read>(cgh);
+        const auto offsets_acc = scratch.chunk_lengths_buf.template get_access<sam::read>(cgh);
+        const auto stream_acc = out_stream.template get_access<sam::discard_write>(cgh);
         const auto num_header_fields
                 = detail::ceil(num_hypercubes, static_cast<uint32_t>(sizeof(bits_type) / sizeof(index_type)));
+        const auto nd_range = make_nd_range(num_header_fields, hypercube_group_size<profile>);
+
         sycl::local_accessor<compaction_local_allocation<profile>> lm{1, cgh};
-        cgh.parallel<chunk_compaction_kernel<T, dimensions>>(sycl::range<1>{num_header_fields},
-                sycl::range<1>{hypercube_group_size<profile>},
-                [=](hypercube_group<profile> grp, sycl::physical_item<1>) {
-                    auto hc_index = static_cast<index_type>(grp.get_group_id(0));
-                    detail::stream<profile> stream{num_hypercubes, stream_acc.get_pointer()};
-                    if (hc_index == num_hypercubes) {
-                        // For 64-bit data types and an odd number of hypercubes, we insert a
-                        // padding word in the header to guarantee correct alignment. To keep the
-                        // compressed stream deterministic we round gridDim.x up to the next
-                        // multiple of 2 and initialize the padding to zero.
-                        grp.single_item([&] { stream.header()[num_hypercubes] = 0; });
-                    } else {
-                        compact_chunks(grp, &chunks_acc.get_pointer()[hc_index * hc_total_chunks_size],
-                                &offsets_acc.get_pointer()[hc_index * chunks_per_hc], stream.header() + hc_index,
-                                stream.hypercube(0), lm[0]);
-                    }
-                });
+        cgh.parallel_for<chunk_compaction_kernel<T, dimensions>>(nd_range, [=](hypercube_item<profile> item) {
+            auto hc_index = static_cast<index_type>(item.get_group_id(0));
+            detail::stream<profile> stream{num_hypercubes, stream_acc.get_pointer()};
+            if (hc_index == num_hypercubes) {
+                // For 64-bit data types and an odd number of hypercubes, we insert a
+                // padding word in the header to guarantee correct alignment. To keep the
+                // compressed stream deterministic we round gridDim.x up to the next
+                // multiple of 2 and initialize the padding to zero.
+                if (item.get_group().leader()) { stream.header()[num_hypercubes] = 0; }
+            } else {
+                compact_chunks(item.get_group(), &chunks_acc.get_pointer()[hc_index * hc_total_chunks_size],
+                        &offsets_acc.get_pointer()[hc_index * chunks_per_hc], stream.header() + hc_index,
+                        stream.hypercube(0), lm[0]);
+            }
+        });
     });
     events.stream_available.push_back(compact_kernel_evt);
 
@@ -654,19 +651,19 @@ ndzip_sycl::decompress_events ndzip_sycl::decompress_async(
     auto decompress_kernel_evt = submit_and_profile(q, "decompress blocks", [&](sycl::handler &cgh) {
         auto stream_acc = in_stream.template get_access<sam::read>(cgh);
         auto data_acc = out_data.template get_access<sam::discard_write>(cgh);
-        sycl::local_accessor<decompressor_local_allocation<profile>> lm{1, cgh};
-        cgh.parallel<block_decompression_kernel<T, dimensions>>(sycl::range<1>{num_hypercubes},
-                sycl::range<1>{hypercube_group_size<profile>},
-                [=](hypercube_group<profile> grp, sycl::physical_item<1>) {
-                    slice<T, Dims> data{data_acc.get_pointer(), data_size};
-                    hypercube_ptr<profile, inverse_transform_tag> hc{lm[0].hc};
+        auto nd_range = make_nd_range(num_hypercubes, hypercube_group_size<profile>);
 
-                    const auto hc_index = static_cast<index_type>(grp.get_group_id(0));
-                    detail::stream<const profile> stream{num_hypercubes, stream_acc.get_pointer()};
-                    read_transposed_chunks<profile>(grp, hc, stream.hypercube(hc_index), lm[0].reader);
-                    inverse_block_transform<profile>(grp, hc, lm[0].transform);
-                    store_hypercube(grp, hc_index, {data}, hc);
-                });
+        sycl::local_accessor<decompressor_local_allocation<profile>> lm{1, cgh};
+        cgh.parallel_for<block_decompression_kernel<T, dimensions>>(nd_range, [=](hypercube_item<profile> item) {
+            slice<T, Dims> data{data_acc.get_pointer(), data_size};
+            hypercube_ptr<profile, inverse_transform_tag> hc{lm[0].hc};
+
+            const auto hc_index = static_cast<index_type>(item.get_group_id(0));
+            detail::stream<const profile> stream{num_hypercubes, stream_acc.get_pointer()};
+            read_transposed_chunks<profile>(item, hc, stream.hypercube(hc_index), lm[0].reader);
+            inverse_block_transform<profile>(item, hc, lm[0].transform);
+            store_hypercube(item.get_group(), hc_index, {data}, hc);
+        });
     });
     events.start = decompress_kernel_evt;
     events.data_available.push_back(decompress_kernel_evt);

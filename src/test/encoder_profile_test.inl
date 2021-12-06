@@ -144,7 +144,7 @@ TEMPLATE_TEST_CASE("file headers from different encoders are identical", "[heade
 
 using sam = sycl::access::mode;
 using sycl::accessor, sycl::nd_range, sycl::buffer, sycl::nd_item, sycl::range, sycl::id, sycl::handler, sycl::group,
-        sycl::physical_item, sycl::logical_item, sycl::sub_group;
+        sycl::sub_group;
 
 template<typename Profile>
 static std::vector<typename Profile::bits_type> sycl_load_and_dump_hypercube(
@@ -164,14 +164,14 @@ static std::vector<typename Profile::bits_type> sycl_load_and_dump_hypercube(
         auto result_acc = store_buf.template get_access<sam::discard_write>(cgh);
         const auto data_size = in.size();
         sycl::local_accessor<gpu_sycl::hypercube_allocation<Profile, gpu::forward_transform_tag>> lm{1, cgh};
-        cgh.parallel(range<1>{1}, range<1>{gpu::hypercube_group_size<Profile>},
-                [=](gpu_sycl::hypercube_group<Profile> grp, physical_item<1>) {
+        cgh.parallel_for(gpu_sycl::make_nd_range(1, gpu::hypercube_group_size<Profile>),
+                [=](gpu_sycl::hypercube_item<Profile> item) {
                     slice<const data_type, Profile::dimensions> data_in{data_acc.get_pointer(), data_size};
                     gpu_sycl::hypercube_ptr<Profile, gpu::forward_transform_tag> hc{lm[0]};
-                    gpu_sycl::load_hypercube(grp, hc_index, data_in, hc);
+                    gpu_sycl::load_hypercube(item.get_group(), hc_index, data_in, hc);
                     // TODO rotate should probaly happen during CPU load_hypercube as well to hide
                     //  memory access latencies
-                    grp.distribute_for(hc_size, [&](index_type item) {
+                    distribute_for(hc_size, item.get_group(), [&](index_type item) {
                         result_acc[item] = bit_cast<data_type>(rotate_right_1(hc.load(item)));
                     });
                 });
@@ -296,13 +296,14 @@ TEMPLATE_TEST_CASE("SYCL store_hypercube is the inverse of load_hypercube", "[sy
         auto temp_acc = temp_buf.template get_access<sam::discard_write>(cgh);
         const auto data_size = input.size();
         sycl::local_accessor<gpu_sycl::hypercube_allocation<TestType, gpu::forward_transform_tag>> lm{1, cgh};
-        cgh.parallel(range<1>{file.num_hypercubes()}, range<1>{gpu::hypercube_group_size<TestType>},
-                [=](gpu_sycl::hypercube_group<TestType> grp, physical_item<1>) {
-                    auto hc_index = grp.get_group_id(0);
+        cgh.parallel_for(gpu_sycl::make_nd_range(file.num_hypercubes(), gpu::hypercube_group_size<TestType>),
+                [=](gpu_sycl::hypercube_item<TestType> item) {
+                    auto hc_index = item.get_group_id(0);
                     slice<const data_type, TestType::dimensions> input{input_acc.get_pointer(), data_size};
                     gpu::hypercube_ptr<TestType, gpu::forward_transform_tag> hc{lm[0]};
-                    gpu_sycl::load_hypercube(grp, hc_index, input, hc);
-                    grp.distribute_for(hc_size, [&](index_type i) { temp_acc[hc_index * hc_size + i] = hc.load(i); });
+                    gpu_sycl::load_hypercube(item.get_group(), hc_index, input, hc);
+                    distribute_for(hc_size, item.get_group(),
+                            [&](index_type i) { temp_acc[hc_index * hc_size + i] = hc.load(i); });
                 });
     });
     q.submit([&](handler &cgh) {
@@ -310,13 +311,14 @@ TEMPLATE_TEST_CASE("SYCL store_hypercube is the inverse of load_hypercube", "[sy
         auto output_acc = output_buf.template get_access<sam::discard_write>(cgh);
         const auto data_size = input.size();
         sycl::local_accessor<gpu_sycl::hypercube_allocation<TestType, gpu::inverse_transform_tag>> lm{1, cgh};
-        cgh.parallel(range<1>{file.num_hypercubes()}, range<1>{gpu::hypercube_group_size<TestType>},
-                [=](gpu_sycl::hypercube_group<TestType> grp, physical_item<1>) {
-                    auto hc_index = grp.get_group_id(0);
+        cgh.parallel_for(gpu_sycl::make_nd_range(file.num_hypercubes(), gpu::hypercube_group_size<TestType>),
+                [=](gpu_sycl::hypercube_item<TestType> item) {
+                    auto hc_index = item.get_group_id(0);
                     slice<data_type, TestType::dimensions> output{output_acc.get_pointer(), data_size};
                     gpu::hypercube_ptr<TestType, gpu::inverse_transform_tag> hc{lm[0]};
-                    grp.distribute_for(hc_size, [&](index_type i) { hc.store(i, temp_acc[hc_index * hc_size + i]); });
-                    gpu_sycl::store_hypercube(grp, hc_index, output, hc);
+                    distribute_for(hc_size, item.get_group(),
+                            [&](index_type i) { hc.store(i, temp_acc[hc_index * hc_size + i]); });
+                    gpu_sycl::store_hypercube(item.get_group(), hc_index, output, hc);
                 });
     });
     std::vector<data_type> output_data(input_data.size());
@@ -603,17 +605,16 @@ TEMPLATE_TEST_CASE("Residual encodings from different encoders are equivalent", 
             auto columns_acc = chunks_buf.template get_access<sam::write>(cgh);
             auto chunk_lengths_acc = chunk_lengths_buf.get_access<sam::write>(cgh);
             sycl::local_accessor<gpu_sycl::compressor_local_allocation<TestType>> lm{1, cgh};
-            cgh.parallel<gpu_hypercube_transpose_test_kernel<TestType>>(sycl::range<1>{1},
-                    sycl::range<1>{gpu::hypercube_group_size<TestType>},
-                    [=](gpu_sycl::hypercube_group<TestType> grp, sycl::physical_item<1> phys_idx) {
+
+            auto nd_range = gpu_sycl::make_nd_range(1, gpu::hypercube_group_size<TestType>);
+            cgh.parallel_for<gpu_hypercube_transpose_test_kernel<TestType>>(
+                    nd_range, [=](gpu_sycl::hypercube_item<TestType> item) {
                         gpu::hypercube_ptr<TestType, gpu::forward_transform_tag> hc{lm[0].hc};
-                        grp.distribute_for(hc_size, [&](index_type i) { hc.store(i, input_acc[i]); });
+                        distribute_for(hc_size, item.get_group(), [&](index_type i) { hc.store(i, input_acc[i]); });
                         gpu_sycl::write_transposed_chunks(
-                                grp, hc, &columns_acc[0], &chunk_lengths_acc[1], lm[0].writer);
+                                item, hc, &columns_acc[0], &chunk_lengths_acc[1], lm[0].writer);
                         // hack
-                        if (phys_idx.get_global_linear_id() == 0) {
-                            grp.single_item([&] { chunk_lengths_acc[0] = 0; });
-                        }
+                        if (item.get_global_linear_id() == 0) { chunk_lengths_acc[0] = 0; }
                     });
         });
 
@@ -644,11 +645,13 @@ TEMPLATE_TEST_CASE("Residual encodings from different encoders are equivalent", 
             auto stream_acc = stream_buf.template get_access<sam::discard_write>(cgh);
             auto length_acc = length_buf.template get_access<sam::discard_write>(cgh);
             sycl::local_accessor<gpu_sycl::compaction_local_allocation<TestType>> lm{1, cgh};
-            cgh.parallel<gpu_hypercube_compact_test_kernel<TestType>>(sycl::range<1>{1 /* num_hypercubes */},
-                    sycl::range<1>{gpu::hypercube_group_size<TestType>},
-                    [=](gpu_sycl::hypercube_group<TestType> grp, sycl::physical_item<1> phys_idx) {
-                        const auto hc_index = grp.get_group_id(0);
-                        gpu_sycl::compact_chunks(grp, &chunks_acc.get_pointer()[hc_index * hc_total_chunks_size],
+
+            auto nd_range = gpu_sycl::make_nd_range(1 /* num_hypercubes */, gpu::hypercube_group_size<TestType>);
+            cgh.parallel_for<gpu_hypercube_compact_test_kernel<TestType>>(
+                    nd_range, [=](gpu_sycl::hypercube_item<TestType> item) {
+                        const auto hc_index = item.get_group_id(0);
+                        gpu_sycl::compact_chunks(item.get_group(),
+                                &chunks_acc.get_pointer()[hc_index * hc_total_chunks_size],
                                 &chunk_offsets_acc.get_pointer()[hc_index * chunks_per_hc], &length_acc[0],
                                 &stream_acc.get_pointer()[0], lm[0]);
                     });
@@ -758,12 +761,13 @@ TEMPLATE_TEST_CASE("GPU hypercube decoding works", "[decode]", ALL_PROFILES) {
             auto stream_acc = stream_buf.template get_access<sam::read>(cgh);
             auto output_acc = output_buf.template get_access<sam::discard_write>(cgh);
             sycl::local_accessor<gpu_sycl::decompressor_local_allocation<TestType>> lm{1, cgh};
-            cgh.parallel<gpu_hypercube_decode_test_kernel<TestType>>(sycl::range{1},
-                    sycl::range<1>{gpu::hypercube_group_size<TestType>},
-                    [stream_acc, output_acc, lm](gpu_sycl::hypercube_group<TestType> grp, sycl::physical_item<1>) {
+
+            auto nd_range = gpu_sycl::make_nd_range(1, gpu::hypercube_group_size<TestType>);
+            cgh.parallel_for<gpu_hypercube_decode_test_kernel<TestType>>(
+                    nd_range, [stream_acc, output_acc, lm](gpu_sycl::hypercube_item<TestType> item) {
                         gpu::hypercube_ptr<TestType, gpu::inverse_transform_tag> hc{lm[0].hc};
-                        gpu_sycl::read_transposed_chunks<TestType>(grp, hc, stream_acc.get_pointer(), lm[0].reader);
-                        grp.distribute_for(hc_size, [&](index_type i) { output_acc[i] = hc.load(i); });
+                        gpu_sycl::read_transposed_chunks(item, hc, stream_acc.get_pointer(), lm[0].reader);
+                        distribute_for(hc_size, item.get_group(), [&](index_type i) { output_acc[i] = hc.load(i); });
                     });
         });
 
@@ -837,19 +841,20 @@ static void test_cpu_gpu_transform_equality(const CpuTransform &cpu_transform
             sycl::local_accessor<gpu_sycl::hypercube_allocation<Profile, Tag>> lm_hc{1, cgh};
             std::conditional_t<std::is_same_v<Tag, gpu::inverse_transform_tag>,
                     sycl::local_accessor<gpu_sycl::inverse_transform_local_allocation<Profile>>,
-                    std::tuple<int, handler &>> // dummy with the same initializer as -^
+                    std::tuple<int, handler &>>  // dummy with the same initializer as -^
                     lm_transform{1, cgh};  // captured conditionally in kernel
-            cgh.parallel<sycl_transform_test_kernel<Profile, Tag>>(range<1>{1},
-                    range<1>{gpu::hypercube_group_size<Profile>},
-                    [=](gpu_sycl::hypercube_group<Profile> grp, physical_item<1>) {
+
+            auto nd_range = gpu_sycl::make_nd_range(1, gpu::hypercube_group_size<Profile>);
+            cgh.parallel_for<sycl_transform_test_kernel<Profile, Tag>>(
+                    nd_range, [=](gpu_sycl::hypercube_item<Profile> item) {
                         gpu::hypercube_ptr<Profile, Tag> hc{lm_hc[0]};
-                        grp.distribute_for(hc_size, [&](index_type i) { hc.store(i, global_acc[i]); });
+                        distribute_for(hc_size, item.get_group(), [&](index_type i) { hc.store(i, global_acc[i]); });
                         if constexpr (std::is_same_v<Tag, gpu::inverse_transform_tag>) {
-                            sycl_transform(grp, hc, lm_transform[0]);
+                            sycl_transform(item, hc, lm_transform[0]);
                         } else {
-                            sycl_transform(grp, hc);
+                            sycl_transform(item, hc);
                         }
-                        grp.distribute_for(hc_size, [&](index_type i) { global_acc[i] = hc.load(i); });
+                        distribute_for(hc_size, item.get_group(), [&](index_type i) { global_acc[i] = hc.load(i); });
                     });
         });
 
@@ -890,10 +895,11 @@ TEMPLATE_TEST_CASE("CPU and GPU forward block transforms are identical", "[trans
             ,
             // Use lambda instead of the function name, otherwise a host function pointer will
             // be passed into the device kernel
-            [](gpu_sycl::hypercube_group<TestType> grp, gpu::hypercube_ptr<TestType, gpu::forward_transform_tag> hc) {
+            [](gpu_sycl::hypercube_item<TestType> item, gpu::hypercube_ptr<TestType, gpu::forward_transform_tag> hc) {
                 constexpr auto hc_size = ipow(TestType::hypercube_side_length, TestType::dimensions);
-                grp.distribute_for(hc_size, [&](index_type i) { hc.store(i, rotate_left_1(hc.load(i))); });
-                gpu_sycl::forward_block_transform(grp, hc);
+                distribute_for(
+                        hc_size, item.get_group(), [&](index_type i) { hc.store(i, rotate_left_1(hc.load(i))); });
+                gpu_sycl::forward_block_transform(item.get_group(), hc);
             }
 #endif
 #if NDZIP_CUDA_SUPPORT
@@ -919,11 +925,12 @@ TEMPLATE_TEST_CASE("CPU and GPU inverse block transforms are identical", "[trans
             ,
             // Use lambda instead of the function name, otherwise a host function pointer will
             // be passed into the device kernel
-            [](gpu_sycl::hypercube_group<TestType> grp, gpu::hypercube_ptr<TestType, gpu::inverse_transform_tag> hc,
+            [](gpu_sycl::hypercube_item<TestType> item, gpu::hypercube_ptr<TestType, gpu::inverse_transform_tag> hc,
                     gpu_sycl::inverse_transform_local_allocation<TestType> &lm) {
                 constexpr auto hc_size = ipow(TestType::hypercube_side_length, TestType::dimensions);
-                gpu_sycl::inverse_block_transform<TestType>(grp, hc, lm);
-                grp.distribute_for(hc_size, [&](index_type i) { hc.store(i, rotate_right_1(hc.load(i))); });
+                gpu_sycl::inverse_block_transform<TestType>(item, hc, lm);
+                distribute_for(
+                        hc_size, item.get_group(), [&](index_type i) { hc.store(i, rotate_right_1(hc.load(i))); });
             }
 #endif
 #if NDZIP_CUDA_SUPPORT

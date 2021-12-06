@@ -26,69 +26,54 @@ struct bit_or {
 
 
 template<index_type ThreadsPerBlock>
-class known_size_block {
-  public:
-    template<typename F>
-    [[gnu::always_inline]] __device__ void distribute_for(index_type range, F &&f) {
-        const index_type num_full_iterations = range / ThreadsPerBlock;
-        const auto tid = static_cast<index_type>(threadIdx.x);
+class known_size_block {};
 
-        for (index_type iteration = 0; iteration < num_full_iterations; ++iteration) {
-            auto item = iteration * ThreadsPerBlock + tid;
-            invoke_f(f, item, iteration);
-        }
-        distribute_for_partial_iteration(range, f);
+template<typename F>
+[[gnu::always_inline]] __device__ void distribute_for_invoke(F &&f, index_type item, index_type iteration) {
+    if constexpr (std::is_invocable_v<F, index_type, index_type>) {
+        f(item, iteration);
+    } else {
+        f(item);
     }
+}
 
-    template<index_type Range, typename F>
-    [[gnu::always_inline]] __device__ void distribute_for(F &&f) {
-        constexpr index_type num_full_iterations = Range / ThreadsPerBlock;
-        const auto tid = static_cast<index_type>(threadIdx.x);
-
-#pragma unroll
-        for (index_type iteration = 0; iteration < num_full_iterations; ++iteration) {
-            auto item = iteration * ThreadsPerBlock + tid;
-            invoke_f(f, item, iteration);
-        }
-        distribute_for_partial_iteration(Range, f);
+template<index_type ThreadsPerBlock, typename F>
+[[gnu::always_inline]] __device__ void
+distribute_for_partial_iteration(index_type range, known_size_block<ThreadsPerBlock>, F &&f) {
+    const index_type num_full_iterations = range / ThreadsPerBlock;
+    const index_type partial_iteration_length = range % ThreadsPerBlock;
+    const auto tid = static_cast<index_type>(threadIdx.x);
+    if (tid < partial_iteration_length) {
+        auto iteration = num_full_iterations;
+        auto item = iteration * ThreadsPerBlock + tid;
+        distribute_for_invoke(f, item, iteration);
     }
-
-  private:
-    template<typename F>
-    [[gnu::always_inline]] __device__ void
-    invoke_f(F &&f, index_type item, index_type iteration) const {
-        if constexpr (std::is_invocable_v<F, index_type, index_type>) {
-            f(item, iteration);
-        } else {
-            f(item);
-        }
-    }
-
-    template<typename F>
-    [[gnu::always_inline]] __device__ void
-    distribute_for_partial_iteration(index_type range, F &&f) {
-        const index_type num_full_iterations = range / ThreadsPerBlock;
-        const index_type partial_iteration_length = range % ThreadsPerBlock;
-        const auto tid = static_cast<index_type>(threadIdx.x);
-        if (tid < partial_iteration_length) {
-            auto iteration = num_full_iterations;
-            auto item = iteration * ThreadsPerBlock + tid;
-            invoke_f(f, item, iteration);
-        }
-    }
-};
-
+}
 
 template<index_type ThreadsPerBlock, typename F>
 [[gnu::always_inline]] __device__ void
 distribute_for(index_type range, known_size_block<ThreadsPerBlock> block, F &&f) {
-    block.distribute_for(range, f);
+    const index_type num_full_iterations = range / ThreadsPerBlock;
+    const auto tid = static_cast<index_type>(threadIdx.x);
+
+    for (index_type iteration = 0; iteration < num_full_iterations; ++iteration) {
+        auto item = iteration * ThreadsPerBlock + tid;
+        distribute_for_invoke(f, item, iteration);
+    }
+    distribute_for_partial_iteration(range, block, f);
 }
 
 template<index_type Range, index_type ThreadsPerBlock, typename F>
-[[gnu::always_inline]] __device__ void
-distribute_for(known_size_block<ThreadsPerBlock> block, F &&f) {
-    return block.template distribute_for<Range>(f);
+[[gnu::always_inline]] __device__ void distribute_for(known_size_block<ThreadsPerBlock> block, F &&f) {
+    constexpr index_type num_full_iterations = Range / ThreadsPerBlock;
+    const auto tid = static_cast<index_type>(threadIdx.x);
+
+#pragma unroll
+    for (index_type iteration = 0; iteration < num_full_iterations; ++iteration) {
+        auto item = iteration * ThreadsPerBlock + tid;
+        distribute_for_invoke(f, item, iteration);
+    }
+    distribute_for_partial_iteration(Range, block, f);
 }
 
 
@@ -177,13 +162,10 @@ inclusive_scan(known_size_block<ThreadsPerBlock> block, Accessor acc, BinaryOp o
 #define STRINGIZE(x) STRINGIZE2(x)
 
 inline void cuda_check(cudaError_t err, const char *tag) {
-    if (err != cudaSuccess) {
-        throw std::runtime_error(std::string{tag} + cudaGetErrorString(err));
-    }
+    if (err != cudaSuccess) { throw std::runtime_error(std::string{tag} + cudaGetErrorString(err)); }
 }
 
-#define CHECKED_CUDA_CALL(f, ...) \
-    ::ndzip::detail::gpu_cuda::cuda_check(f(__VA_ARGS__), STRINGIZE(f) ": ")
+#define CHECKED_CUDA_CALL(f, ...) ::ndzip::detail::gpu_cuda::cuda_check(f(__VA_ARGS__), STRINGIZE(f) ": ")
 
 
 template<typename T>
@@ -191,9 +173,7 @@ class cuda_buffer {
   public:
     cuda_buffer() = default;
 
-    explicit cuda_buffer(index_type size) : _size(size) {
-        CHECKED_CUDA_CALL(cudaMalloc, &_memory, size * sizeof(T));
-    }
+    explicit cuda_buffer(index_type size) : _size(size) { CHECKED_CUDA_CALL(cudaMalloc, &_memory, size * sizeof(T)); }
 
     cuda_buffer(cuda_buffer &&other) noexcept {
         std::swap(_memory, other._memory);
@@ -274,8 +254,7 @@ class cuda_event {
         CHECKED_CUDA_CALL(cudaEventSynchronize, a._evt);
         float ms;
         CHECKED_CUDA_CALL(cudaEventElapsedTime, &ms, b._evt, a._evt);
-        return std::chrono::duration_cast<kernel_duration>(
-                std::chrono::duration<float, std::milli>(ms));
+        return std::chrono::duration_cast<kernel_duration>(std::chrono::duration<float, std::milli>(ms));
     }
 
   private:
@@ -284,8 +263,7 @@ class cuda_event {
 
 
 template<typename Scalar, typename BinaryOp>
-__global__ void
-hierarchical_inclusive_scan_reduce(Scalar *big_buf, Scalar *small_buf, BinaryOp op) {
+__global__ void hierarchical_inclusive_scan_reduce(Scalar *big_buf, Scalar *small_buf, BinaryOp op) {
     constexpr index_type granularity = hierarchical_inclusive_scan_granularity;
     constexpr index_type threads_per_block = 256;
     auto block = known_size_block<threads_per_block>{};
@@ -300,8 +278,7 @@ hierarchical_inclusive_scan_reduce(Scalar *big_buf, Scalar *small_buf, BinaryOp 
 }
 
 template<typename Scalar, typename BinaryOp>
-__global__ void
-hierarchical_inclusive_scan_expand(const Scalar *small_buf, Scalar *big_buf, BinaryOp op) {
+__global__ void hierarchical_inclusive_scan_expand(const Scalar *small_buf, Scalar *big_buf, BinaryOp op) {
     constexpr index_type granularity = hierarchical_inclusive_scan_granularity;
     constexpr index_type threads_per_block = 256;
     auto block = known_size_block<threads_per_block>{};

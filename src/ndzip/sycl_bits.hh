@@ -59,126 +59,127 @@ auto submit_and_profile(sycl::queue &q, const char *label, CGF &&cgf) {
 template<index_type LocalSize>
 class known_size_group : public sycl::group<1> {
   public:
-    using sycl::group<1>::group;
-    using sycl::group<1>::distribute_for;
-
     known_size_group(sycl::group<1> grp)  // NOLINT(google-explicit-constructor)
         : sycl::group<1>{grp} {}
 
-    template<typename F>
-    [[gnu::always_inline]] void distribute_for(index_type range, F &&f) {
-        distribute_for([&](sycl::sub_group sg, sycl::logical_item<1> idx) {
-            const index_type num_full_iterations = range / LocalSize;
-            const auto tid = static_cast<index_type>(idx.get_local_id(0));
+    size_t get_local_linear_range() const { return LocalSize; }
 
-            for (index_type iteration = 0; iteration < num_full_iterations; ++iteration) {
-                auto item = iteration * LocalSize + tid;
-                invoke_f(f, item, iteration, idx, sg);
-            }
-            distribute_for_partial_iteration(range, sg, idx, f);
-        });
-    }
-
-    template<index_type Range, typename F>
-    [[gnu::always_inline]] void distribute_for(F &&f) {
-        distribute_for([&](sycl::sub_group sg, sycl::logical_item<1> idx) {
-            constexpr index_type num_full_iterations = Range / LocalSize;
-            const auto tid = static_cast<index_type>(idx.get_local_id(0));
-
-#pragma unroll
-            for (index_type iteration = 0; iteration < num_full_iterations; ++iteration) {
-                auto item = iteration * LocalSize + tid;
-                invoke_f(f, item, iteration, idx, sg);
-            }
-            distribute_for_partial_iteration(Range, sg, idx, f);
-        });
-    }
-
-  private:
-    template<typename F>
-    [[gnu::always_inline]] void
-    invoke_f(F &&f, index_type item, index_type iteration, sycl::logical_item<1> idx, sycl::sub_group sg) const {
-        if constexpr (std::is_invocable_v<F, index_type, index_type, sycl::logical_item<1>, sycl::sub_group>) {
-            f(item, iteration, idx, sg);
-        } else if constexpr (std::is_invocable_v<F, index_type, index_type, sycl::logical_item<1>>) {
-            f(item, iteration, idx);
-        } else if constexpr (std::is_invocable_v<F, index_type, index_type>) {
-            f(item, iteration);
-        } else {
-            f(item);
-        }
-    }
-
-    template<typename F>
-    [[gnu::always_inline]] void
-    distribute_for_partial_iteration(index_type range, sycl::sub_group sg, sycl::logical_item<1> idx, F &&f) {
-        const index_type num_full_iterations = range / LocalSize;
-        const index_type partial_iteration_length = range % LocalSize;
-        const auto tid = static_cast<index_type>(idx.get_local_id(0));
-        if (tid < partial_iteration_length) {
-            auto iteration = num_full_iterations;
-            auto item = iteration * LocalSize + tid;
-            invoke_f(f, item, iteration, idx, sg);
-        }
-    }
+    sycl::range<1> get_local_range() const { return LocalSize; }
 };
 
+template<typename F>
+[[gnu::always_inline]] void distribute_for_invoke(F &&f, index_type item, index_type iteration) {
+    if constexpr (std::is_invocable_v<F, index_type, index_type>) {
+        f(item, iteration);
+    } else {
+        f(item);
+    }
+}
 
 template<index_type LocalSize, typename F>
-[[gnu::always_inline]] void
-distribute_for(index_type range, known_size_group<LocalSize> group, F &&f) {
-    group.distribute_for(range, f);
+[[gnu::always_inline]] void distribute_for(index_type range, known_size_group<LocalSize> grp, F &&f) {
+    const index_type num_full_iterations = range / LocalSize;
+    const auto tid = static_cast<index_type>(grp.get_local_id(0));
+
+    for (index_type iteration = 0; iteration < num_full_iterations; ++iteration) {
+        auto item = iteration * LocalSize + tid;
+        distribute_for_invoke(f, item, iteration);
+    }
+    distribute_for_partial_iteration(range, grp, f);
+    group_barrier(grp);
 }
 
 template<index_type Range, index_type LocalSize, typename F>
-[[gnu::always_inline]] void
-distribute_for(known_size_group<LocalSize> group, F &&f) {
-    return group.template distribute_for<Range>(f);
+[[gnu::always_inline]] void distribute_for(known_size_group<LocalSize> grp, F &&f) {
+    constexpr index_type num_full_iterations = Range / LocalSize;
+    const auto tid = static_cast<index_type>(grp.get_local_id(0));
+
+#pragma unroll
+    for (index_type iteration = 0; iteration < num_full_iterations; ++iteration) {
+        auto item = iteration * LocalSize + tid;
+        distribute_for_invoke(f, item, iteration);
+    }
+    distribute_for_partial_iteration(Range, grp, f);
+    group_barrier(grp);
+}
+
+template<index_type LocalSize, typename F>
+[[gnu::always_inline]] void distribute_for_partial_iteration(index_type range, known_size_group<LocalSize> grp, F &&f) {
+    const index_type num_full_iterations = range / LocalSize;
+    const index_type partial_iteration_length = range % LocalSize;
+    const auto tid = static_cast<index_type>(grp.get_local_id(0));
+    if (tid < partial_iteration_length) {
+        auto iteration = num_full_iterations;
+        auto item = iteration * LocalSize + tid;
+        distribute_for_invoke(f, item, iteration);
+    }
 }
 
 
-template<typename Value, index_type Range, typename Enable=void>
+template<index_type LocalSize>
+class known_group_size_item : public sycl::nd_item<1> {
+  public:
+    known_group_size_item(sycl::nd_item<1> item)  // NOLINT(google-explicit-constructor)
+        : sycl::nd_item<1>{item} {}
+
+    size_t get_local_linear_range() const { return LocalSize; }
+
+    sycl::range<1> get_local_range() const { return LocalSize; }
+
+    sycl::id<1> get_group_id() const { return get_group().get_group_id(); }
+
+    size_t get_group_id(int dimension) const { return get_group().get_group_id(dimension); }
+
+    known_size_group<LocalSize> get_group() const { return sycl::nd_item<1>::get_group(); }
+
+    sycl::group<1> get_sycl_group() const { return sycl::nd_item<1>::get_group(); }
+};
+
+
+inline sycl::nd_range<1> make_nd_range(index_type n_groups, index_type local_size) {
+    return sycl::nd_range<1>{n_groups * local_size, local_size};
+}
+
+
+template<typename Value, index_type Range, typename Enable = void>
 struct inclusive_scan_local_allocation {};
 
 template<typename Value, index_type Range>
-struct inclusive_scan_local_allocation<Value, Range, std::enable_if_t<(Range > warp_size)>>
-{
+struct inclusive_scan_local_allocation<Value, Range, std::enable_if_t<(Range > warp_size)>> {
     Value memory[div_ceil(Range, warp_size)];
     inclusive_scan_local_allocation<Value, div_ceil(Range, warp_size)> next;
 };
 
 
+// TODO rename (confusion with sycl::inclusive_scan_over_group + it receives an item, not a group!)
 template<index_type Range, index_type LocalSize, typename Accessor, typename BinaryOp>
-std::enable_if_t<(Range <= warp_size)> inclusive_scan_over_group(known_size_group<LocalSize> grp, Accessor acc,
+std::enable_if_t<(Range <= warp_size)> inclusive_scan_over_group(known_group_size_item<LocalSize> item, Accessor acc,
         inclusive_scan_local_allocation<std::decay_t<decltype(acc[index_type{}])>, Range> &, BinaryOp op) {
     static_assert(LocalSize % warp_size == 0);
-    distribute_for<ceil(Range, warp_size)>(grp,
-            [&](index_type item, index_type, sycl::logical_item<1>, sycl::sub_group sg) {
-                auto a = item < Range ? acc[item] : 0;
-                auto b = sycl::inclusive_scan_over_group(sg, a, op);
-                if (item < Range) { acc[item] = b; }
-            });
+    distribute_for<ceil(Range, warp_size)>(item.get_group(), [&](index_type i) {
+        auto a = i < Range ? acc[i] : 0;
+        auto b = sycl::inclusive_scan_over_group(item.get_sub_group(), a, op);
+        if (i < Range) { acc[i] = b; }
+    });
 }
 
 template<index_type Range, index_type LocalSize, typename Accessor, typename BinaryOp>
-std::enable_if_t<(Range > warp_size)> inclusive_scan_over_group(known_size_group<LocalSize> grp, Accessor acc,
-        inclusive_scan_local_allocation<std::decay_t<decltype(acc[index_type{}])>, Range> &lm,
-        BinaryOp op) {
+std::enable_if_t<(Range > warp_size)> inclusive_scan_over_group(known_group_size_item<LocalSize> item, Accessor acc,
+        inclusive_scan_local_allocation<std::decay_t<decltype(acc[index_type{}])>, Range> &lm, BinaryOp op) {
     static_assert(LocalSize % warp_size == 0);
     using value_type = std::decay_t<decltype(acc[index_type{}])>;
 
-    value_type fine[div_ceil(Range, LocalSize)]; // per-thread
+    value_type fine[div_ceil(Range, LocalSize)];  // per-thread
     const auto coarse = lm.memory;
-    distribute_for<ceil(Range, warp_size)>(grp,
-            [&](index_type item, index_type iteration, sycl::logical_item<1>, sycl::sub_group sg) {
-                fine[iteration] = sycl::inclusive_scan_over_group(sg, item < Range ? acc[item] : 0, op);
-                if (item % warp_size == warp_size - 1) { coarse[item / warp_size] = fine[iteration]; }
-            });
-    inclusive_scan_over_group(grp, coarse, lm.next, op);
-    distribute_for<Range>(grp, [&](index_type item, index_type iteration) {
+    distribute_for<ceil(Range, warp_size)>(item.get_group(), [&](index_type i, index_type iteration) {
+        fine[iteration] = sycl::inclusive_scan_over_group(item.get_sub_group(), i < Range ? acc[i] : 0, op);
+        if (i % warp_size == warp_size - 1) { coarse[i / warp_size] = fine[iteration]; }
+    });
+    inclusive_scan_over_group(item, coarse, lm.next, op);
+    distribute_for<Range>(item.get_group(), [&](index_type i, index_type iteration) {
         auto value = fine[iteration];
-        if (item >= warp_size) { value = op(value, coarse[item / warp_size - 1]); }
-        acc[item] = value;
+        if (i >= warp_size) { value = op(value, coarse[i / warp_size - 1]); }
+        acc[i] = value;
     });
 }
 
@@ -215,8 +216,6 @@ void hierarchical_inclusive_scan(sycl::queue &queue, sycl::buffer<Scalar> &in_ou
     for (index_type i = 0; i < intermediate_bufs.size(); ++i) {
         auto &big_buffer = i > 0 ? intermediate_bufs[i - 1] : in_out_buffer;
         auto &small_buffer = intermediate_bufs[i];
-        const auto group_range = sycl::range<1>{div_ceil(static_cast<index_type>(big_buffer.get_count()), granularity)};
-        const auto local_range = sycl::range<1>{local_size};
 
         char label[50];
         sprintf(label, "hierarchical_inclusive_scan reduce %u", i);
@@ -224,15 +223,18 @@ void hierarchical_inclusive_scan(sycl::queue &queue, sycl::buffer<Scalar> &in_ou
             auto big_acc = big_buffer.template get_access<sam::read_write>(cgh);
             auto small_acc = small_buffer.template get_access<sam::discard_write>(cgh);
             sycl::local_accessor<inclusive_scan_local_allocation<Scalar, granularity>> lm{1, cgh};
-            cgh.parallel<hierarchical_inclusive_scan_reduction_kernel<Scalar, BinaryOp>>(group_range, local_range,
-                    [big_acc, small_acc, lm, op](known_size_group<local_size> grp, sycl::physical_item<1>) {
-                        auto group_index = static_cast<index_type>(grp.get_group_id(0));
+
+          const auto n_groups = div_ceil(static_cast<index_type>(big_buffer.get_count()), granularity);
+          const auto nd_range = make_nd_range(n_groups, local_size);
+            cgh.parallel_for<hierarchical_inclusive_scan_reduction_kernel<Scalar, BinaryOp>>(
+                    nd_range, [big_acc, small_acc, lm, op](known_group_size_item<local_size> item) {
+                        auto group_index = static_cast<index_type>(item.get_group_id(0));
                         Scalar *big = &big_acc[group_index * granularity];
                         Scalar &small = small_acc[group_index];
-                        inclusive_scan_over_group(grp, big, lm[0], op);
+                        inclusive_scan_over_group(item, big, lm[0], op);
                         // TODO unnecessary GM read from big -- maybe return final sum
                         //  in the last item? Or allow additional accessor in inclusive_scan?
-                        grp.single_item([&] { small = big[granularity - 1]; });
+                        if (item.get_group().leader()) { small = big[granularity - 1]; }
                     });
         });
     }
@@ -241,21 +243,21 @@ void hierarchical_inclusive_scan(sycl::queue &queue, sycl::buffer<Scalar> &in_ou
         auto ii = static_cast<index_type>(intermediate_bufs.size()) - 1 - i;
         auto &small_buffer = intermediate_bufs[ii];
         auto &big_buffer = ii > 0 ? intermediate_bufs[ii - 1] : in_out_buffer;
-        const auto group_range
-                = sycl::range<1>{div_ceil(static_cast<index_type>(big_buffer.get_count()), granularity) - 1};
-        const auto local_range = sycl::range<1>{local_size};
 
         char label[50];
         sprintf(label, "hierarchical_inclusive_scan expand %u", ii);
         submit_and_profile(queue, label, [&](sycl::handler &cgh) {
             auto small_acc = small_buffer.template get_access<sam::read>(cgh);
             auto big_acc = big_buffer.template get_access<sam::read_write>(cgh);
-            cgh.parallel<hierarchical_inclusive_scan_expansion_kernel<Scalar, BinaryOp>>(group_range, local_range,
-                    [small_acc, big_acc, op](known_size_group<local_size> grp, sycl::physical_item<1>) {
-                        auto group_index = static_cast<index_type>(grp.get_group_id(0));
+
+          const auto n_groups = div_ceil(static_cast<index_type>(big_buffer.get_count()), granularity) - 1;
+          const auto nd_range = make_nd_range(n_groups, local_size);
+            cgh.parallel_for<hierarchical_inclusive_scan_expansion_kernel<Scalar, BinaryOp>>(nd_range,
+                    [small_acc, big_acc, op](known_group_size_item<local_size> item) {
+                        auto group_index = static_cast<index_type>(item.get_group_id(0));
                         Scalar *big = &big_acc[(group_index + 1) * granularity];
                         Scalar small = small_acc[group_index];
-                        distribute_for(granularity, grp, [&](index_type i) { big[i] = op(big[i], small); });
+                        distribute_for(granularity, item.get_group(), [&](index_type i) { big[i] = op(big[i], small); });
                     });
         });
     }

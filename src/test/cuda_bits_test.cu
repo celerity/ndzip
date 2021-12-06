@@ -73,7 +73,7 @@ TEST_CASE("Warp-cooperative primitives work", "[cuda][scan]") {
 
 
 TEMPLATE_TEST_CASE("Subgroup hierarchical inclusive scan works", "[cuda][scan]", uint32_t, uint64_t) {
-    constexpr index_type group_size = 1024;
+    constexpr index_type group_size = 512;
     constexpr index_type n_groups = 9;
     constexpr index_type range = group_size * n_groups;
 
