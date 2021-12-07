@@ -14,6 +14,14 @@
 #include <boost/program_options.hpp>
 #include <io/io.hh>
 #include <ndzip/ndzip.hh>
+#include <ndzip/cpu_encoder.hh>
+
+#if NDZIP_HIPSYCL_SUPPORT
+#include <ndzip/sycl_encoder.hh>
+#endif
+#if NDZIP_CUDA_SUPPORT
+#include <ndzip/cuda_encoder.hh>
+#endif
 
 #if NDZIP_BENCHMARK_HAVE_3RDPARTY
 #include <SPDP_11.h>
@@ -303,9 +311,9 @@ struct ndzip_encoder_factory {
 };
 
 template<typename Data, unsigned Dims>
-struct ndzip_encoder_factory<ndzip::mt_cpu_encoder<Data, Dims>> {
-    ndzip::mt_cpu_encoder<Data, Dims> create(const benchmark_params &params) const {
-        return ndzip::mt_cpu_encoder<Data, Dims>{params.num_threads};
+struct ndzip_encoder_factory<ndzip::cpu_encoder<Data, Dims>> {
+    ndzip::cpu_encoder<Data, Dims> create(const benchmark_params &params) const {
+        return ndzip::cpu_encoder<Data, Dims>{params.num_threads};
     }
 };
 
@@ -1273,7 +1281,7 @@ const algorithm_map &available_algorithms() {
         {"ndzip", {benchmark_ndzip<ndzip::cpu_encoder>}},
 #if NDZIP_OPENMP_SUPPORT
         {"memcpy-mt", {benchmark_memcpy_mt, 1, 1, 1, true /* multithreaded */}},
-        {"ndzip-mt", {benchmark_ndzip<ndzip::mt_cpu_encoder>, 1, 1, 1, true /* multithreaded */}},
+        {"ndzip-mt", {benchmark_ndzip<ndzip::cpu_encoder>, 1, 1, 1, true /* multithreaded */}},
 #endif
 #if NDZIP_HIPSYCL_SUPPORT
         {"ndzip-sycl", {benchmark_ndzip<ndzip::sycl_encoder>}},

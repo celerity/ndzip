@@ -112,7 +112,7 @@ add_library(ndzip SHARED
     include/ndzip/ndzip.hh
     include/ndzip/array.hh
     include/ndzip/cpu_encoder.hh
-    include/ndzip/mt_cpu_encoder.hh
+        include/ndzip/cpu_encoder.hh
     include/ndzip/sycl_encoder.hh
     src/ndzip/common.hh
     src/ndzip/common.cc
@@ -164,7 +164,7 @@ if (NDZIP_USE_CUDA)
     # -Xcudafe <arg>. Use (deprecated) COMPILE_FLAGS instead.
     list(JOIN NDZIP_CUDA_FLAGS " " NDZIP_CUDA_FLAGS_STRING)
     set_target_properties(ndzip-cuda PROPERTIES COMPILE_FLAGS "${NDZIP_CUDA_FLAGS_STRING}")
-    target_link_libraries(ndzip-cuda PUBLIC ndzip)
+    target_link_libraries(ndzip-cuda PUBLIC ndzip CUDA::cudart)
 endif ()
 
 add_library(io STATIC

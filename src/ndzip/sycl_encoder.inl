@@ -474,50 +474,51 @@ class border_expansion_kernel;
 }  // namespace ndzip::detail::gpu_sycl
 
 
-template<typename T>
-struct ndzip_sycl::compressor_scratch_buffer {
-    using bits_type = ndzip::detail::bits_type<T>;
+template<int Dims>
+void ndzip::sycl_compressor_requirements<Dims>::include(extent<Dims> data_size) {
+    using profile = detail::profile<float, Dims>;  // TODO value_type does not matter here, refactor
+    const auto file = detail::file<profile>(data_size);
+    _max_num_hypercubes = std::max(_max_num_hypercubes, file.num_hypercubes());
+}
 
-    sycl::buffer<bits_type> chunks_buf;
-    sycl::buffer<ndzip::index_type> chunk_lengths_buf;
-    std::vector<sycl::buffer<ndzip::index_type>> hierarchical_scan_bufs;
-};
-
-template<typename T, unsigned Dims>
-std::unique_ptr<ndzip_sycl::compressor_scratch_buffer<T>>
-ndzip_sycl::allocate_compressor_scratch_buffer(ndzip::extent<Dims> data_size) {
+template<typename T, int Dims>
+static std::pair<ndzip::index_type, ndzip::index_type>
+get_chunks_and_length_buf_size(ndzip::index_type num_hypercubes) {
     using namespace ndzip;
 
     using profile = detail::profile<T, Dims>;
     using bits_type = typename profile::bits_type;
-    using scratch_buffer = ndzip_sycl::compressor_scratch_buffer<T>;
 
     constexpr index_type hc_size = detail::ipow(profile::hypercube_side_length, profile::dimensions);
     constexpr index_type col_chunk_size = detail::bits_of<bits_type>;
     constexpr index_type header_chunk_size = hc_size / col_chunk_size;
     constexpr index_type hc_total_chunks_size = hc_size + header_chunk_size;
 
-    const auto file = detail::file<profile>(data_size);
-    const auto num_hypercubes = file.num_hypercubes();
     const auto num_chunks = num_hypercubes * (1 + hc_size / col_chunk_size);
-    const auto length_buffer_size = detail::ceil(1 + num_chunks, detail::gpu::hierarchical_inclusive_scan_granularity);
+    const auto chunks_buf_size = num_hypercubes * hc_total_chunks_size;
+    const auto length_buf_size = detail::ceil(1 + num_chunks, detail::gpu::hierarchical_inclusive_scan_granularity);
 
-    auto *buffer = new scratch_buffer{sycl::buffer<bits_type>{num_hypercubes * hc_total_chunks_size},
-            sycl::buffer<ndzip::index_type>{length_buffer_size},
-            detail::gpu_sycl::hierarchical_inclusive_scan_allocate<index_type>(length_buffer_size)};
-    return std::unique_ptr<scratch_buffer>{buffer};
-}
-
-template<typename T>
-void std::default_delete<ndzip_sycl::compressor_scratch_buffer<T>>::operator()(
-        ndzip_sycl::compressor_scratch_buffer<T> *m) const {
-    delete m;
+    return {chunks_buf_size, length_buf_size};
 }
 
 template<typename T, int Dims>
-ndzip_sycl::compress_events ndzip_sycl::compress_async(sycl::buffer<T, Dims> &in_data,
-        sycl::buffer<ndzip::detail::bits_type<T>> &out_stream, sycl::buffer<ndzip::index_type> *out_stream_length,
-        ndzip_sycl::compressor_scratch_buffer<T> &scratch, sycl::queue &q) {
+ndzip::sycl_compressor<T, Dims>::sycl_compressor(sycl::queue &q, sycl_compressor_requirements<Dims> req)
+    : sycl_compressor{q, get_chunks_and_length_buf_size<T, Dims>(req._max_num_hypercubes)} {
+}
+
+template<typename T, int Dims>
+ndzip::sycl_compressor<T, Dims>::sycl_compressor(
+        sycl::queue &q, std::pair<index_type, index_type> chunks_and_length_buf_sizes)
+    : _q{&q}
+    , _chunks_buf{chunks_and_length_buf_sizes.first}
+    , _chunk_lengths_buf{chunks_and_length_buf_sizes.second}
+    , _hierarchical_scan_bufs{
+              detail::gpu_sycl::hierarchical_inclusive_scan_allocate<index_type>(chunks_and_length_buf_sizes.second)} {
+}
+
+template<typename T, int Dims>
+ndzip::sycl_compress_events ndzip::sycl_compressor<T, Dims>::compress(sycl::buffer<value_type, Dims> &in_data,
+        sycl::buffer<compressed_type> &out_stream, sycl::buffer<index_type> *out_stream_length) {
     using namespace ndzip;
     using namespace detail;
     using namespace detail::gpu_sycl;
@@ -539,11 +540,11 @@ ndzip_sycl::compress_events ndzip_sycl::compress_async(sycl::buffer<T, Dims> &in
     detail::file<profile> file(data_size);
     const auto num_hypercubes = file.num_hypercubes();
 
-    compress_events events;
-    events.start = submit_and_profile(q, "transform + chunk encode", [&](sycl::handler &cgh) {
+    sycl_compress_events events;
+    events.start = submit_and_profile(*_q, "transform + chunk encode", [&](sycl::handler &cgh) {
         const auto data_acc = in_data.template get_access<sam::read>(cgh);
-        const auto chunks_acc = scratch.chunks_buf.template get_access<sam::discard_write>(cgh);
-        const auto chunk_lengths_acc = scratch.chunk_lengths_buf.template get_access<sam::discard_write>(cgh);
+        const auto chunks_acc = _chunks_buf.template get_access<sam::discard_write>(cgh);
+        const auto chunk_lengths_acc = _chunk_lengths_buf.template get_access<sam::discard_write>(cgh);
         const auto group_size = hypercube_group_size<profile>;
         const auto nd_range = make_nd_range(num_hypercubes, group_size);
 
@@ -562,13 +563,13 @@ ndzip_sycl::compress_events ndzip_sycl::compress_async(sycl::buffer<T, Dims> &in
         });
     });
 
-    hierarchical_inclusive_scan(q, scratch.chunk_lengths_buf, scratch.hierarchical_scan_bufs, sycl::plus<index_type>{});
+    hierarchical_inclusive_scan(*_q, _chunk_lengths_buf, _hierarchical_scan_bufs, sycl::plus<index_type>{});
 
     const auto num_compressed_words_offset = sycl::id<1>{num_hypercubes * chunks_per_hc};
 
-    auto compact_kernel_evt = submit_and_profile(q, "compact chunks", [&](sycl::handler &cgh) {
-        const auto chunks_acc = scratch.chunks_buf.template get_access<sam::read>(cgh);
-        const auto offsets_acc = scratch.chunk_lengths_buf.template get_access<sam::read>(cgh);
+    auto compact_kernel_evt = submit_and_profile(*_q, "compact chunks", [&](sycl::handler &cgh) {
+        const auto chunks_acc = _chunks_buf.template get_access<sam::read>(cgh);
+        const auto offsets_acc = _chunk_lengths_buf.template get_access<sam::read>(cgh);
         const auto stream_acc = out_stream.template get_access<sam::discard_write>(cgh);
         const auto num_header_fields
                 = detail::ceil(num_hypercubes, static_cast<uint32_t>(sizeof(bits_type) / sizeof(index_type)));
@@ -601,9 +602,9 @@ ndzip_sycl::compress_events ndzip_sycl::compress_async(sycl::buffer<T, Dims> &in
     // TODO num_header_words == num_header_fields ??
 
     if (num_border_words > 0) {
-        auto compact_border_evt = submit_and_profile(q, "compact border", [&](sycl::handler &cgh) {
+        auto compact_border_evt = submit_and_profile(*_q, "compact border", [&](sycl::handler &cgh) {
             auto data_acc = in_data.template get_access<sam::read>(cgh);
-            auto offsets_acc = scratch.chunk_lengths_buf.template get_access<sam::read>(cgh);
+            auto offsets_acc = _chunk_lengths_buf.template get_access<sam::read>(cgh);
             // TODO ranged accessor to allow overlapping with compact_chunks kernel
             auto stream_acc = out_stream.template get_access<sam::discard_write>(cgh);
             cgh.parallel_for<border_compaction_kernel<T, dimensions>>(  // TODO leverage ILP
@@ -619,9 +620,9 @@ ndzip_sycl::compress_events ndzip_sycl::compress_async(sycl::buffer<T, Dims> &in
     }
 
     if (out_stream_length) {
-        events.stream_length_available = q.submit([&](sycl::handler &cgh) {
+        events.stream_length_available = _q->submit([&](sycl::handler &cgh) {
             auto length_acc = out_stream_length->get_access<sam::discard_write>(cgh);
-            auto offsets_acc = scratch.chunk_lengths_buf.template get_access<sam::read>(cgh);
+            auto offsets_acc = _chunk_lengths_buf.template get_access<sam::read>(cgh);
             cgh.single_task([=] {
                 const auto num_compressed_words = offsets_acc[num_compressed_words_offset];
                 length_acc[0] = num_header_words + num_compressed_words + num_border_words;
@@ -633,8 +634,8 @@ ndzip_sycl::compress_events ndzip_sycl::compress_async(sycl::buffer<T, Dims> &in
 }
 
 template<typename T, int Dims>
-ndzip_sycl::decompress_events ndzip_sycl::decompress_async(
-        sycl::buffer<ndzip::detail::bits_type<T>> &in_stream, sycl::buffer<T, Dims> &out_data, sycl::queue &q) {
+ndzip::sycl_decompress_events ndzip::sycl_decompressor<T, Dims>::decompress(
+        sycl::buffer<compressed_type> &in_stream, sycl::buffer<value_type, Dims> &out_data) {
     using namespace ndzip;
     using namespace detail;
     using namespace detail::gpu_sycl;
@@ -647,8 +648,8 @@ ndzip_sycl::decompress_events ndzip_sycl::decompress_async(
     const auto file = detail::file<profile>(data_size);
     const auto num_hypercubes = file.num_hypercubes();
 
-    decompress_events events;
-    auto decompress_kernel_evt = submit_and_profile(q, "decompress blocks", [&](sycl::handler &cgh) {
+    sycl_decompress_events events;
+    auto decompress_kernel_evt = submit_and_profile(*_q, "decompress blocks", [&](sycl::handler &cgh) {
         auto stream_acc = in_stream.template get_access<sam::read>(cgh);
         auto data_acc = out_data.template get_access<sam::discard_write>(cgh);
         auto nd_range = make_nd_range(num_hypercubes, hypercube_group_size<profile>);
@@ -672,7 +673,7 @@ ndzip_sycl::decompress_events ndzip_sycl::decompress_async(
     const auto num_border_words = border_map.size();
 
     if (num_border_words > 0) {
-        auto expand_border_evt = submit_and_profile(q, "expand border", [&](sycl::handler &cgh) {
+        auto expand_border_evt = submit_and_profile(*_q, "expand border", [&](sycl::handler &cgh) {
             auto stream_acc = in_stream.template get_access<sam::read>(cgh);
             auto data_acc = out_data.template get_access<sam::discard_write>(cgh);
             cgh.parallel_for<border_expansion_kernel<T, Dims>>(  // TODO leverage ILP
@@ -749,21 +750,22 @@ size_t ndzip::sycl_encoder<T, Dims>::compress(
     sycl::buffer<bits_type> stream_buf(
             div_ceil(compressed_size_bound<data_type, dimensions>(data.size()), sizeof(bits_type)));
     sycl::buffer<index_type> stream_length_buf(1);
-    auto scratch = ndzip_sycl::allocate_compressor_scratch_buffer<T, Dims>(data.size());
+
+    ndzip::sycl_compressor<T, Dims> compressor{_pimpl->q, data.size()};
 
     if (_pimpl->is_profiling()) {
         force_device_allocation(stream_buf, _pimpl->q);
         force_device_allocation(stream_length_buf, _pimpl->q);
-        force_device_allocation(scratch->chunks_buf, _pimpl->q);
-        force_device_allocation(scratch->chunk_lengths_buf, _pimpl->q);
-        for (auto &buf : scratch->hierarchical_scan_bufs) {
+        force_device_allocation(compressor._chunks_buf, _pimpl->q);
+        force_device_allocation(compressor._chunk_lengths_buf, _pimpl->q);
+        for (auto &buf : compressor._hierarchical_scan_bufs) {
             force_device_allocation(buf, _pimpl->q);
         }
 
         _pimpl->q.wait();
     }
 
-    auto events = ndzip_sycl::compress_async(data_buf, stream_buf, &stream_length_buf, *scratch, _pimpl->q);
+    auto events = compressor.compress(data_buf, stream_buf, &stream_length_buf);
 
     index_type host_size;
     _pimpl->q
@@ -818,7 +820,7 @@ size_t ndzip::sycl_encoder<T, Dims>::decompress(const void *raw_stream, size_t b
         _pimpl->q.wait();
     }
 
-    auto events = ndzip_sycl::decompress_async(stream_buf, data_buf, _pimpl->q);
+    auto events = sycl_decompressor<T, Dims>{_pimpl->q}.decompress(stream_buf, data_buf);
 
     submit_and_profile(_pimpl->q, "copy output to host", [&](sycl::handler &cgh) {
         cgh.copy(data_buf.template get_access<sam::read>(cgh), data.data());

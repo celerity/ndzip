@@ -201,3 +201,12 @@ stream_size_type compressed_size_bound(const extent<Dims> &e);
 using kernel_duration = std::chrono::duration<uint64_t, std::nano>;
 
 }  // namespace ndzip
+
+namespace ndzip::detail {
+
+template<typename T>
+using bits_type = std::conditional_t<sizeof(T) == 1, uint8_t,
+        std::conditional_t<sizeof(T) == 2, uint16_t,
+                std::conditional_t<sizeof(T) == 4, uint32_t, std::conditional_t<sizeof(T) == 8, uint64_t, void>>>>;
+
+}

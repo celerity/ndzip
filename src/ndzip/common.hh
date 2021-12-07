@@ -44,11 +44,6 @@ NDZIP_UNIVERSAL constexpr inline Integer ipow(Integer base, unsigned exponent) {
     return power;
 }
 
-template<typename T>
-using bits_type = std::conditional_t<sizeof(T) == 1, uint8_t,
-        std::conditional_t<sizeof(T) == 2, uint16_t,
-                std::conditional_t<sizeof(T) == 4, uint32_t, std::conditional_t<sizeof(T) == 8, uint64_t, void>>>>;
-
 template<typename Integer>
 NDZIP_UNIVERSAL constexpr Integer div_ceil(Integer p, Integer q) {
     return (p + q - 1) / q;

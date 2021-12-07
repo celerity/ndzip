@@ -1,8 +1,7 @@
 #pragma once
 
-#include "array.hh"
+#include "ndzip.hh"
 
-#include <memory>
 
 namespace ndzip {
 
@@ -12,21 +11,21 @@ class cpu_encoder {
     using data_type = T;
     constexpr static unsigned dimensions = Dims;
 
-    cpu_encoder();
+    cpu_encoder() = default;
 
-    cpu_encoder(cpu_encoder &&) noexcept = default;
+    explicit cpu_encoder(size_t num_threads): _co{num_threads}, _de{num_threads} {}
 
-    ~cpu_encoder();
+    size_t compress(const slice<const data_type, dimensions> &data, void *stream) {
+        return _co.compress(data, static_cast<detail::bits_type<T>*>(stream));
+    }
 
-    cpu_encoder &operator=(cpu_encoder &&) noexcept = default;
-
-    size_t compress(const slice<const data_type, dimensions> &data, void *stream) const;
-
-    size_t decompress(const void *stream, size_t bytes, const slice<data_type, dimensions> &data) const;
+    size_t decompress(const void *stream, size_t bytes, const slice<data_type, dimensions> &data) {
+        return _de.decompress(static_cast<const detail::bits_type<T>*>(stream), data);
+    }
 
   private:
-    struct impl;
-    std::unique_ptr<impl> _pimpl;
+    compressor<T, Dims> _co;
+    decompressor<T, Dims> _de;
 };
 
 }  // namespace ndzip

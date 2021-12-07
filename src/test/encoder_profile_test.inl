@@ -1,6 +1,6 @@
 #include "test_utils.hh"
 
-#include <ndzip/common.hh>
+#include <ndzip/cpu_encoder.hh>
 #include <ndzip/cpu_encoder.inl>
 
 #if NDZIP_HIPSYCL_SUPPORT
@@ -12,6 +12,7 @@
 #endif
 
 #include <iostream>
+
 
 #define ALL_PROFILES (profile<DATA_TYPE, DIMENSIONS>)
 
@@ -61,36 +62,36 @@ TEMPLATE_TEST_CASE("decode(encode(input)) reproduces the input", "[encoder][de]"
     };
 
     SECTION("cpu_encoder::encode() => cpu_encoder::decode()") {
-        test_encoder_decoder_pair(cpu_encoder<data_type, dims>{}, cpu_encoder<data_type, dims>{});
+        test_encoder_decoder_pair(ndzip::cpu_encoder<data_type, dims>{1}, cpu_encoder<data_type, dims>{1});
     }
 
 #if NDZIP_OPENMP_SUPPORT
-    SECTION("cpu_encoder::encode() => mt_cpu_encoder::decode()", "[omp]") {
-        test_encoder_decoder_pair(cpu_encoder<data_type, dims>{}, mt_cpu_encoder<data_type, dims>{});
+    SECTION("cpu_encoder::encode() => mt cpu_encoder::decode()", "[omp]") {
+        test_encoder_decoder_pair(cpu_encoder<data_type, dims>{1}, cpu_encoder<data_type, dims>{});
     }
 
-    SECTION("mt_cpu_encoder::encode() => cpu_encoder::decode()", "[omp]") {
-        test_encoder_decoder_pair(mt_cpu_encoder<data_type, dims>{}, cpu_encoder<data_type, dims>{});
+    SECTION("mt cpu_encoder::encode() => cpu_encoder::decode()", "[omp]") {
+        test_encoder_decoder_pair(cpu_encoder<data_type, dims>{}, cpu_encoder<data_type, dims>{1});
     }
 #endif
 
 #if NDZIP_HIPSYCL_SUPPORT
     SECTION("cpu_encoder::encode() => sycl_encoder::decode()", "[sycl]") {
-        test_encoder_decoder_pair(cpu_encoder<data_type, dims>{}, sycl_encoder<data_type, dims>{});
+        test_encoder_decoder_pair(cpu_encoder<data_type, dims>{1}, sycl_encoder<data_type, dims>{});
     }
 
     SECTION("sycl_encoder::encode() => cpu_encoder::decode()", "[sycl]") {
-        test_encoder_decoder_pair(sycl_encoder<data_type, dims>{}, cpu_encoder<data_type, dims>{});
+        test_encoder_decoder_pair(sycl_encoder<data_type, dims>{}, cpu_encoder<data_type, dims>{1});
     }
 #endif
 
 #if NDZIP_CUDA_SUPPORT
     SECTION("cpu_encoder::encode() => cuda_encoder::decode()", "[cuda]") {
-        test_encoder_decoder_pair(cpu_encoder<data_type, dims>{}, cuda_encoder<data_type, dims>{});
+        test_encoder_decoder_pair(cpu_encoder<data_type, dims>{1}, cuda_encoder<data_type, dims>{});
     }
 
     SECTION("cuda_encoder::encode() => cpu_encoder::decode()", "[cuda]") {
-        test_encoder_decoder_pair(cuda_encoder<data_type, dims>{}, cpu_encoder<data_type, dims>{});
+        test_encoder_decoder_pair(cuda_encoder<data_type, dims>{}, cpu_encoder<data_type, dims>{1});
     }
 #endif
 }
@@ -100,7 +101,7 @@ TEMPLATE_TEST_CASE("decode(encode(input)) reproduces the input", "[encoder][de]"
 TEMPLATE_TEST_CASE("file headers from different encoders are identical", "[header]"
 #if NDZIP_OPENMP_SUPPORT
         ,
-        (mt_cpu_encoder<DATA_TYPE, DIMENSIONS>)
+        (cpu_encoder<DATA_TYPE, DIMENSIONS>)
 #endif
 #if NDZIP_HIPSYCL_SUPPORT
                 ,
@@ -125,7 +126,7 @@ TEMPLATE_TEST_CASE("file headers from different encoders are identical", "[heade
     const auto aligned_stream_size_bound
             = compressed_size_bound<typename TestType::data_type>(input.size()) / sizeof(index_type) + 1;
 
-    cpu_encoder<data_type, dims> reference_encoder;
+    cpu_encoder<data_type, dims> reference_encoder{1};
     std::vector<index_type> reference_stream(aligned_stream_size_bound);
     auto reference_stream_length = reference_encoder.compress(input, reference_stream.data());
     reference_stream.resize(file.num_hypercubes());
@@ -956,13 +957,13 @@ TEMPLATE_TEST_CASE("Single block compresses identically on all encoders", "[omp]
     const auto max_output_words = div_ceil(compressed_size_bound<data_type>(size), sizeof(data_type));
 
     std::vector<bits_type> cpu_output(max_output_words);
-    auto cpu_output_bytes = cpu_encoder<data_type, dimensions>{}.compress(input_slice, cpu_output.data());
+    auto cpu_output_bytes = cpu_encoder<data_type, dimensions>{1}.compress(input_slice, cpu_output.data());
     cpu_output.resize(cpu_output_bytes / sizeof(bits_type));
 
 #if NDZIP_OPENMP_SUPPORT
     SECTION("Multi-threaded vs single-threaded CPU", "[omp]") {
         std::vector<bits_type> mt_cpu_output(max_output_words);
-        auto mt_cpu_output_bytes = mt_cpu_encoder<data_type, dimensions>{}.compress(input_slice, mt_cpu_output.data());
+        auto mt_cpu_output_bytes = cpu_encoder<data_type, dimensions>{}.compress(input_slice, mt_cpu_output.data());
         mt_cpu_output.resize(mt_cpu_output_bytes / sizeof(bits_type));
         CHECK_FOR_VECTOR_EQUALITY(mt_cpu_output, cpu_output);
     }
@@ -998,12 +999,12 @@ TEMPLATE_TEST_CASE("Single block decompresses correctly on all encoders", "[deco
     const auto max_output_words = div_ceil(compressed_size_bound<data_type>(size), sizeof(data_type));
 
     std::vector<bits_type> compressed(max_output_words);
-    auto compressed_bytes = cpu_encoder<data_type, dimensions>{}.compress(input_slice, compressed.data());
+    auto compressed_bytes = cpu_encoder<data_type, dimensions>{1}.compress(input_slice, compressed.data());
     compressed.resize(compressed_bytes / sizeof(data_type));
 
     SECTION("On single-threaded CPU") {
         std::vector<data_type> cpu_output(num_elements(size));
-        cpu_encoder<data_type, dimensions>{}.decompress(
+        cpu_encoder<data_type, dimensions>{1}.decompress(
                 compressed.data(), compressed_bytes, slice{cpu_output.data(), size});
         CHECK_FOR_VECTOR_EQUALITY(cpu_output, input);
     }
@@ -1011,7 +1012,7 @@ TEMPLATE_TEST_CASE("Single block decompresses correctly on all encoders", "[deco
 #if NDZIP_OPENMP_SUPPORT
     SECTION("On multi-threaded CPU", "[omp]") {
         std::vector<data_type> mt_cpu_output(num_elements(size));
-        mt_cpu_encoder<data_type, dimensions>{}.decompress(
+        cpu_encoder<data_type, dimensions>{}.decompress(
                 compressed.data(), compressed_bytes, slice{mt_cpu_output.data(), size});
         CHECK_FOR_VECTOR_EQUALITY(mt_cpu_output, input);
     }

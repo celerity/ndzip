@@ -5,29 +5,74 @@
 #include <cuda_runtime.h>
 #include <memory>
 
-namespace ndzip::cuda {
+namespace ndzip {
 
-template<typename T, unsigned Dims>
-struct compressor_scratch_memory;
+template<int Dims>
+class cuda_compressor_requirements {
+  public:
+    cuda_compressor_requirements() = default;
 
-template<typename T, unsigned Dims>
-std::unique_ptr<compressor_scratch_memory<T, Dims>> allocate_compressor_scratch_memory(extent<Dims> data_size);
+    cuda_compressor_requirements(extent<Dims> single_data_size) {  // NOLINT(google-explicit-constructor)
+        include(single_data_size);
+    }
 
-template<typename T, unsigned Dims>
-void compress_async(slice<const T, Dims> in_device_data, void *out_device_stream, size_t *out_device_stream_length,
-        compressor_scratch_memory<T, Dims> &scratch, cudaStream_t stream = 0);
+    cuda_compressor_requirements(std::initializer_list<extent<Dims>> data_sizes) {
+        for (auto ds : data_sizes) {
+            include(ds);
+        }
+    }
 
-template<typename T, unsigned Dims>
-void decompress_async(const void *in_device_stream, slice<T, Dims> out_device_data, cudaStream_t stream = 0);
+    void include(extent<Dims> data_size);
 
-}  // namespace ndzip::cuda
+  private:
+    template<typename, int>
+    friend class cuda_compressor;
 
-
-namespace std {
-
-template<typename T, unsigned Dims>
-struct default_delete<ndzip::cuda::compressor_scratch_memory<T, Dims>> {
-    void operator()(ndzip::cuda::compressor_scratch_memory<T, Dims> *m) const;
+    index_type _max_num_hypercubes = 0;
 };
 
-}  // namespace std
+template<typename T, int Dims>
+class cuda_compressor {
+  public:
+    using value_type = T;
+    using compressed_type = detail::bits_type<T>;
+
+    explicit cuda_compressor(cuda_compressor_requirements<Dims> reqs) : cuda_compressor{nullptr, reqs} {}
+
+    explicit cuda_compressor(cudaStream_t stream, cuda_compressor_requirements<Dims> reqs);
+
+    cuda_compressor(cuda_compressor &&) noexcept = default;
+
+    ~cuda_compressor();
+
+    cuda_compressor &operator=(cuda_compressor &&) noexcept = default;
+
+    void compress(
+            slice<const T, Dims> in_device_data, compressed_type *out_device_stream, size_t *out_device_stream_length);
+
+  private:
+    template<typename, unsigned>
+    friend class cuda_encoder;
+
+    struct scratch_buffers;
+    cudaStream_t _stream = nullptr;
+    std::unique_ptr<scratch_buffers> _scratch;
+};
+
+template<typename T, int Dims>
+class cuda_decompressor {
+  public:
+    using value_type = T;
+    using compressed_type = detail::bits_type<T>;
+
+    cuda_decompressor() = default;
+
+    explicit cuda_decompressor(cudaStream_t stream);
+
+    void decompress(const compressed_type *in_device_stream, slice<T, Dims> out_device_data);
+
+  private:
+    cudaStream_t _stream = nullptr;
+};
+
+}  // namespace ndzip
