@@ -67,6 +67,12 @@ class known_size_group : public sycl::group<1> {
     sycl::range<1> get_local_range() const { return LocalSize; }
 };
 
+template<index_type LocalSize>
+void group_barrier(known_size_group<LocalSize> grp,
+        sycl::memory_scope fence_scope = known_size_group<LocalSize>::fence_scope) {
+    group_barrier(static_cast<sycl::group<1>&>(grp), fence_scope);
+}
+
 template<typename F>
 [[gnu::always_inline]] void distribute_for_invoke(F &&f, index_type item, index_type iteration) {
     if constexpr (std::is_invocable_v<F, index_type, index_type>) {

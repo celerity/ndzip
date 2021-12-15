@@ -264,7 +264,7 @@ void write_transposed_chunks(hypercube_item<Profile> item, hypercube_ptr<Profile
 
 #pragma unroll
             for (index_type w = 0; w < warps_per_col_chunk; ++w) {
-                auto column_bits = bit_cast<bits_type>(columns[w]);
+                auto column_bits = detail::bit_cast<bits_type>(columns[w]);
                 auto pos_in_out_col_chunk = compact_warp_offset[w]
                         + sycl::exclusive_scan_over_group(sg, index_type{column_bits != 0}, sycl::plus<index_type>{});
                 if (column_bits != 0) { out_col_chunk[pos_in_out_col_chunk] = column_bits; }
@@ -613,7 +613,7 @@ ndzip::sycl_compress_events ndzip::sycl_compressor<T, Dims>::compress(sycl::buff
                         const auto num_compressed_words = offsets_acc[num_compressed_words_offset];
                         const auto border_offset = num_header_words + num_compressed_words;
                         const auto i = static_cast<index_type>(item.get_linear_id());
-                        stream_acc[border_offset + i] = bit_cast<bits_type>(data[border_map[i]]);
+                        stream_acc[border_offset + i] = detail::bit_cast<bits_type>(data[border_map[i]]);
                     });
         });
         events.stream_available.push_back(compact_border_evt);
