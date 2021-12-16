@@ -174,7 +174,7 @@ TEMPLATE_TEST_CASE("encoder produces the expected bit stream", "[encoder]",
     constexpr auto dims = profile::dimensions;
 
     std::vector<float> data(ipow(n, dims));
-    slice<float, dims> array(data.data(), extent<dims>::broadcast(n));
+    slice<float, extent<dims>> array(data.data(), extent<dims>::broadcast(n));
 
     const auto border_start = n / profile::hypercube_side_length * profile::hypercube_side_length;
     for_each_in_hyperslab(array.size(), [=](auto index) {

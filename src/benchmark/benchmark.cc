@@ -333,14 +333,14 @@ struct ndzip_benchmark : public benchmark {
     using benchmark::benchmark;
 
     size_t time_compression(
-            Encoder<Data, Dims> &encoder, ndzip::slice<const Data, Dims> input_slice, void *compress_buffer) {
+            Encoder<Data, Dims> &encoder, ndzip::slice<const Data, ndzip::extent<Dims>> input_slice, void *compress_buffer) {
         size_t compressed_size;
         benchmark::time_compression([&] { compressed_size = encoder.compress(input_slice, compress_buffer); });
         return compressed_size;
     }
 
     void time_decompression(Encoder<Data, Dims> &encoder, const void *compress_buffer, size_t compressed_size,
-            ndzip::slice<Data, Dims> decompress_slice) {
+            ndzip::slice<Data, ndzip::extent<Dims>> decompress_slice) {
         benchmark::time_decompression([&] { encoder.decompress(compress_buffer, compressed_size, decompress_slice); });
     }
 };
@@ -350,7 +350,7 @@ struct kernel_benchmark : public benchmark {
     using benchmark::benchmark;
 
     size_t time_compression(
-            Encoder<Data, Dims> &encoder, ndzip::slice<const Data, Dims> input_slice, void *compress_buffer) {
+            Encoder<Data, Dims> &encoder, ndzip::slice<const Data, ndzip::extent<Dims>> input_slice, void *compress_buffer) {
         ndzip::kernel_duration duration;
         auto compressed_size = encoder.compress(input_slice, compress_buffer, &duration);
         record_compression(std::chrono::duration_cast<std::chrono::microseconds>(duration));
@@ -358,7 +358,7 @@ struct kernel_benchmark : public benchmark {
     }
 
     void time_decompression(Encoder<Data, Dims> &encoder, const void *compress_buffer, size_t compressed_size,
-            ndzip::slice<Data, Dims> decompress_slice) {
+            ndzip::slice<Data, ndzip::extent<Dims>> decompress_slice) {
         ndzip::kernel_duration duration;
         encoder.decompress(compress_buffer, compressed_size, decompress_slice, &duration);
         record_decompression(std::chrono::duration_cast<std::chrono::microseconds>(duration));

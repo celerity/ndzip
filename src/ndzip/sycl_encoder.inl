@@ -39,7 +39,7 @@ void for_hypercube_indices(
 
 template<typename Profile>
 void load_hypercube(sycl::group<1> grp, index_type hc_index,
-        slice<const typename Profile::data_type, Profile::dimensions> data,
+        slice<const typename Profile::data_type, extent<Profile::dimensions>> data,
         hypercube_ptr<Profile, forward_transform_tag> hc) {
     using bits_type = typename Profile::bits_type;
 
@@ -52,7 +52,7 @@ void load_hypercube(sycl::group<1> grp, index_type hc_index,
 
 template<typename Profile>
 void store_hypercube(sycl::group<1> grp, index_type hc_index,
-        slice<typename Profile::data_type, Profile::dimensions> data,
+        slice<typename Profile::data_type, extent<Profile::dimensions>> data,
         hypercube_ptr<Profile, inverse_transform_tag> hc) {
     using data_type = typename Profile::data_type;
     for_hypercube_indices<Profile>(grp, hc_index, data.size(), [&](index_type global_idx, index_type local_idx) {
@@ -550,7 +550,7 @@ ndzip::sycl_compress_events ndzip::sycl_compressor<T, Dims>::compress(sycl::buff
 
         sycl::local_accessor<compressor_local_allocation<profile>> lm{1, cgh};
         cgh.parallel_for<block_compression_kernel<T, dimensions>>(nd_range, [=](hypercube_item<profile> item) {
-            slice<const T, dimensions> data{data_acc.get_pointer(), data_size};
+            slice<const T, extent<dimensions>> data{data_acc.get_pointer(), data_size};
             hypercube_ptr<profile, forward_transform_tag> hc{lm[0].hc};
 
             auto hc_index = static_cast<index_type>(item.get_group_id(0));
@@ -609,7 +609,7 @@ ndzip::sycl_compress_events ndzip::sycl_compressor<T, Dims>::compress(sycl::buff
             auto stream_acc = out_stream.template get_access<sam::discard_write>(cgh);
             cgh.parallel_for<border_compaction_kernel<T, dimensions>>(  // TODO leverage ILP
                     sycl::range<1>{num_border_words}, [=](sycl::item<1> item) {
-                        slice<const T, dimensions> data{data_acc.get_pointer(), data_size};
+                        slice<const T, extent<dimensions>> data{data_acc.get_pointer(), data_size};
                         const auto num_compressed_words = offsets_acc[num_compressed_words_offset];
                         const auto border_offset = num_header_words + num_compressed_words;
                         const auto i = static_cast<index_type>(item.get_linear_id());
@@ -656,7 +656,7 @@ ndzip::sycl_decompress_events ndzip::sycl_decompressor<T, Dims>::decompress(
 
         sycl::local_accessor<decompressor_local_allocation<profile>> lm{1, cgh};
         cgh.parallel_for<block_decompression_kernel<T, dimensions>>(nd_range, [=](hypercube_item<profile> item) {
-            slice<T, Dims> data{data_acc.get_pointer(), data_size};
+            slice<T, extent<Dims>> data{data_acc.get_pointer(), data_size};
             hypercube_ptr<profile, inverse_transform_tag> hc{lm[0].hc};
 
             const auto hc_index = static_cast<index_type>(item.get_group_id(0));
@@ -681,7 +681,7 @@ ndzip::sycl_decompress_events ndzip::sycl_decompressor<T, Dims>::decompress(
                         detail::stream<const profile> stream{file.num_hypercubes(), stream_acc.get_pointer()};
                         const auto border_offset = static_cast<index_type>(stream.border() - stream.buffer);
 
-                        slice<T, Dims> data{data_acc.get_pointer(), data_size};
+                        slice<T, extent<Dims>> data{data_acc.get_pointer(), data_size};
                         auto i = static_cast<index_type>(item.get_linear_id());
                         data[border_map[i]] = bit_cast<T>(stream_acc[border_offset + i]);
                     });
@@ -728,7 +728,7 @@ ndzip::sycl_encoder<T, Dims>::~sycl_encoder() = default;
 
 template<typename T, unsigned Dims>
 size_t ndzip::sycl_encoder<T, Dims>::compress(
-        const slice<const data_type, dimensions> &data, void *raw_stream, kernel_duration *out_kernel_duration) const {
+        const slice<const data_type, extent<dimensions>> &data, void *raw_stream, kernel_duration *out_kernel_duration) const {
     using namespace detail;
     using namespace detail::gpu_sycl;
 
@@ -796,7 +796,7 @@ size_t ndzip::sycl_encoder<T, Dims>::compress(
 
 template<typename T, unsigned Dims>
 size_t ndzip::sycl_encoder<T, Dims>::decompress(const void *raw_stream, size_t bytes,
-        const slice<data_type, dimensions> &data, kernel_duration *out_kernel_duration) const {
+        const slice<data_type, extent<dimensions>> &data, kernel_duration *out_kernel_duration) const {
     using namespace detail;
     using namespace detail::gpu_sycl;
 

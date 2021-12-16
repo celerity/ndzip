@@ -1,6 +1,6 @@
 #pragma once
 
-#include "array.hh"
+#include "ndzip.hh"
 
 #include <cuda_runtime.h>
 #include <memory>
@@ -31,8 +31,21 @@ class cuda_compressor_requirements {
     index_type _max_num_hypercubes = 0;
 };
 
+template<typename T>
+class basic_cuda_compressor {
+  public:
+    using value_type = T;
+    using compressed_type = detail::bits_type<T>;
+
+    virtual ~basic_cuda_compressor() = default;
+
+    virtual void compress(slice<const T, dynamic_extent> in_device_data, compressed_type *out_device_stream,
+            size_t *out_device_stream_length)
+            = 0;
+};
+
 template<typename T, int Dims>
-class cuda_compressor {
+class cuda_compressor final : public basic_cuda_compressor<T> {
   public:
     using value_type = T;
     using compressed_type = detail::bits_type<T>;
@@ -47,8 +60,13 @@ class cuda_compressor {
 
     cuda_compressor &operator=(cuda_compressor &&) noexcept = default;
 
-    void compress(
-            slice<const T, Dims> in_device_data, compressed_type *out_device_stream, size_t *out_device_stream_length);
+    void compress(slice<const T, extent<Dims>> in_device_data, compressed_type *out_device_stream,
+            size_t *out_device_stream_length);
+
+    virtual void compress(slice<const T, dynamic_extent> in_device_data, compressed_type *out_device_stream,
+            size_t *out_device_stream_length) override {
+        compress(slice<const T, extent<Dims>>{in_device_data}, out_device_stream, out_device_stream_length);
+    }
 
   private:
     template<typename, unsigned>
@@ -59,17 +77,35 @@ class cuda_compressor {
     std::unique_ptr<scratch_buffers> _scratch;
 };
 
+template<typename T>
+class basic_cuda_decompressor {
+  public:
+    using value_type = T;
+    using compressed_type = detail::bits_type<T>;
+
+    virtual ~basic_cuda_decompressor() = default;
+
+    virtual void decompress(const compressed_type *in_device_stream, slice<T, dynamic_extent> out_device_data) = 0;
+
+  private:
+    cudaStream_t _stream = nullptr;
+};
+
 template<typename T, int Dims>
-class cuda_decompressor {
+class cuda_decompressor final: public basic_cuda_decompressor<T> {
   public:
     using value_type = T;
     using compressed_type = detail::bits_type<T>;
 
     cuda_decompressor() = default;
 
-    explicit cuda_decompressor(cudaStream_t stream);
+    explicit cuda_decompressor(cudaStream_t stream): _stream(stream) {}
 
-    void decompress(const compressed_type *in_device_stream, slice<T, Dims> out_device_data);
+    void decompress(const compressed_type *in_device_stream, slice<T, extent<Dims>> out_device_data);
+
+    void decompress(const compressed_type *in_device_stream, slice<T, dynamic_extent> out_device_data) override {
+        decompress(in_device_stream, slice<T, extent<Dims>>{out_device_data});
+    }
 
   private:
     cudaStream_t _stream = nullptr;

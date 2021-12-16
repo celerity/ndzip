@@ -40,7 +40,7 @@ void compress_stream(const std::string &in, const std::string &out, const ndzip:
         while (auto *chunk = in_stream->read_exact()) {
             auto input_buffer = static_cast<const data_type *>(chunk);
             auto compressed_chunk_length
-                    = encoder.compress(ndzip::slice<const data_type, Encoder::dimensions>(input_buffer, size),
+                    = encoder.compress(ndzip::slice<const data_type, extent<Encoder::dimensions>>(input_buffer, size),
                             out_stream->get_write_buffer());
             assert(compressed_chunk_length <= max_compressed_chunk_length);
             out_stream->commit_chunk(compressed_chunk_length);
@@ -77,7 +77,7 @@ void decompress_stream(const std::string &in, const std::string &out, const ndzi
 
         auto output_buffer = static_cast<data_type *>(out_stream->get_write_buffer());
         auto compressed_size = encoder.decompress(
-                chunk, bytes_in_chunk, ndzip::slice<data_type, Encoder::dimensions>(output_buffer, size));
+                chunk, bytes_in_chunk, ndzip::slice<data_type, extent<Encoder::dimensions>>(output_buffer, size));
         assert(compressed_size <= bytes_in_chunk);
         out_stream->commit_chunk(array_chunk_length);
         compressed_bytes_left = bytes_in_chunk - compressed_size;

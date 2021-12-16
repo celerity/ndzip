@@ -65,7 +65,7 @@ TEMPLATE_TEST_CASE("Loading", "[load]", ALL_PROFILES) {
                     make_nd_range(n_blocks, hypercube_group_size<TestType>), [=](hypercube_item<TestType> item) {
                         hypercube_ptr<TestType, gpu::forward_transform_tag> hc{lm[0]};
                         index_type hc_index = item.get_group_id(0);
-                        slice<const data_type, dimensions> data{data_acc.get_pointer(), grid_extent};
+                        slice<const data_type, extent<dimensions>> data{data_acc.get_pointer(), grid_extent};
                         load_hypercube(item.get_group(), hc_index, data, hc);
                         black_hole(hc.memory());
                     });

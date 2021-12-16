@@ -72,7 +72,7 @@ class simd_aligned_buffer {
 
 template<typename Profile>
 [[gnu::noinline]] void load_hypercube(const extent<Profile::dimensions> &hc_offset,
-        const slice<const typename Profile::data_type, Profile::dimensions> &data, typename Profile::bits_type *cube) {
+        const slice<const typename Profile::data_type, extent<Profile::dimensions>> &data, typename Profile::bits_type *cube) {
     using data_type = typename Profile::data_type;
     using bits_type = typename Profile::bits_type;
 
@@ -83,7 +83,7 @@ template<typename Profile>
 
 template<typename Profile>
 [[gnu::noinline]] void store_hypercube(const extent<Profile::dimensions> &hc_offset,
-        const typename Profile::bits_type *cube, const slice<typename Profile::data_type, Profile::dimensions> &data) {
+        const typename Profile::bits_type *cube, const slice<typename Profile::data_type, extent<Profile::dimensions>> &data) {
     using data_type = typename Profile::data_type;
     using bits_type = typename Profile::bits_type;
 
@@ -585,12 +585,12 @@ struct ndzip::compressor<T, Dims>::st_impl : public compressor<T, Dims>::impl {
 
     detail::cpu::simd_aligned_buffer<bits_type> cube{hc_size};
 
-    size_t compress(const slice<const data_type, dimensions> &data, bits_type *raw_stream);
+    size_t compress(const slice<const data_type, extent<dimensions>> &data, bits_type *raw_stream);
 };
 
 template<typename T, int Dims>
 size_t
-ndzip::compressor<T, Dims>::st_impl::compress(const slice<const data_type, dimensions> &data, bits_type *raw_stream) {
+ndzip::compressor<T, Dims>::st_impl::compress(const slice<const data_type, extent<dimensions>> &data, bits_type *raw_stream) {
     if (reinterpret_cast<uintptr_t>(raw_stream) % sizeof(bits_type) != 0) {
         throw std::invalid_argument("stream is not properly aligned");
     }
@@ -624,12 +624,12 @@ struct ndzip::decompressor<T, Dims>::st_impl : impl {
 
     detail::cpu::simd_aligned_buffer<bits_type> cube{hc_size};
 
-    size_t decompress(const bits_type *raw_stream, const slice<data_type, dimensions> &data) override;
+    size_t decompress(const bits_type *raw_stream, const slice<data_type, extent<dimensions>> &data) override;
 };
 
 template<typename T, int Dims>
 size_t ndzip::decompressor<T, Dims>::st_impl::decompress(
-        const bits_type *raw_stream, const slice<data_type, dimensions> &data) {
+        const bits_type *raw_stream, const slice<data_type, extent<dimensions>> &data) {
     detail::file<profile> file(data.size());
     detail::stream<const profile> stream{file.num_hypercubes(), raw_stream};
 
@@ -720,7 +720,7 @@ struct ndzip::compressor<T, Dims>::mt_impl : impl {
         }
     }
 
-    size_t compress(const slice<const data_type, Dims> &data, bits_type *stream) override;
+    size_t compress(const slice<const data_type, extent<Dims>> &data, bits_type *stream) override;
 };
 
 template<typename T, int Dims>
@@ -738,12 +738,12 @@ struct ndzip::decompressor<T, Dims>::mt_impl : impl {
     mt_impl(std::optional<size_t> opt_num_threads)
         : num_threads(opt_num_threads ? opt_num_threads.value() : boost::thread::physical_concurrency()) {}
 
-    size_t decompress(const compressed_type *stream, const slice<data_type, Dims> &data) override;
+    size_t decompress(const compressed_type *stream, const slice<data_type, extent<Dims>> &data) override;
 };
 
 
 template<typename T, int Dims>
-size_t ndzip::compressor<T, Dims>::mt_impl::compress(const slice<const data_type, Dims> &data, bits_type *raw_stream) {
+size_t ndzip::compressor<T, Dims>::mt_impl::compress(const slice<const data_type, extent<Dims>> &data, bits_type *raw_stream) {
     if (reinterpret_cast<uintptr_t>(raw_stream) % sizeof(bits_type) != 0) {
         throw std::invalid_argument("stream is not properly aligned");
     }
@@ -854,7 +854,7 @@ size_t ndzip::compressor<T, Dims>::mt_impl::compress(const slice<const data_type
 
 template<typename T, int Dims>
 size_t ndzip::decompressor<T, Dims>::mt_impl::decompress(
-        const compressed_type *raw_stream, const slice<data_type, Dims> &data) {
+        const compressed_type *raw_stream, const slice<data_type, extent<Dims>> &data) {
     constexpr static auto side_length = profile::hypercube_side_length;
 
     if (reinterpret_cast<uintptr_t>(raw_stream) % sizeof(bits_type) != 0) {

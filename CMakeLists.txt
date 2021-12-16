@@ -110,9 +110,8 @@ set(NDZIP_PROFILE_CONFIGURATIONS
 
 add_library(ndzip SHARED
     include/ndzip/ndzip.hh
-    include/ndzip/array.hh
     include/ndzip/cpu_encoder.hh
-        include/ndzip/cpu_encoder.hh
+    include/ndzip/cpu_encoder.hh
     include/ndzip/sycl_encoder.hh
     src/ndzip/common.hh
     src/ndzip/common.cc
@@ -137,6 +136,7 @@ endif ()
 
 if (NDZIP_USE_HIPSYCL)
     add_library(ndzip-sycl SHARED
+        include/ndzip/sycl.hh
         src/ndzip/sycl_bits.hh
         src/ndzip/sycl_encoder.inl
     )
@@ -152,6 +152,7 @@ endif ()
 
 if (NDZIP_USE_CUDA)
     add_library(ndzip-cuda SHARED
+        include/ndzip/cuda.hh
         src/ndzip/cuda_bits.cuh
         src/ndzip/cuda_encoder.inl
     )

@@ -8,7 +8,7 @@
 #include <limits>
 #include <optional>
 
-#include <ndzip/array.hh>
+#include <ndzip/ndzip.hh>
 
 
 #define NDZIP_BIG_ENDIAN 0
@@ -189,7 +189,7 @@ void for_each_border_slice(const extent<Dims> &size, unsigned side_length, const
 }
 
 template<typename DataType, unsigned Dims>
-[[gnu::noinline]] size_t pack_border(void *dest, const slice<DataType, Dims> &src, unsigned side_length) {
+[[gnu::noinline]] size_t pack_border(void *dest, const slice<DataType, extent<Dims>> &src, unsigned side_length) {
     static_assert(std::is_trivially_copyable_v<DataType>);
     size_t dest_offset = 0;
     for_each_border_slice(src.size(), side_length, [&](index_type src_offset, index_type count) {
@@ -200,7 +200,7 @@ template<typename DataType, unsigned Dims>
 }
 
 template<typename DataType, unsigned Dims>
-[[gnu::noinline]] size_t unpack_border(const slice<DataType, Dims> &dest, const void *src, unsigned side_length) {
+[[gnu::noinline]] size_t unpack_border(const slice<DataType, extent<Dims>> &dest, const void *src, unsigned side_length) {
     static_assert(std::is_trivially_copyable_v<DataType>);
     size_t src_offset = 0;
     for_each_border_slice(dest.size(), side_length, [&](index_type dest_offset, index_type count) {
@@ -420,7 +420,7 @@ inline void inverse_block_transform(T *x, unsigned dims, index_type n) {
 
 template<typename Profile, typename SliceDataType, typename CubeDataType, typename F>
 [[gnu::always_inline]] void for_each_hypercube_slice(const extent<Profile::dimensions> &hc_offset,
-        const slice<SliceDataType, Profile::dimensions> &data, CubeDataType *cube_ptr, F &&f) {
+        const slice<SliceDataType, extent<Profile::dimensions>> &data, CubeDataType *cube_ptr, F &&f) {
     constexpr auto side_length = Profile::hypercube_side_length;
 
     auto slice_ptr = &data[hc_offset];

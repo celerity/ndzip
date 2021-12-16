@@ -44,7 +44,7 @@ __device__ void for_hypercube_indices(
 
 template<typename Profile>
 __device__ void load_hypercube(hypercube_block<Profile> block, index_type hc_index,
-        slice<const typename Profile::data_type, Profile::dimensions> data,
+        slice<const typename Profile::data_type, extent<Profile::dimensions>> data,
         hypercube_ptr<Profile, forward_transform_tag> hc) {
     using bits_type = typename Profile::bits_type;
 
@@ -57,7 +57,7 @@ __device__ void load_hypercube(hypercube_block<Profile> block, index_type hc_ind
 
 template<typename Profile>
 __device__ void store_hypercube(hypercube_block<Profile> block, index_type hc_index,
-        slice<typename Profile::data_type, Profile::dimensions> data,
+        slice<typename Profile::data_type, extent<Profile::dimensions>> data,
         hypercube_ptr<Profile, inverse_transform_tag> hc) {
     using data_type = typename Profile::data_type;
     for_hypercube_indices<Profile>(block, hc_index, data.size(), [&](index_type global_idx, index_type local_idx) {
@@ -392,7 +392,7 @@ __device__ void compact_chunks(hypercube_block<Profile> block, const typename Pr
 
 
 template<typename Profile>
-__global__ void compress_block(slice<const typename Profile::data_type, Profile::dimensions> data,
+__global__ void compress_block(slice<const typename Profile::data_type, extent<Profile::dimensions>> data,
         typename Profile::bits_type *chunks, index_type *chunk_lengths) {
     using bits_type = typename Profile::bits_type;
 
@@ -450,7 +450,7 @@ constexpr static index_type border_threads_per_block = 256;
 
 
 template<typename Profile>
-__global__ void compact_border(slice<const typename Profile::data_type, Profile::dimensions> data,
+__global__ void compact_border(slice<const typename Profile::data_type, extent<Profile::dimensions>> data,
         const index_type *num_compressed_words, typename Profile::bits_type *stream_buf, index_type num_header_words,
         border_map<Profile> border_map) {
     using bits_type = typename Profile::bits_type;
@@ -462,8 +462,8 @@ __global__ void compact_border(slice<const typename Profile::data_type, Profile:
 
 
 template<typename Profile>
-__global__ void decompress_block(
-        const typename Profile::bits_type *stream_buf, slice<typename Profile::data_type, Profile::dimensions> data) {
+__global__ void decompress_block(const typename Profile::bits_type *stream_buf,
+        slice<typename Profile::data_type, extent<Profile::dimensions>> data) {
     auto block = hypercube_block<Profile>{};
     __shared__ hypercube_allocation<Profile, inverse_transform_tag> lm;
     hypercube_ptr<Profile, inverse_transform_tag> hc{lm};
@@ -481,7 +481,7 @@ __global__ void decompress_block(
 
 template<typename Profile>
 __global__ void expand_border(const typename Profile::bits_type *stream_buf,
-        slice<typename Profile::data_type, Profile::dimensions> data, border_map<Profile> border_map,
+        slice<typename Profile::data_type, extent<Profile::dimensions>> data, border_map<Profile> border_map,
         index_type num_hypercubes) {
     using data_type = typename Profile::data_type;
     if (auto i = static_cast<index_type>(blockIdx.x * border_threads_per_block + threadIdx.x); i < border_map.size()) {
@@ -547,8 +547,8 @@ template<typename T, int Dims>
 ndzip::cuda_compressor<T, Dims>::~cuda_compressor() = default;
 
 template<typename T, int Dims>
-void ndzip::cuda_compressor<T, Dims>::compress(
-        slice<const T, Dims> in_device_data, compressed_type *out_device_stream, size_t *out_device_stream_length) {
+void ndzip::cuda_compressor<T, Dims>::compress(slice<const T, extent<Dims>> in_device_data,
+        compressed_type *out_device_stream, size_t *out_device_stream_length) {
     using namespace detail;
     using namespace detail::gpu_cuda;
 
@@ -600,8 +600,8 @@ void ndzip::cuda_compressor<T, Dims>::compress(
 
 
 template<typename T, unsigned Dims>
-size_t ndzip::cuda_encoder<T, Dims>::compress(
-        const slice<const data_type, dimensions> &data, void *raw_stream, kernel_duration *out_kernel_duration) const {
+size_t ndzip::cuda_encoder<T, Dims>::compress(const slice<const data_type, extent<dimensions>> &data, void *raw_stream,
+        kernel_duration *out_kernel_duration) const {
     using namespace detail;
     using namespace detail::gpu_cuda;
 
@@ -628,7 +628,7 @@ size_t ndzip::cuda_encoder<T, Dims>::compress(
     if (record_events) { start.record(); }
 
     compressor.compress(
-            slice<const T, Dims>{data_buffer.get(), data.size()}, stream_buf.get(), stream_length_buf.get());
+            slice<const T, extent<Dims>>{data_buffer.get(), data.size()}, stream_buf.get(), stream_length_buf.get());
 
     if (record_events) {
         stop.record();
@@ -648,7 +648,8 @@ size_t ndzip::cuda_encoder<T, Dims>::compress(
 
 
 template<typename T, int Dims>
-void ndzip::cuda_decompressor<T, Dims>::decompress(const compressed_type *in_device_stream, slice<T, Dims> out_device_data) {
+void ndzip::cuda_decompressor<T, Dims>::decompress(
+        const compressed_type *in_device_stream, slice<T, extent<Dims>> out_device_data) {
     using namespace detail;
     using namespace detail::gpu_cuda;
 
@@ -674,7 +675,7 @@ void ndzip::cuda_decompressor<T, Dims>::decompress(const compressed_type *in_dev
 
 template<typename T, unsigned Dims>
 size_t ndzip::cuda_encoder<T, Dims>::decompress(const void *raw_stream, size_t bytes,
-        const slice<data_type, dimensions> &data, kernel_duration *out_kernel_duration) const {
+        const slice<data_type, extent<dimensions>> &data, kernel_duration *out_kernel_duration) const {
     using namespace detail;
     using namespace detail::gpu_cuda;
 

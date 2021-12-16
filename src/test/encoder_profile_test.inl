@@ -49,12 +49,12 @@ TEMPLATE_TEST_CASE("decode(encode(input)) reproduces the input", "[encoder][de]"
     std::fill(input_data.begin(), input_data.begin() + bits_of<data_type>, data_type{});
 
     auto test_encoder_decoder_pair = [&](auto &&encoder, auto &&decoder) {
-        slice<const data_type, dims> input(input_data.data(), extent<dims>::broadcast(n));
+        slice<const data_type, extent<dims>> input(input_data.data(), extent<dims>::broadcast(n));
         std::vector<std::byte> stream(ndzip::compressed_size_bound<typename TestType::data_type>(input.size()));
         stream.resize(encoder.compress(input, stream.data()));
 
         std::vector<data_type> output_data(input_data.size());
-        slice<data_type, dims> output(output_data.data(), extent<dims>::broadcast(n));
+        slice<data_type, extent<dims>> output(output_data.data(), extent<dims>::broadcast(n));
         auto stream_bytes_read = decoder.decompress(stream.data(), stream.size(), output);
 
         CHECK(stream_bytes_read == stream.size());
@@ -120,7 +120,7 @@ TEMPLATE_TEST_CASE("file headers from different encoders are identical", "[heade
     const index_type n = side_length * 4 - 1;
 
     auto input_data = make_random_vector<data_type>(ipow(n, dims));
-    slice<const data_type, dims> input(input_data.data(), extent<dims>::broadcast(n));
+    slice<const data_type, extent<dims>> input(input_data.data(), extent<dims>::broadcast(n));
 
     const auto file = detail::file<profile>(input.size());
     const auto aligned_stream_size_bound
@@ -149,7 +149,7 @@ using sycl::accessor, sycl::nd_range, sycl::buffer, sycl::nd_item, sycl::range, 
 
 template<typename Profile>
 static std::vector<typename Profile::bits_type> sycl_load_and_dump_hypercube(
-        const slice<const typename Profile::data_type, Profile::dimensions> &in, index_type hc_index, sycl::queue &q) {
+        const slice<const typename Profile::data_type, extent<Profile::dimensions>> &in, index_type hc_index, sycl::queue &q) {
     using data_type = typename Profile::data_type;
     using bits_type = typename Profile::bits_type;
 
@@ -167,7 +167,7 @@ static std::vector<typename Profile::bits_type> sycl_load_and_dump_hypercube(
         sycl::local_accessor<gpu_sycl::hypercube_allocation<Profile, gpu::forward_transform_tag>> lm{1, cgh};
         cgh.parallel_for(gpu_sycl::make_nd_range(1, gpu::hypercube_group_size<Profile>),
                 [=](gpu_sycl::hypercube_item<Profile> item) {
-                    slice<const data_type, Profile::dimensions> data_in{data_acc.get_pointer(), data_size};
+                    slice<const data_type, extent<Profile::dimensions>> data_in{data_acc.get_pointer(), data_size};
                     gpu_sycl::hypercube_ptr<Profile, gpu::forward_transform_tag> hc{lm[0]};
                     gpu_sycl::load_hypercube(item.get_group(), hc_index, data_in, hc);
                     // TODO rotate should probaly happen during CPU load_hypercube as well to hide
@@ -205,7 +205,7 @@ TEMPLATE_TEST_CASE(
         using profile = mock_profile<TestType, 1>;
         std::vector<TestType> data{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12};
         auto result = load_and_dump_hypercube<profile>(
-                slice<TestType, 1>{data.data(), data.size()}, 1 /* hc_index */, q);
+                slice<TestType, extent<1>>{data.data(), data.size()}, 1 /* hc_index */, q);
         CHECK(result == std::vector<TestType>{3, 4, 0, 0});
     }
 
@@ -224,7 +224,7 @@ TEMPLATE_TEST_CASE(
         };
         // clang-format on
         auto result = load_and_dump_hypercube<profile>(
-                slice<TestType, 2>{data.data(), extent{8, 9}}, 6 /* hc_index */, q);
+                slice<TestType, extent<2>>{data.data(), extent{8, 9}}, 6 /* hc_index */, q);
         CHECK(result == std::vector<TestType>{52, 62, 53, 63, 0, 0, 0, 0});
     }
 
@@ -263,7 +263,7 @@ TEMPLATE_TEST_CASE(
             155, 255, 355, 455, 555,
         };
         auto result = load_and_dump_hypercube<profile>(
-                slice<TestType, 3>{data.data(), extent{5, 5, 5}}, 3 /* hc_index */, q);
+                slice<TestType, extent<3>>{data.data(), extent{5, 5, 5}}, 3 /* hc_index */, q);
         CHECK(result == std::vector<TestType>{331, 431, 341, 441, 332, 432, 342, 442,
                       0, 0, 0, 0, 0, 0, 0, 0});
         // clang-format on
@@ -282,7 +282,7 @@ TEMPLATE_TEST_CASE("SYCL store_hypercube is the inverse of load_hypercube", "[sy
     const index_type n = side_length * 3;
 
     auto input_data = make_random_vector<data_type>(ipow(n, dims));
-    slice<const data_type, dims> input(input_data.data(), extent<dims>::broadcast(n));
+    slice<const data_type, extent<dims>> input(input_data.data(), extent<dims>::broadcast(n));
 
     buffer<data_type> input_buf{input.data(), range<1>{num_elements(input.size())}};
     // buffer needed for hypercube_ptr forward_transform_tag => inverse_transform_tag translation
@@ -300,7 +300,7 @@ TEMPLATE_TEST_CASE("SYCL store_hypercube is the inverse of load_hypercube", "[sy
         cgh.parallel_for(gpu_sycl::make_nd_range(file.num_hypercubes(), gpu::hypercube_group_size<TestType>),
                 [=](gpu_sycl::hypercube_item<TestType> item) {
                     auto hc_index = item.get_group_id(0);
-                    slice<const data_type, TestType::dimensions> input{input_acc.get_pointer(), data_size};
+                    slice<const data_type, extent<TestType::dimensions>> input{input_acc.get_pointer(), data_size};
                     gpu::hypercube_ptr<TestType, gpu::forward_transform_tag> hc{lm[0]};
                     gpu_sycl::load_hypercube(item.get_group(), hc_index, input, hc);
                     distribute_for(hc_size, item.get_group(),
@@ -315,7 +315,7 @@ TEMPLATE_TEST_CASE("SYCL store_hypercube is the inverse of load_hypercube", "[sy
         cgh.parallel_for(gpu_sycl::make_nd_range(file.num_hypercubes(), gpu::hypercube_group_size<TestType>),
                 [=](gpu_sycl::hypercube_item<TestType> item) {
                     auto hc_index = item.get_group_id(0);
-                    slice<data_type, TestType::dimensions> output{output_acc.get_pointer(), data_size};
+                    slice<data_type, extent<TestType::dimensions>> output{output_acc.get_pointer(), data_size};
                     gpu::hypercube_ptr<TestType, gpu::inverse_transform_tag> hc{lm[0]};
                     distribute_for(hc_size, item.get_group(),
                             [&](index_type i) { hc.store(i, temp_acc[hc_index * hc_size + i]); });
@@ -355,7 +355,7 @@ static void cuda_fill(T *dest, T value, index_type count) {
 }
 
 template<typename Profile>
-static __global__ void cuda_load_and_dump_kernel(slice<const typename Profile::data_type, Profile::dimensions> data,
+static __global__ void cuda_load_and_dump_kernel(slice<const typename Profile::data_type, extent<Profile::dimensions>> data,
         index_type hc_index, typename Profile::data_type *result) {
     using data_type = typename Profile::data_type;
     constexpr auto hc_size = ipow(Profile::hypercube_side_length, Profile::dimensions);
@@ -374,7 +374,7 @@ static __global__ void cuda_load_and_dump_kernel(slice<const typename Profile::d
 
 template<typename Profile>
 static std::vector<typename Profile::bits_type> cuda_load_and_dump_hypercube(
-        const slice<const typename Profile::data_type, Profile::dimensions> &in, index_type hc_index) {
+        const slice<const typename Profile::data_type, extent<Profile::dimensions>> &in, index_type hc_index) {
     using data_type = typename Profile::data_type;
     using bits_type = typename Profile::bits_type;
 
@@ -395,7 +395,7 @@ static std::vector<typename Profile::bits_type> cuda_load_and_dump_hypercube(
 
 template<typename Profile>
 static __global__ void cuda_load_hypercube_kernel(
-        slice<const typename Profile::data_type, Profile::dimensions> input, typename Profile::bits_type *temp) {
+        slice<const typename Profile::data_type, extent<Profile::dimensions>> input, typename Profile::bits_type *temp) {
     constexpr index_type hc_size = ipow(Profile::hypercube_side_length, Profile::dimensions);
     auto hc_index = static_cast<index_type>(blockIdx.x);
 
@@ -410,7 +410,7 @@ static __global__ void cuda_load_hypercube_kernel(
 
 template<typename Profile>
 static __global__ void cuda_store_hypercube_kernel(
-        const typename Profile::bits_type *temp, slice<typename Profile::data_type, Profile::dimensions> output) {
+        const typename Profile::bits_type *temp, slice<typename Profile::data_type, extent<Profile::dimensions>> output) {
     constexpr index_type hc_size = ipow(Profile::hypercube_side_length, Profile::dimensions);
     auto hc_index = static_cast<index_type>(blockIdx.x);
 
@@ -432,7 +432,7 @@ TEMPLATE_TEST_CASE("CUDA store_hypercube is the inverse of load_hypercube", "[cu
     const index_type n = side_length * 3;
 
     auto input_data = make_random_vector<data_type>(ipow(n, dims));
-    slice<const data_type, dims> input(input_data.data(), extent<dims>::broadcast(n));
+    slice<const data_type, extent<dims>> input(input_data.data(), extent<dims>::broadcast(n));
 
     gpu_cuda::cuda_buffer<data_type> input_buf(num_elements(input.size()));
     // buffer needed for hypercube_ptr forward_transform_tag => inverse_transform_tag translation
@@ -523,7 +523,7 @@ TEMPLATE_TEST_CASE("Flattening of hypercubes is identical between encoders", "[l
     const index_type n = side_length * 4 - 1;
 
     auto input_data = make_random_vector<data_type>(ipow(n, dims));
-    slice<const data_type, dims> input(input_data.data(), extent<dims>::broadcast(n));
+    slice<const data_type, extent<dims>> input(input_data.data(), extent<dims>::broadcast(n));
 
     extent<dims> hc_offset;
     hc_offset[dims - 1] = side_length;

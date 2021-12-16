@@ -1,6 +1,6 @@
 #pragma once
 
-#include "array.hh"
+#include "ndzip.hh"
 
 #include <memory>
 
@@ -52,8 +52,20 @@ class sycl_compressor_requirements {
     index_type _max_num_hypercubes = 0;
 };
 
+template<typename T>
+class basic_sycl_compressor {
+  public:
+    using value_type = T;
+    using compressed_type = detail::bits_type<T>;
+
+    virtual ~basic_sycl_compressor() = default;
+
+    // TODO can we have a generic base class for the interface even though buffers are explicitly dimensioned?
+    // TODO USM variant
+};
+
 template<typename T, int Dims>
-class sycl_compressor {
+class sycl_compressor: public basic_sycl_compressor<T> {
   public:
     using value_type = T;
     using compressed_type = detail::bits_type<T>;
@@ -77,8 +89,20 @@ class sycl_compressor {
     explicit sycl_compressor(sycl::queue &q, std::pair<index_type, index_type> chunks_and_length_buf_sizes);
 };
 
+template<typename T>
+class basic_sycl_decompressor {
+  public:
+    using value_type = T;
+    using compressed_type = detail::bits_type<T>;
+
+    virtual ~basic_sycl_decompressor() = default;
+
+    // TODO can we have a generic base class for the interface even though buffers are explicitly dimensioned?
+    // TODO USM variant
+};
+
 template<typename T, int Dims>
-class sycl_decompressor {
+class sycl_decompressor: public basic_sycl_decompressor<T> {
   public:
     using value_type = T;
     using compressed_type = detail::bits_type<T>;
@@ -89,6 +113,7 @@ class sycl_decompressor {
             sycl::buffer<compressed_type> &in_stream, sycl::buffer<value_type, Dims> &out_data);
 
     // TODO USM variant
+
   private:
     sycl::queue *_q;
 };

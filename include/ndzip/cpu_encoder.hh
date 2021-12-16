@@ -15,11 +15,11 @@ class cpu_encoder {
 
     explicit cpu_encoder(size_t num_threads): _co{num_threads}, _de{num_threads} {}
 
-    size_t compress(const slice<const data_type, dimensions> &data, void *stream) {
+    size_t compress(const slice<const data_type, extent<dimensions>> &data, void *stream) {
         return _co.compress(data, static_cast<detail::bits_type<T>*>(stream));
     }
 
-    size_t decompress(const void *stream, size_t bytes, const slice<data_type, dimensions> &data) {
+    size_t decompress(const void *stream, size_t bytes, const slice<data_type, extent<dimensions>> &data) {
         return _de.decompress(static_cast<const detail::bits_type<T>*>(stream), data);
     }
 
