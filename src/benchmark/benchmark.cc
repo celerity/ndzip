@@ -310,7 +310,7 @@ struct ndzip_encoder_factory {
     Encoder create(const benchmark_params &) const { return Encoder{}; }
 };
 
-template<typename Data, unsigned Dims>
+template<typename Data, ndzip::dim_type Dims>
 struct ndzip_encoder_factory<ndzip::cpu_encoder<Data, Dims>> {
     ndzip::cpu_encoder<Data, Dims> create(const benchmark_params &params) const {
         return ndzip::cpu_encoder<Data, Dims>{params.num_threads};
@@ -319,7 +319,7 @@ struct ndzip_encoder_factory<ndzip::cpu_encoder<Data, Dims>> {
 
 #if NDZIP_HIPSYCL_SUPPORT
 
-template<typename Data, unsigned Dims>
+template<typename Data, ndzip::dim_type Dims>
 struct ndzip_encoder_factory<ndzip::sycl_encoder<Data, Dims>> {
     ndzip::sycl_encoder<Data, Dims> create(const benchmark_params &) const {
         return ndzip::sycl_encoder<Data, Dims>{true /* report_kernel_duration */};
@@ -328,7 +328,7 @@ struct ndzip_encoder_factory<ndzip::sycl_encoder<Data, Dims>> {
 
 #endif
 
-template<template<typename, unsigned> typename Encoder, typename Data, unsigned Dims>
+template<template<typename, ndzip::dim_type> typename Encoder, typename Data, ndzip::dim_type Dims>
 struct ndzip_benchmark : public benchmark {
     using benchmark::benchmark;
 
@@ -345,7 +345,7 @@ struct ndzip_benchmark : public benchmark {
     }
 };
 
-template<template<typename, unsigned> typename Encoder, typename Data, unsigned Dims>
+template<template<typename, ndzip::dim_type> typename Encoder, typename Data, ndzip::dim_type Dims>
 struct kernel_benchmark : public benchmark {
     using benchmark::benchmark;
 
@@ -368,7 +368,7 @@ struct kernel_benchmark : public benchmark {
 
 #if NDZIP_HIPSYCL_SUPPORT
 
-template<typename Data, unsigned Dims>
+template<typename Data, ndzip::dim_type Dims>
 struct ndzip_benchmark<ndzip::sycl_encoder, Data, Dims> : public kernel_benchmark<ndzip::sycl_encoder, Data, Dims> {
     using kernel_benchmark<ndzip::sycl_encoder, Data, Dims>::kernel_benchmark;
 };
@@ -377,7 +377,7 @@ struct ndzip_benchmark<ndzip::sycl_encoder, Data, Dims> : public kernel_benchmar
 
 #if NDZIP_CUDA_SUPPORT
 
-template<typename Data, unsigned Dims>
+template<typename Data, ndzip::dim_type Dims>
 struct ndzip_benchmark<ndzip::cuda_encoder, Data, Dims> : public kernel_benchmark<ndzip::cuda_encoder, Data, Dims> {
     using kernel_benchmark<ndzip::cuda_encoder, Data, Dims>::kernel_benchmark;
 };
@@ -385,7 +385,7 @@ struct ndzip_benchmark<ndzip::cuda_encoder, Data, Dims> : public kernel_benchmar
 #endif
 
 
-template<template<typename, unsigned> typename Encoder, typename Data, unsigned Dims>
+template<template<typename, ndzip::dim_type> typename Encoder, typename Data, ndzip::dim_type Dims>
 static benchmark_result
 benchmark_ndzip_3(const Data *input_buffer, const ndzip::extent<Dims> &size, const benchmark_params &params) {
     const auto uncompressed_size = ndzip::num_elements(size) * sizeof(Data);
@@ -410,7 +410,7 @@ benchmark_ndzip_3(const Data *input_buffer, const ndzip::extent<Dims> &size, con
 }
 
 
-template<template<typename, unsigned> typename Encoder, typename Data>
+template<template<typename, ndzip::dim_type> typename Encoder, typename Data>
 static benchmark_result
 benchmark_ndzip_2(const Data *input_buffer, const metadata &meta, const benchmark_params &params) {
     auto &e = meta.extent;
@@ -426,7 +426,7 @@ benchmark_ndzip_2(const Data *input_buffer, const metadata &meta, const benchmar
 }
 
 
-template<template<typename, unsigned> typename Encoder>
+template<template<typename, ndzip::dim_type> typename Encoder>
 static benchmark_result
 benchmark_ndzip(const void *input_buffer, const metadata &meta, const benchmark_params &params) {
     if (meta.data_type == data_type::t_float) {

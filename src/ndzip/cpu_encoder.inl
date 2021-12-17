@@ -125,7 +125,7 @@ template<typename Bits>
     }
 }
 
-template<unsigned SideLength, typename Bits>
+template<index_type SideLength, typename Bits>
 [[gnu::always_inline]] void block_transform_horizontal_avx2(Bits *line) {
     constexpr auto n_256bit_lanes = sizeof(Bits) * SideLength / simd_width_bytes;
     constexpr auto words_per_256bit_lane = simd_width_bytes / sizeof(Bits);
@@ -139,7 +139,7 @@ template<unsigned SideLength, typename Bits>
         top_n = _mm256_setr_epi64x(0, line[0], line[1], line[2]);
     }
 
-    for (unsigned j = 0; j < n_256bit_lanes - 1; ++j) {
+    for (index_type j = 0; j < n_256bit_lanes - 1; ++j) {
         auto top = top_n;
         top_n = load_unaligned_256(line + (j + 1) * words_per_256bit_lane - 1);
         auto bottom = load_aligned_256(line + j * words_per_256bit_lane);
@@ -149,7 +149,7 @@ template<unsigned SideLength, typename Bits>
     store_aligned_256(line + (n_256bit_lanes - 1) * words_per_256bit_lane, subtract_packed<Bits>(bottom, top_n));
 }
 
-template<unsigned SideLength, typename Bits>
+template<index_type SideLength, typename Bits>
 [[gnu::always_inline]] inline void block_transform_vertical_avx2(Bits *x) {
     // TODO investigate whether SW pipelining leads to spilling / reloading for 2D double (2*64/4 =
     // 32 YMM registers)
@@ -169,7 +169,7 @@ template<unsigned SideLength, typename Bits>
     }
 }
 
-template<unsigned SideLength, typename Bits>
+template<index_type SideLength, typename Bits>
 [[gnu::always_inline]] inline void block_transform_planes_avx2(Bits *x) {
     constexpr auto n_256bit_lanes = sizeof(Bits) * SideLength / simd_width_bytes;
     constexpr auto n = SideLength;
@@ -222,14 +222,14 @@ void block_transform_avx2(typename Profile::bits_type *x) {
     }
 }
 
-template<unsigned SideLength, typename Bits>
+template<index_type SideLength, typename Bits>
 [[gnu::always_inline]] inline void inverse_block_transform_horizontal_sequential(Bits *x) {
     for (size_t i = 1; i < SideLength; ++i) {
         x[i] += x[i - 1];
     }
 }
 
-template<unsigned SideLength, typename Bits>
+template<index_type SideLength, typename Bits>
 [[gnu::always_inline]] inline void inverse_block_transform_horizontal_interleaved(Bits *x) {
     constexpr auto interleave = 4;
     Bits vec[interleave];
@@ -248,7 +248,7 @@ template<unsigned SideLength, typename Bits>
     }
 }
 
-template<unsigned SideLength, typename Bits>
+template<index_type SideLength, typename Bits>
 [[gnu::always_inline]] inline void inverse_block_transform_vertical_avx2(Bits *x) {
     constexpr auto n_256bit_lanes = sizeof(Bits) * SideLength / simd_width_bytes;
     constexpr auto words_per_256bit_lane = simd_width_bytes / sizeof(Bits);
@@ -265,7 +265,7 @@ template<unsigned SideLength, typename Bits>
     }
 }
 
-template<unsigned SideLength, typename Bits>
+template<index_type SideLength, typename Bits>
 [[gnu::always_inline]] inline void inverse_block_transform_planes_avx2(Bits *x) {
     constexpr auto n_256bit_lanes = sizeof(Bits) * SideLength / simd_width_bytes;
     constexpr auto words_per_256bit_lane = simd_width_bytes / sizeof(Bits);
@@ -340,7 +340,7 @@ template<typename T>
 T generate_zero_map(const T *u) {
     u = assume_simd_aligned(u);
     T zero_map = 0;
-    for (unsigned j = 0; j < bits_of<T>; ++j) {
+    for (index_type j = 0; j < bits_of<T>; ++j) {
         zero_map |= u[j];
     }
     return zero_map;
@@ -349,9 +349,9 @@ T generate_zero_map(const T *u) {
 
 template<typename T>
 [[gnu::always_inline]] void transpose_bits_trivial(const T *__restrict vs, T *__restrict out) {
-    for (unsigned i = 0; i < bits_of<T>; ++i) {
+    for (index_type i = 0; i < bits_of<T>; ++i) {
         out[i] = 0;
-        for (unsigned j = 0; j < bits_of<T>; ++j) {
+        for (index_type j = 0; j < bits_of<T>; ++j) {
             out[i] |= ((vs[j] >> (bits_of<T> - 1 - i)) & 1u) << (bits_of<T> - 1 - j);
         }
     }
@@ -379,7 +379,7 @@ template<typename T>
         // clang-format on
         __m256i idx;
         __builtin_memcpy(&idx, idx8, sizeof idx);
-        for (unsigned i = 0; i < 4; ++i) {
+        for (index_type i = 0; i < 4; ++i) {
             shuf[i] = _mm256_shuffle_epi8(unpck0[i], idx);
         }
     }
@@ -391,13 +391,13 @@ template<typename T>
         uint32_t idx32[] = {7, 3, 6, 2, 5, 1, 4, 0};
         __m256i idx;
         __builtin_memcpy(&idx, idx32, sizeof idx);
-        for (unsigned i = 0; i < 4; ++i) {
+        for (index_type i = 0; i < 4; ++i) {
             perm[i] = _mm256_permutevar8x32_epi32(shuf[i], idx);
         }
     }
 
     __m256i unpck1[4];
-    for (unsigned i = 0; i < 4; i += 2) {
+    for (index_type i = 0; i < 4; i += 2) {
         // interleave quadwords of neighboring 256-bit vectors
         // each double-quadword will contain elements with stride 4
         unpck1[i + 1] = _mm256_unpackhi_epi64(perm[i + 1], perm[i + 0]);
@@ -415,8 +415,8 @@ template<typename T>
 
     // 2. Transpose by extracting the 32 MSBs of each byte of each 256-byte vector
 
-    for (unsigned i = 0; i < 4; ++i) {
-        for (unsigned j = 0; j < 8; ++j) {
+    for (index_type i = 0; i < 4; ++i) {
+        for (index_type j = 0; j < 8; ++j) {
             out[i * 8 + j] = _mm256_movemask_epi8(perm2[i]);
             perm2[i] = _mm256_slli_epi32(perm2[i], 1);
         }
@@ -432,37 +432,37 @@ template<typename T>
     // a subset of the 16 vectors?
 
     __m256i unpck0[16];
-    for (unsigned i = 0; i < 16; i += 2) {
+    for (index_type i = 0; i < 16; i += 2) {
         unpck0[i + 1] = _mm256_unpackhi_epi8(in[i + 0], in[i + 1]);
         unpck0[i + 0] = _mm256_unpacklo_epi8(in[i + 0], in[i + 1]);
     }
 
     __m256i unpck1[16];
-    for (unsigned i = 0; i < 16; i += 4) {
-        for (unsigned j = 0; j < 2; ++j) {
+    for (index_type i = 0; i < 16; i += 4) {
+        for (index_type j = 0; j < 2; ++j) {
             unpck1[i + 2 * j + 1] = _mm256_unpackhi_epi16(unpck0[i + j], unpck0[i + 2 + j]);
             unpck1[i + 2 * j + 0] = _mm256_unpacklo_epi16(unpck0[i + j], unpck0[i + 2 + j]);
         }
     }
 
     __m256i unpck2[16];
-    for (unsigned i = 0; i < 16; i += 8) {
-        for (unsigned j = 0; j < 4; ++j) {
+    for (index_type i = 0; i < 16; i += 8) {
+        for (index_type j = 0; j < 4; ++j) {
             unpck2[i + 2 * j + 1] = _mm256_unpackhi_epi32(unpck1[i + j], unpck1[i + 4 + j]);
             unpck2[i + 2 * j + 0] = _mm256_unpacklo_epi32(unpck1[i + j], unpck1[i + 4 + j]);
         }
     }
 
     __m256i unpck3[16];
-    for (unsigned i = 0; i < 16; i += 8) {
-        for (unsigned j = 0; j < 4; ++j) {
+    for (index_type i = 0; i < 16; i += 8) {
+        for (index_type j = 0; j < 4; ++j) {
             unpck3[i + 2 * j + 1] = _mm256_unpackhi_epi8(unpck2[i + j], unpck2[i + 4 + j]);
             unpck3[i + 2 * j + 0] = _mm256_unpacklo_epi8(unpck2[i + j], unpck2[i + 4 + j]);
         }
     }
 
     __m256i perm0[16];
-    for (unsigned i = 0; i < 16; ++i) {
+    for (index_type i = 0; i < 16; ++i) {
         perm0[15 - i] = _mm256_permute4x64_epi64(unpck3[i], 0b00'10'01'11);
     }
 
@@ -476,15 +476,15 @@ template<typename T>
         // clang-format on
         __m256i idx;
         __builtin_memcpy(&idx, idx8, sizeof idx);
-        for (unsigned i = 0; i < 8; ++i) {
+        for (index_type i = 0; i < 8; ++i) {
             shuf0[2 * i] = _mm256_shuffle_epi8(perm0[i], idx);
             shuf0[2 * i + 1] = _mm256_shuffle_epi8(perm0[i + 8], idx);
         }
     }
 
     auto dwords = reinterpret_cast<uint32_t *>(out);
-    for (unsigned i = 0; i < 8; ++i) {
-        for (unsigned j = 0; j < 8; ++j) {
+    for (index_type i = 0; i < 8; ++i) {
+        for (index_type j = 0; j < 8; ++j) {
             auto half1 = static_cast<uint32_t>(_mm256_movemask_epi8(shuf0[2 * i]));
             auto half2 = static_cast<uint32_t>(_mm256_movemask_epi8(shuf0[2 * i + 1]));
             __builtin_memcpy(dwords + 2 * (i * 8 + j), &half1, 4);
@@ -509,7 +509,7 @@ template<typename T>
 template<typename T>
 [[gnu::always_inline]] size_t compact_zero_words(const T *shifted, std::byte *out0) {
     auto out = out0;
-    for (unsigned i = 0; i < bits_of<T>; ++i) {
+    for (index_type i = 0; i < bits_of<T>; ++i) {
         if (shifted[i] != 0) {
             store_aligned(out, shifted[i]);
             out += sizeof(T);
@@ -521,7 +521,7 @@ template<typename T>
 template<typename T>
 [[gnu::always_inline]] size_t expand_zero_words(const std::byte *in0, T *shifted, T head) {
     auto in = in0;
-    for (unsigned i = 0; i < bits_of<T>; ++i) {
+    for (index_type i = 0; i < bits_of<T>; ++i) {
         if ((head >> (bits_of<T> - 1 - i)) & T{1}) {
             shifted[i] = load_aligned<T>(in);
             in += sizeof(T);
@@ -656,8 +656,8 @@ struct cube_buffer {
 
     constexpr static auto side_length = profile::hypercube_side_length;
     constexpr static auto hc_size = detail::ipow(side_length, profile::dimensions);
-    constexpr static unsigned num_hcs_per_chunk = 64 / sizeof(data_type);
-    constexpr static unsigned num_write_buffers = 30;
+    // constexpr static index_type num_hcs_per_chunk = 64 / sizeof(data_type);
+    // constexpr static index_type num_write_buffers = 30;
 
     alignas(detail::cpu::simd_width_bytes) std::array<bits_type, hc_size> cube;
 
@@ -676,8 +676,8 @@ struct ndzip::compressor<T, Dims>::mt_impl : impl {
 
     constexpr static auto side_length = profile::hypercube_side_length;
     constexpr static auto hc_size = detail::ipow(side_length, profile::dimensions);
-    constexpr static unsigned num_hcs_per_chunk = 64 / sizeof(data_type);
-    constexpr static unsigned num_write_buffers = 30;
+    constexpr static index_type num_hcs_per_chunk = 64 / sizeof(data_type);
+    constexpr static index_type num_write_buffers = 30;
 
     struct write_buffer {
         size_t first_hc_index = SIZE_MAX;

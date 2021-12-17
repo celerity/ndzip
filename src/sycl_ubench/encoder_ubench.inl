@@ -35,14 +35,14 @@ TEMPLATE_TEST_CASE("Loading", "[load]", ALL_PROFILES) {
     using data_type = typename TestType::data_type;
     using bits_type = typename TestType::bits_type;
 
-    constexpr unsigned dimensions = TestType::dimensions;
+    constexpr dim_type dimensions = TestType::dimensions;
     constexpr index_type n_blocks = 16384;
 
     const auto grid_extent = [] {
         extent<TestType::dimensions> grid_extent;
         const auto n_blocks_regular = static_cast<index_type>(pow(n_blocks, 1.f / dimensions));
         auto n_blocks_to_distribute = n_blocks;
-        for (unsigned d = 0; d < dimensions; ++d) {
+        for (dim_type d = 0; d < dimensions; ++d) {
             auto n_blocks_this_dim = std::min(n_blocks_regular, n_blocks_to_distribute);
             grid_extent[d] = n_blocks_this_dim * TestType::hypercube_side_length + 3 /* border */;
             n_blocks_to_distribute /= n_blocks_this_dim;

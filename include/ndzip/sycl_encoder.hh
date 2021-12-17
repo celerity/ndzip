@@ -9,11 +9,11 @@ namespace ndzip {
 
 using kernel_duration = std::chrono::duration<uint64_t, std::nano>;
 
-template<typename T, unsigned Dims>
+template<typename T, dim_type Dims>
 class sycl_encoder {
   public:
     using data_type = T;
-    constexpr static unsigned dimensions = Dims;
+    constexpr static dim_type dimensions = Dims;
 
     explicit sycl_encoder(bool report_kernel_duration = false);
     ~sycl_encoder();

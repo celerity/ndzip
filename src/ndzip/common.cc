@@ -2,7 +2,7 @@
 
 namespace ndzip {
 
-template<typename T, unsigned Dims>
+template<typename T, ndzip::dim_type Dims>
 size_t compressed_size_bound(const extent<Dims> &size) {
     using profile = detail::profile<T, Dims>;
     detail::file<profile> file(size);

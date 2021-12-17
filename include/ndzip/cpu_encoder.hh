@@ -5,11 +5,11 @@
 
 namespace ndzip {
 
-template<typename T, unsigned Dims>
+template<typename T, dim_type Dims>
 class cpu_encoder {
   public:
     using data_type = T;
-    constexpr static unsigned dimensions = Dims;
+    constexpr static dim_type dimensions = Dims;
 
     cpu_encoder() = default;
 

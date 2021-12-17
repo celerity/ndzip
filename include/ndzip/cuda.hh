@@ -69,7 +69,7 @@ class cuda_compressor final : public basic_cuda_compressor<T> {
     }
 
   private:
-    template<typename, unsigned>
+    template<typename, dim_type>
     friend class cuda_encoder;
 
     struct scratch_buffers;

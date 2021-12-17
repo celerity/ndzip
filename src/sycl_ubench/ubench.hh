@@ -32,7 +32,7 @@ void operator<<=(SyclBenchmark &&bench, Lambda &&lambda) {
     Catch::getResultCapture().benchmarkStarting(info);
 
     std::vector<duration> samples(static_cast<size_t>(info.samples));
-    for (unsigned i = 0; i < warmup_runs + samples.size(); ++i) {
+    for (size_t i = 0; i < warmup_runs + samples.size(); ++i) {
         sycl::event evt = lambda(q);
         evt.wait();
         if (i >= warmup_runs) {

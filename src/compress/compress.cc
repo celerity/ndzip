@@ -94,7 +94,7 @@ void process_stream(bool decompress, const std::string &in, const std::string &o
     }
 }
 
-template<template<typename, unsigned> typename Encoder, typename Data, typename... EncoderParams>
+template<template<typename, ndzip::dim_type> typename Encoder, typename Data, typename... EncoderParams>
 void process_stream(bool decompress, const std::vector<size_t> &size_components, const std::string &in,
         const std::string &out, const ndzip::detail::io_factory &io, EncoderParams... encoder_args) {
     switch (size_components.size()) {

@@ -16,13 +16,13 @@
 
 namespace ndzip {
 
+using dim_type = int;
 using index_type = uint32_t;
 using stream_size_type = size_t;
 
-inline constexpr unsigned dynamic_dimensionality = ~1u;
-inline constexpr unsigned highest_dynamic_dimensionality = 3u;
+inline constexpr dim_type highest_dynamic_dims = 3;
 
-template<unsigned Dims>
+template<dim_type Dims>
 class extent;
 
 class dynamic_extent {
@@ -32,38 +32,38 @@ class dynamic_extent {
 
     constexpr dynamic_extent() noexcept = default;
 
-    template<unsigned Dims>
+    template<dim_type Dims>
     NDZIP_UNIVERSAL constexpr dynamic_extent(extent<Dims> extent) : _dims{Dims}, _components{extent._components} {
-        static_assert(Dims <= highest_dynamic_dimensionality);
+        static_assert(Dims <= highest_dynamic_dims);
     }
 
-    NDZIP_UNIVERSAL constexpr dynamic_extent(unsigned dims) noexcept : _dims{dims} {
-        assert(dims <= highest_dynamic_dimensionality);
+    NDZIP_UNIVERSAL constexpr dynamic_extent(dim_type dims) noexcept : _dims{dims} {
+        assert(dims <= highest_dynamic_dims);
     }
 
-    NDZIP_UNIVERSAL static constexpr dynamic_extent broadcast(unsigned dims, index_type scalar) {
+    NDZIP_UNIVERSAL static constexpr dynamic_extent broadcast(dim_type dims, index_type scalar) {
         dynamic_extent e{dims};
-        for (unsigned d = 0; d < dims; ++d) {
+        for (dim_type d = 0; d < dims; ++d) {
             e[d] = scalar;
         }
         return e;
     }
 
-    NDZIP_UNIVERSAL constexpr unsigned dimensions() const { return _dims; }
+    NDZIP_UNIVERSAL constexpr dim_type dimensions() const { return _dims; }
 
-    NDZIP_UNIVERSAL index_type &operator[](unsigned d) {
+    NDZIP_UNIVERSAL index_type &operator[](dim_type d) {
         assert(d < _dims);
         return _components[d];
     }
 
-    NDZIP_UNIVERSAL index_type operator[](unsigned d) const {
+    NDZIP_UNIVERSAL index_type operator[](dim_type d) const {
         assert(d < _dims);
         return _components[d];
     }
 
     NDZIP_UNIVERSAL dynamic_extent &operator+=(const dynamic_extent &other) {
         assert(other._dims == _dims);
-        for (unsigned d = 0; d < _dims; ++d) {
+        for (dim_type d = 0; d < _dims; ++d) {
             _components[d] += other._components[d];
         }
         return *this;
@@ -77,7 +77,7 @@ class dynamic_extent {
 
     NDZIP_UNIVERSAL dynamic_extent &operator-=(const dynamic_extent &other) {
         assert(other._dims == _dims);
-        for (unsigned d = 0; d < _dims; ++d) {
+        for (dim_type d = 0; d < _dims; ++d) {
             _components[d] -= other._components[d];
         }
         return *this;
@@ -90,7 +90,7 @@ class dynamic_extent {
     }
 
     NDZIP_UNIVERSAL dynamic_extent &operator*=(index_type other) {
-        for (unsigned d = 0; d < _dims; ++d) {
+        for (dim_type d = 0; d < _dims; ++d) {
             _components[d] *= other;
         }
         return *this;
@@ -109,7 +109,7 @@ class dynamic_extent {
     }
 
     NDZIP_UNIVERSAL dynamic_extent &operator/=(index_type other) {
-        for (unsigned d = 0; d < _dims; ++d) {
+        for (dim_type d = 0; d < _dims; ++d) {
             _components[d] /= other;
         }
         return *this;
@@ -124,7 +124,7 @@ class dynamic_extent {
     NDZIP_UNIVERSAL friend bool operator==(const dynamic_extent &left, const dynamic_extent &right) {
         assert(left._dims == right._dims);
         bool eq = true;
-        for (unsigned d = 0; d < left._dims; ++d) {
+        for (dim_type d = 0; d < left._dims; ++d) {
             eq &= left[d] == right[d];
         }
         return eq;
@@ -143,14 +143,14 @@ class dynamic_extent {
     NDZIP_UNIVERSAL const_iterator end() const { return _components + _dims; }
 
   private:
-    template<unsigned Dims>
+    template<dim_type Dims>
     friend class extent;
 
-    unsigned _dims = 0;
-    index_type _components[highest_dynamic_dimensionality] = {};
+    dim_type _dims = 0;
+    index_type _components[highest_dynamic_dims] = {};
 };
 
-template<unsigned Dims>
+template<dim_type Dims>
 class extent {
   public:
     using const_iterator = const index_type *;
@@ -165,27 +165,27 @@ class extent {
 
     NDZIP_UNIVERSAL extent(const dynamic_extent &dyn) {
         assert(dyn._dims == Dims);
-        for (unsigned d = 0; d < Dims; ++d) {
+        for (dim_type d = 0; d < Dims; ++d) {
             _components[d] = dyn._components[d];
         }
     }
 
     NDZIP_UNIVERSAL static extent broadcast(index_type scalar) {
         extent e;
-        for (unsigned d = 0; d < Dims; ++d) {
+        for (dim_type d = 0; d < Dims; ++d) {
             e[d] = scalar;
         }
         return e;
     }
 
-    NDZIP_UNIVERSAL constexpr unsigned dimensions() const { return Dims; }
+    NDZIP_UNIVERSAL constexpr dim_type dimensions() const { return Dims; }
 
-    NDZIP_UNIVERSAL index_type &operator[](unsigned d) { return _components[d]; }
+    NDZIP_UNIVERSAL index_type &operator[](dim_type d) { return _components[d]; }
 
-    NDZIP_UNIVERSAL index_type operator[](unsigned d) const { return _components[d]; }
+    NDZIP_UNIVERSAL index_type operator[](dim_type d) const { return _components[d]; }
 
     NDZIP_UNIVERSAL extent &operator+=(const extent &other) {
-        for (unsigned d = 0; d < Dims; ++d) {
+        for (dim_type d = 0; d < Dims; ++d) {
             _components[d] += other._components[d];
         }
         return *this;
@@ -198,7 +198,7 @@ class extent {
     }
 
     NDZIP_UNIVERSAL extent &operator-=(const extent &other) {
-        for (unsigned d = 0; d < Dims; ++d) {
+        for (dim_type d = 0; d < Dims; ++d) {
             _components[d] -= other._components[d];
         }
         return *this;
@@ -211,7 +211,7 @@ class extent {
     }
 
     NDZIP_UNIVERSAL extent &operator*=(index_type other) {
-        for (unsigned d = 0; d < Dims; ++d) {
+        for (dim_type d = 0; d < Dims; ++d) {
             _components[d] *= other;
         }
         return *this;
@@ -230,7 +230,7 @@ class extent {
     }
 
     NDZIP_UNIVERSAL extent &operator/=(index_type other) {
-        for (unsigned d = 0; d < Dims; ++d) {
+        for (dim_type d = 0; d < Dims; ++d) {
             _components[d] /= other;
         }
         return *this;
@@ -244,7 +244,7 @@ class extent {
 
     NDZIP_UNIVERSAL friend bool operator==(const extent &left, const extent &right) {
         bool eq = true;
-        for (unsigned d = 0; d < Dims; ++d) {
+        for (dim_type d = 0; d < Dims; ++d) {
             eq &= left[d] == right[d];
         }
         return eq;
@@ -271,7 +271,7 @@ extent(const Init &...) -> extent<sizeof...(Init)>;
 template<typename Extent>
 NDZIP_UNIVERSAL index_type num_elements(const Extent &size) {
     index_type n = 1;
-    for (unsigned d = 0; d < size.dimensions(); ++d) {
+    for (dim_type d = 0; d < size.dimensions(); ++d) {
         n *= size[d];
     }
     return n;
@@ -282,7 +282,7 @@ NDZIP_UNIVERSAL index_type linear_offset(const Extent &position, const Extent &s
     assert(position.dimensions() == space.dimensions());
     index_type offset = 0;
     index_type stride = 1;
-    for (unsigned nd = 0; nd < position.dimensions(); ++nd) {
+    for (dim_type nd = 0; nd < position.dimensions(); ++nd) {
         auto d = position.dimensions() - 1 - nd;
         offset += stride * position[d];
         stride *= space[d];
@@ -298,7 +298,7 @@ template<typename Extent>
 NDZIP_UNIVERSAL index_type linear_index(const Extent &size, const Extent &pos) {
     assert(size.dimensions() == pos.dimensions());
     index_type l = pos[0];
-    for (unsigned d = 1; d < size.dimensions(); ++d) {
+    for (dim_type d = 1; d < size.dimensions(); ++d) {
         l = l * size[d] + pos[d];
     }
     return l;
@@ -345,7 +345,7 @@ class slice {
     friend class slice<const T, Extent>;
 };
 
-template<typename T, unsigned Dims>
+template<typename T, dim_type Dims>
 stream_size_type compressed_size_bound(const extent<Dims> &e);
 
 using kernel_duration = std::chrono::duration<uint64_t, std::nano>;

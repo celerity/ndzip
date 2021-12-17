@@ -186,13 +186,13 @@ static std::vector<typename Profile::bits_type> sycl_load_and_dump_hypercube(
 
 
 #if 0  // gpu::hypercube_ptr assumes 4096 elements per hc
-template<typename T, unsigned Dims>
+template<typename T, dim_type Dims>
 struct mock_profile {
     using data_type = T;
     using bits_type = T;
-    constexpr static unsigned dimensions = Dims;
-    constexpr static unsigned hypercube_side_length = 2;
-    constexpr static unsigned compressed_block_size_bound
+    constexpr static dim_type dimensions = Dims;
+    constexpr static index_type hypercube_side_length = 2;
+    constexpr static index_type compressed_block_size_bound
             = sizeof(T) * (ipow(hypercube_side_length, dimensions) + 1);
 };
 
@@ -560,9 +560,9 @@ TEMPLATE_TEST_CASE("Residual encodings from different encoders are equivalent", 
 
     auto input = make_random_vector<bits_type>(hc_size);
     for (index_type i = 0; i < hc_size; ++i) {
-        for (auto idx : {0, 12, 13, 29, static_cast<int>(bits_of<bits_type> - 2)}) {
+        for (index_type idx : {0u, 12u, 13u, 29u, bits_of<bits_type> - 2}) {
             input[i] &= ~(
-                    bits_type{1} << ((static_cast<unsigned>(idx) * (i / bits_of<bits_type>) ) % bits_of<bits_type>) );
+                    bits_type{1} << ((idx * (i / bits_of<bits_type>) ) % bits_of<bits_type>));
             input[floor(i, bits_of<bits_type>) + idx] = 0;
         }
     }
@@ -737,9 +737,9 @@ TEMPLATE_TEST_CASE("GPU hypercube decoding works", "[decode]", ALL_PROFILES) {
 
     auto input = make_random_vector<bits_type>(hc_size);
     for (index_type i = 0; i < hc_size; ++i) {
-        for (auto idx : {0, 12, 13, 29, static_cast<int>(bits_of<bits_type> - 2)}) {
+        for (index_type idx : {0u, 12u, 13u, 29u, bits_of<bits_type> - 2}) {
             input[i] &= ~(
-                    bits_type{1} << ((static_cast<unsigned>(idx) * (i / bits_of<bits_type>) ) % bits_of<bits_type>) );
+                    bits_type{1} << ((idx * (i / bits_of<bits_type>) ) % bits_of<bits_type>) );
             input[floor(i, bits_of<bits_type>) + idx] = 0;
         }
     }

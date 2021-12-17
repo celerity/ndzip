@@ -66,7 +66,7 @@ TEMPLATE_TEST_CASE("CPU bit transposition is reversible", "[cpu]", uint32_t, uin
     alignas(cpu::simd_width_bytes) TestType input[bits_of<TestType>];
     auto rng = std::minstd_rand(1);
     auto bit_dist = std::uniform_int_distribution<TestType>();
-    auto shift_dist = std::uniform_int_distribution<unsigned>(0, bits_of<TestType> - 1);
+    auto shift_dist = std::uniform_int_distribution<index_type>(0, bits_of<TestType> - 1);
     for (auto &value : input) {
         value = bit_dist(rng) >> shift_dist(rng);
     }
@@ -90,8 +90,8 @@ ostream &operator<<(ostream &os, const border_slice &s) {
 }
 }  // namespace std
 
-template<unsigned Dims>
-static auto dump_border_slices(const extent<Dims> &size, unsigned side_length) {
+template<dim_type Dims>
+static auto dump_border_slices(const extent<Dims> &size, index_type side_length) {
     slice_vec v;
     for_each_border_slice(
             size, side_length, [&](index_type offset, index_type count) { v.emplace_back(offset, count); });
@@ -111,17 +111,17 @@ TEST_CASE("for_each_border_slice iterates correctly") {
 }
 
 
-TEMPLATE_TEST_CASE("file produces a sane hypercube / header layout", "[file]", (std::integral_constant<unsigned, 1>),
-        (std::integral_constant<unsigned, 2>), (std::integral_constant<unsigned, 3>),
-        (std::integral_constant<unsigned, 4>) ) {
-    constexpr unsigned dims = TestType::value;
+TEMPLATE_TEST_CASE("file produces a sane hypercube / header layout", "[file]", (std::integral_constant<dim_type, 1>),
+        (std::integral_constant<dim_type, 2>), (std::integral_constant<dim_type, 3>),
+        (std::integral_constant<dim_type, 4>) ) {
+    constexpr dim_type dims = TestType::value;
     using profile = detail::profile<float, dims>;
     const index_type n = 100;
     const auto n_hypercubes_per_dim = n / profile::hypercube_side_length;
     const auto side_length = profile::hypercube_side_length;
 
     extent<dims> size;
-    for (unsigned d = 0; d < dims; ++d) {
+    for (dim_type d = 0; d < dims; ++d) {
         size[d] = n;
     }
 
@@ -135,13 +135,13 @@ TEMPLATE_TEST_CASE("file produces a sane hypercube / header layout", "[file]", (
         CHECK(hc_index == hypercube_index);
 
         auto off = hc_offset;
-        for (unsigned d = 0; d < dims; ++d) {
+        for (dim_type d = 0; d < dims; ++d) {
             CHECK(off[d] < n);
             CHECK(off[d] % side_length == 0);
         }
 
         auto cell_index = off[0] / side_length;
-        for (unsigned d = 1; d < dims; ++d) {
+        for (dim_type d = 1; d < dims; ++d) {
             cell_index = cell_index * n_hypercubes_per_dim + off[d] / side_length;
         }
         CHECK(!visited[cell_index]);
@@ -218,7 +218,7 @@ TEMPLATE_TEST_CASE("encoder produces the expected bit stream", "[encoder]",
     CHECK(endian_transform(load_unaligned<uint64_t>(border_offset_address)) == border_offset);
     size_t n_border_elems = 0;
     for_each_border_slice(array.size(), profile::hypercube_side_length, [&](auto, auto count) {
-        for (unsigned i = 0; i < count; ++i) {
+        for (index_type i = 0; i < count; ++i) {
             float value;
             const void *value_offset_address = stream.data() + border_offset
                 + (n_border_elems + i) * sizeof value;

@@ -66,7 +66,7 @@ __device__ void store_hypercube(hypercube_block<Profile> block, index_type hc_in
 }
 
 
-template<unsigned Direction, typename Profile>
+template<dim_type Direction, typename Profile>
 __device__ void
 forward_transform_lanes(hypercube_block<Profile> block, hypercube_ptr<Profile, forward_transform_tag> hc) {
     using bits_type = typename Profile::bits_type;
@@ -127,7 +127,7 @@ forward_block_transform(hypercube_block<Profile> block, hypercube_ptr<Profile, f
 }
 
 
-template<unsigned Direction, typename Profile>
+template<dim_type Direction, typename Profile>
 __device__ void
 inverse_transform_lanes(hypercube_block<Profile> block, hypercube_ptr<Profile, inverse_transform_tag> hc) {
     using bits_type = typename Profile::bits_type;
@@ -599,7 +599,7 @@ void ndzip::cuda_compressor<T, Dims>::compress(slice<const T, extent<Dims>> in_d
 }
 
 
-template<typename T, unsigned Dims>
+template<typename T, ndzip::dim_type Dims>
 size_t ndzip::cuda_encoder<T, Dims>::compress(const slice<const data_type, extent<dimensions>> &data, void *raw_stream,
         kernel_duration *out_kernel_duration) const {
     using namespace detail;
@@ -673,7 +673,7 @@ void ndzip::cuda_decompressor<T, Dims>::decompress(
 }
 
 
-template<typename T, unsigned Dims>
+template<typename T, ndzip::dim_type Dims>
 size_t ndzip::cuda_encoder<T, Dims>::decompress(const void *raw_stream, size_t bytes,
         const slice<data_type, extent<dimensions>> &data, kernel_duration *out_kernel_duration) const {
     using namespace detail;

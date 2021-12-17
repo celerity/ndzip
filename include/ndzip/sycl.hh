@@ -78,7 +78,7 @@ class sycl_compressor: public basic_sycl_compressor<T> {
     // TODO USM variant
 
   private:
-    template<typename, unsigned>
+    template<typename, dim_type>
     friend class sycl_encoder;
 
     sycl::queue *_q;

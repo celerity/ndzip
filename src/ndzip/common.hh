@@ -149,9 +149,9 @@ template<typename POD, typename Memory>
     }
 }
 
-template<unsigned Dims, typename Fn>
-void for_each_border_slice_recursive(const extent<Dims> &size, extent<Dims> pos, unsigned side_length, unsigned d,
-        unsigned smallest_dim_with_border, const Fn &fn) {
+template<dim_type Dims, typename Fn>
+void for_each_border_slice_recursive(const extent<Dims> &size, extent<Dims> pos, index_type side_length, dim_type d,
+        dim_type smallest_dim_with_border, const Fn &fn) {
     auto border_begin = size[d] / side_length * side_length;
     auto border_end = size[d];
 
@@ -172,10 +172,10 @@ void for_each_border_slice_recursive(const extent<Dims> &size, extent<Dims> pos,
     }
 }
 
-template<unsigned Dims, typename Fn>
-void for_each_border_slice(const extent<Dims> &size, unsigned side_length, const Fn &fn) {
-    std::optional<unsigned> smallest_dim_with_border;
-    for (unsigned d = 0; d < Dims; ++d) {
+template<dim_type Dims, typename Fn>
+void for_each_border_slice(const extent<Dims> &size, index_type side_length, const Fn &fn) {
+    std::optional<dim_type> smallest_dim_with_border;
+    for (dim_type d = 0; d < Dims; ++d) {
         if (size[d] / side_length == 0) {
             // special case: the whole array is a border
             fn(0, num_elements(size));
@@ -188,8 +188,8 @@ void for_each_border_slice(const extent<Dims> &size, unsigned side_length, const
     }
 }
 
-template<typename DataType, unsigned Dims>
-[[gnu::noinline]] size_t pack_border(void *dest, const slice<DataType, extent<Dims>> &src, unsigned side_length) {
+template<typename DataType, dim_type Dims>
+[[gnu::noinline]] size_t pack_border(void *dest, const slice<DataType, extent<Dims>> &src, index_type side_length) {
     static_assert(std::is_trivially_copyable_v<DataType>);
     size_t dest_offset = 0;
     for_each_border_slice(src.size(), side_length, [&](index_type src_offset, index_type count) {
@@ -199,8 +199,8 @@ template<typename DataType, unsigned Dims>
     return dest_offset;
 }
 
-template<typename DataType, unsigned Dims>
-[[gnu::noinline]] size_t unpack_border(const slice<DataType, extent<Dims>> &dest, const void *src, unsigned side_length) {
+template<typename DataType, dim_type Dims>
+[[gnu::noinline]] size_t unpack_border(const slice<DataType, extent<Dims>> &dest, const void *src, index_type side_length) {
     static_assert(std::is_trivially_copyable_v<DataType>);
     size_t src_offset = 0;
     for_each_border_slice(dest.size(), side_length, [&](index_type dest_offset, index_type count) {
@@ -210,18 +210,18 @@ template<typename DataType, unsigned Dims>
     return src_offset;
 }
 
-template<unsigned Dims>
-index_type border_element_count(const extent<Dims> &e, unsigned side_length) {
+template<dim_type Dims>
+index_type border_element_count(const extent<Dims> &e, dim_type side_length) {
     index_type n_cube_elems = 1;
     index_type n_all_elems = 1;
-    for (unsigned d = 0; d < Dims; ++d) {
+    for (dim_type d = 0; d < Dims; ++d) {
         n_cube_elems *= e[d] / side_length * side_length;
         n_all_elems *= e[d];
     }
     return n_all_elems - n_cube_elems;
 }
 
-template<typename Profile, unsigned ThisDim, typename F>
+template<typename Profile, dim_type ThisDim, typename F>
 [[gnu::always_inline]] void
 iter_hypercubes(const extent<Profile::dimensions> &size, extent<Profile::dimensions> &off, index_type &i, F &f) {
     if constexpr (ThisDim == Profile::dimensions) {
@@ -282,7 +282,7 @@ class file {
 
     index_type num_hypercubes() const {
         index_type num = 1;
-        for (unsigned d = 0; d < Profile::dimensions; ++d) {
+        for (dim_type d = 0; d < Profile::dimensions; ++d) {
             num *= _size[d] / Profile::hypercube_side_length;
         }
         return num;
@@ -303,14 +303,14 @@ class file {
     extent<Profile::dimensions> _size;
 };
 
-template<typename T, unsigned Dims>
+template<typename T, dim_type Dims>
 class profile {
   public:
     using data_type = T;
     using bits_type = detail::bits_type<T>;
 
-    constexpr static unsigned dimensions = Dims;
-    constexpr static unsigned hypercube_side_length = Dims == 1 ? 4096 : Dims == 2 ? 64 : 16;
+    constexpr static dim_type dimensions = Dims;
+    constexpr static index_type hypercube_side_length = Dims == 1 ? 4096 : Dims == 2 ? 64 : 16;
     constexpr static size_t compressed_block_size_bound = detail::ipow(hypercube_side_length, Dims)
             / bits_of<bits_type> * (bits_of<bits_type> + 1) * sizeof(bits_type);
 };
@@ -350,7 +350,7 @@ inline void inverse_block_transform_step(T *x, index_type n, index_type s) {
 }
 
 template<typename T>
-inline void block_transform(T *x, unsigned dims, index_type n) {
+inline void block_transform(T *x, dim_type dims, index_type n) {
     for (index_type i = 0; i < ipow(n, dims); ++i) {
         x[i] = rotate_left_1(x[i]);
     }
@@ -384,7 +384,7 @@ inline void block_transform(T *x, unsigned dims, index_type n) {
 }
 
 template<typename T>
-inline void inverse_block_transform(T *x, unsigned dims, index_type n) {
+inline void inverse_block_transform(T *x, dim_type dims, index_type n) {
     for (index_type i = 0; i < ipow(n, dims); ++i) {
         x[i] = complement_negative(x[i]);
     }
@@ -450,10 +450,10 @@ template<typename Profile, typename SliceDataType, typename CubeDataType, typena
     }
 }
 
-template<unsigned Dims>
+template<dim_type Dims>
 NDZIP_UNIVERSAL extent<Dims> extent_from_linear_id(index_type linear_id, const extent<Dims> &size) {
     extent<Dims> ext;
-    for (unsigned nd = 0; nd < Dims; ++nd) {
+    for (dim_type nd = 0; nd < Dims; ++nd) {
         auto d = Dims - 1 - nd;
         ext[d] = linear_id % size[d];
         linear_id /= size[d];

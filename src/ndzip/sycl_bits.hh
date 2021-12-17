@@ -269,28 +269,28 @@ void hierarchical_inclusive_scan(sycl::queue &queue, sycl::buffer<Scalar> &in_ou
     }
 }
 
-template<unsigned Dims, typename U, typename T>
+template<dim_type Dims, typename U, typename T>
 U extent_cast(const T &e) {
     U v;
-    for (unsigned i = 0; i < Dims; ++i) {
-        v[i] = e[i];
+    for (dim_type d = 0; d < Dims; ++d) {
+        v[d] = e[d];
     }
     return v;
 }
 
-template<typename U, unsigned Dims>
+template<typename U, dim_type Dims>
 U extent_cast(const extent<Dims> &e) {
     return extent_cast<Dims, U>(e);
 }
 
 template<typename T, int Dims>
 T extent_cast(const sycl::range<Dims> &r) {
-    return extent_cast<static_cast<unsigned>(Dims), T>(r);
+    return extent_cast<Dims, T>(r);
 }
 
 template<typename T, int Dims>
 T extent_cast(const sycl::id<Dims> &r) {
-    return extent_cast<static_cast<unsigned>(Dims), T>(r);
+    return extent_cast<Dims, T>(r);
 }
 
 }  // namespace ndzip::detail::gpu_sycl

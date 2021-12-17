@@ -23,7 +23,7 @@ template<typename Profile>
 NDZIP_UNIVERSAL index_type global_offset(index_type local_offset, extent<Profile::dimensions> global_size) {
     index_type global_offset = 0;
     index_type global_stride = 1;
-    for (unsigned d = 0; d < Profile::dimensions; ++d) {
+    for (dim_type d = 0; d < Profile::dimensions; ++d) {
         global_offset += global_stride * (local_offset % Profile::hypercube_side_length);
         local_offset /= Profile::hypercube_side_length;
         global_stride *= global_size[Profile::dimensions - 1 - d];
@@ -48,7 +48,7 @@ struct inverse_transform_tag;
 template<typename Profile, typename Transform>
 struct hypercube_layout;
 
-template<typename Profile, unsigned Direction, typename Transform>
+template<typename Profile, dim_type Direction, typename Transform>
 struct directional_accessor;
 
 // std::optional is not allowed in kernels
@@ -275,12 +275,12 @@ class hypercube_ptr {
 template<typename Profile>
 class border_map {
   public:
-    constexpr static index_type dimensions = Profile::dimensions;
+    constexpr static dim_type dimensions = Profile::dimensions;
 
     constexpr explicit border_map(extent<dimensions> outer) {
         index_type outer_acc = 1, inner_acc = 1, edge_acc = 1;
-        for (unsigned d = 0; d < dimensions; ++d) {
-            unsigned dd = dimensions - 1 - d;
+        for (dim_type d = 0; d < dimensions; ++d) {
+            dim_type dd = dimensions - 1 - d;
             _inner[dd] = floor(outer[dd], Profile::hypercube_side_length);
             _stride[dd] = outer_acc;
             _edge[dd] = _inner[dd] * edge_acc;
@@ -305,8 +305,8 @@ class border_map {
     // We cannot write index() as a specialized template function because NVCC doesn't allow
     // specializations inside a class definition and border_map is a template itself, so
     // specialization cannot happen outside either. Instead we do overload selection by tag type.
-    template<unsigned D>
-    using dim_tag = std::integral_constant<unsigned, D>;
+    template<dim_type D>
+    using dim_tag = std::integral_constant<dim_type, D>;
 
     NDZIP_UNIVERSAL constexpr extent<1> index(dim_tag<1>, index_type i) const { return {_edge[dimensions - 1] + i}; }
 
