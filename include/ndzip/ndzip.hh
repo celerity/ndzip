@@ -20,7 +20,7 @@ using dim_type = int;
 using index_type = uint32_t;
 using stream_size_type = size_t;
 
-inline constexpr dim_type highest_dynamic_dims = 3;
+inline constexpr dim_type max_dimensionality = 3;
 
 template<dim_type Dims>
 class extent;
@@ -34,11 +34,12 @@ class dynamic_extent {
 
     template<dim_type Dims>
     NDZIP_UNIVERSAL constexpr dynamic_extent(extent<Dims> extent) : _dims{Dims}, _components{extent._components} {
-        static_assert(Dims <= highest_dynamic_dims);
+        static_assert(Dims <= max_dimensionality);
     }
 
     NDZIP_UNIVERSAL constexpr dynamic_extent(dim_type dims) noexcept : _dims{dims} {
-        assert(dims <= highest_dynamic_dims);
+        assert(dims > 0);
+        assert(dims <= max_dimensionality);
     }
 
     NDZIP_UNIVERSAL static constexpr dynamic_extent broadcast(dim_type dims, index_type scalar) {
@@ -146,13 +147,16 @@ class dynamic_extent {
     template<dim_type Dims>
     friend class extent;
 
-    dim_type _dims = 0;
-    index_type _components[highest_dynamic_dims] = {};
+    dim_type _dims = 1;
+    index_type _components[max_dimensionality] = {};
 };
 
 template<dim_type Dims>
 class extent {
   public:
+    static_assert(Dims > 0);
+    static_assert(Dims <= max_dimensionality);
+
     using const_iterator = const index_type *;
     using iterator = index_type *;
 
@@ -304,14 +308,38 @@ NDZIP_UNIVERSAL index_type linear_index(const Extent &size, const Extent &pos) {
     return l;
 }
 
+template<size_t Size>
+struct bits_type_s;
+
+template<>
+struct bits_type_s<1> {
+    using type = uint8_t;
+};
+
+template<>
+struct bits_type_s<2> {
+    using type = uint16_t;
+};
+
+template<>
+struct bits_type_s<4> {
+    using type = uint32_t;
+};
+
+template<>
+struct bits_type_s<8> {
+    using type = uint64_t;
+};
+
 template<typename T>
-using bits_type = std::conditional_t<sizeof(T) == 1, uint8_t,
-        std::conditional_t<sizeof(T) == 2, uint16_t,
-                std::conditional_t<sizeof(T) == 4, uint32_t, std::conditional_t<sizeof(T) == 8, uint64_t, void>>>>;
+using bits_type = typename bits_type_s<sizeof(T)>::type;
 
 }  // namespace ndzip::detail
 
 namespace ndzip {
+
+template<typename T>
+using compressed_type = ndzip::detail::bits_type<T>;
 
 template<typename T, typename Extent>
 class slice {
@@ -346,7 +374,10 @@ class slice {
 };
 
 template<typename T, dim_type Dims>
-stream_size_type compressed_size_bound(const extent<Dims> &e);
+index_type compressed_length_bound(const extent<Dims> &e);
+
+template<typename T>
+index_type compressed_length_bound(const dynamic_extent &e);
 
 using kernel_duration = std::chrono::duration<uint64_t, std::nano>;
 
@@ -358,7 +389,7 @@ class basic_compressor {
 
     virtual ~basic_compressor() = default;
 
-    virtual size_t compress(const slice<const value_type, dynamic_extent> &data, compressed_type *stream) = 0;
+    virtual index_type compress(const slice<const value_type, dynamic_extent> &data, compressed_type *stream) = 0;
 };
 
 template<typename T, int Dims>
@@ -373,18 +404,18 @@ class compressor final : public basic_compressor<T> {
 
     explicit compressor(size_t num_threads);
 
-    size_t compress(const slice<const value_type, extent<Dims>> &data, compressed_type *stream) {
+    index_type compress(const slice<const value_type, extent<Dims>> &data, compressed_type *stream) {
         return _pimpl->compress(data, stream);
     }
 
-    size_t compress(const slice<const value_type, dynamic_extent> &data, compressed_type *stream) override {
+    index_type compress(const slice<const value_type, dynamic_extent> &data, compressed_type *stream) override {
         return compress(slice<const value_type, extent<Dims>>{data}, stream);
     }
 
   private:
     struct impl {
         virtual ~impl() = default;
-        virtual size_t compress(const slice<const value_type, extent<Dims>> &data, compressed_type *stream) = 0;
+        virtual index_type compress(const slice<const value_type, extent<Dims>> &data, compressed_type *stream) = 0;
     };
     struct st_impl;
     struct mt_impl;
@@ -400,7 +431,7 @@ class basic_decompressor {
 
     virtual ~basic_decompressor() = default;
 
-    virtual size_t decompress(const compressed_type *stream, const slice<value_type, dynamic_extent> &data) = 0;
+    virtual index_type decompress(const compressed_type *stream, const slice<value_type, dynamic_extent> &data) = 0;
 };
 
 template<typename T, int Dims>
@@ -415,11 +446,11 @@ class decompressor final : public basic_decompressor<T> {
 
     explicit decompressor(size_t num_threads);
 
-    size_t decompress(const compressed_type *stream, const slice<value_type, extent<Dims>> &data) {
+    index_type decompress(const compressed_type *stream, const slice<value_type, extent<Dims>> &data) {
         return _pimpl->decompress(stream, data);
     }
 
-    size_t decompress(const compressed_type *stream, const slice<value_type, dynamic_extent> &data) override {
+    index_type decompress(const compressed_type *stream, const slice<value_type, dynamic_extent> &data) override {
         return decompress(stream, slice<value_type, extent<Dims>>{data});
     }
 
@@ -427,7 +458,7 @@ class decompressor final : public basic_decompressor<T> {
     // TODO these can be proper subclasses (with a factory method)
     struct impl {
         virtual ~impl() = default;
-        virtual size_t decompress(const compressed_type *stream, const slice<value_type, extent<Dims>> &data) = 0;
+        virtual index_type decompress(const compressed_type *stream, const slice<value_type, extent<Dims>> &data) = 0;
     };
     struct st_impl;
     struct mt_impl;

@@ -1,6 +1,6 @@
 #include "ubench.hh"
 
-#include <ndzip/sycl_encoder.inl>
+#include <ndzip/sycl_codec.inl>
 #include <test/test_utils.hh>
 
 using namespace ndzip;

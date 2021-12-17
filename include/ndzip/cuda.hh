@@ -3,7 +3,7 @@
 #include "ndzip.hh"
 
 #include <cuda_runtime.h>
-#include <memory>
+
 
 namespace ndzip {
 
@@ -40,7 +40,7 @@ class basic_cuda_compressor {
     virtual ~basic_cuda_compressor() = default;
 
     virtual void compress(slice<const T, dynamic_extent> in_device_data, compressed_type *out_device_stream,
-            size_t *out_device_stream_length)
+            index_type *out_device_stream_length)
             = 0;
 };
 
@@ -61,16 +61,16 @@ class cuda_compressor final : public basic_cuda_compressor<T> {
     cuda_compressor &operator=(cuda_compressor &&) noexcept = default;
 
     void compress(slice<const T, extent<Dims>> in_device_data, compressed_type *out_device_stream,
-            size_t *out_device_stream_length);
+            index_type *out_device_stream_length);
 
     virtual void compress(slice<const T, dynamic_extent> in_device_data, compressed_type *out_device_stream,
-            size_t *out_device_stream_length) override {
+            index_type *out_device_stream_length) override {
         compress(slice<const T, extent<Dims>>{in_device_data}, out_device_stream, out_device_stream_length);
     }
 
   private:
     template<typename, dim_type>
-    friend class cuda_encoder;
+    friend class cuda_offloader;
 
     struct scratch_buffers;
     cudaStream_t _stream = nullptr;

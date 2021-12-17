@@ -2,9 +2,8 @@
 
 #include "ndzip.hh"
 
-#include <memory>
-
 #include <SYCL/sycl.hpp>
+
 
 namespace ndzip {
 
@@ -79,7 +78,7 @@ class sycl_compressor: public basic_sycl_compressor<T> {
 
   private:
     template<typename, dim_type>
-    friend class sycl_encoder;
+    friend class sycl_offloader;
 
     sycl::queue *_q;
     sycl::buffer<compressed_type> _chunks_buf;

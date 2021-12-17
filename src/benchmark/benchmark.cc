@@ -13,15 +13,7 @@
 
 #include <boost/program_options.hpp>
 #include <io/io.hh>
-#include <ndzip/ndzip.hh>
-#include <ndzip/cpu_encoder.hh>
-
-#if NDZIP_HIPSYCL_SUPPORT
-#include <ndzip/sycl_encoder.hh>
-#endif
-#if NDZIP_CUDA_SUPPORT
-#include <ndzip/cuda_encoder.hh>
-#endif
+#include <ndzip/offload.hh>
 
 #if NDZIP_BENCHMARK_HAVE_3RDPARTY
 #include <SPDP_11.h>
@@ -305,135 +297,66 @@ static std::chrono::microseconds time_cuda_kernel(cudaEvent_t before, cudaEvent_
 #endif
 
 
-template<typename Encoder>
-struct ndzip_encoder_factory {
-    Encoder create(const benchmark_params &) const { return Encoder{}; }
-};
+template<typename T>
+static benchmark_result benchmark_ndzip_target(
+        ndzip::target target, const T *input_buffer, const metadata &meta, const benchmark_params &params) {
+    using compressed_type = ndzip::compressed_type<T>;
 
-template<typename Data, ndzip::dim_type Dims>
-struct ndzip_encoder_factory<ndzip::cpu_encoder<Data, Dims>> {
-    ndzip::cpu_encoder<Data, Dims> create(const benchmark_params &params) const {
-        return ndzip::cpu_encoder<Data, Dims>{params.num_threads};
+    const auto dims = static_cast<ndzip::dim_type>(meta.dimensions());
+    ndzip::dynamic_extent extent{dims};
+    for (ndzip::dim_type d = 0; d < dims; ++d) {
+        extent[d] = static_cast<ndzip::index_type>(meta.extent[d]);
     }
-};
+
+    std::unique_ptr<ndzip::offloader<T>> offloader;
+    switch (target) {
+        case ndzip::target::cpu: offloader = ndzip::make_cpu_offloader<T>(dims, params.num_threads); break;
 
 #if NDZIP_HIPSYCL_SUPPORT
-
-template<typename Data, ndzip::dim_type Dims>
-struct ndzip_encoder_factory<ndzip::sycl_encoder<Data, Dims>> {
-    ndzip::sycl_encoder<Data, Dims> create(const benchmark_params &) const {
-        return ndzip::sycl_encoder<Data, Dims>{true /* report_kernel_duration */};
-    }
-};
-
-#endif
-
-template<template<typename, ndzip::dim_type> typename Encoder, typename Data, ndzip::dim_type Dims>
-struct ndzip_benchmark : public benchmark {
-    using benchmark::benchmark;
-
-    size_t time_compression(
-            Encoder<Data, Dims> &encoder, ndzip::slice<const Data, ndzip::extent<Dims>> input_slice, void *compress_buffer) {
-        size_t compressed_size;
-        benchmark::time_compression([&] { compressed_size = encoder.compress(input_slice, compress_buffer); });
-        return compressed_size;
-    }
-
-    void time_decompression(Encoder<Data, Dims> &encoder, const void *compress_buffer, size_t compressed_size,
-            ndzip::slice<Data, ndzip::extent<Dims>> decompress_slice) {
-        benchmark::time_decompression([&] { encoder.decompress(compress_buffer, compressed_size, decompress_slice); });
-    }
-};
-
-template<template<typename, ndzip::dim_type> typename Encoder, typename Data, ndzip::dim_type Dims>
-struct kernel_benchmark : public benchmark {
-    using benchmark::benchmark;
-
-    size_t time_compression(
-            Encoder<Data, Dims> &encoder, ndzip::slice<const Data, ndzip::extent<Dims>> input_slice, void *compress_buffer) {
-        ndzip::kernel_duration duration;
-        auto compressed_size = encoder.compress(input_slice, compress_buffer, &duration);
-        record_compression(std::chrono::duration_cast<std::chrono::microseconds>(duration));
-        return compressed_size;
-    }
-
-    void time_decompression(Encoder<Data, Dims> &encoder, const void *compress_buffer, size_t compressed_size,
-            ndzip::slice<Data, ndzip::extent<Dims>> decompress_slice) {
-        ndzip::kernel_duration duration;
-        encoder.decompress(compress_buffer, compressed_size, decompress_slice, &duration);
-        record_decompression(std::chrono::duration_cast<std::chrono::microseconds>(duration));
-    }
-};
-
-
-#if NDZIP_HIPSYCL_SUPPORT
-
-template<typename Data, ndzip::dim_type Dims>
-struct ndzip_benchmark<ndzip::sycl_encoder, Data, Dims> : public kernel_benchmark<ndzip::sycl_encoder, Data, Dims> {
-    using kernel_benchmark<ndzip::sycl_encoder, Data, Dims>::kernel_benchmark;
-};
-
+        case ndzip::target::sycl: offloader = ndzip::make_sycl_offloader<T>(dims, true); break;
 #endif
 
 #if NDZIP_CUDA_SUPPORT
-
-template<typename Data, ndzip::dim_type Dims>
-struct ndzip_benchmark<ndzip::cuda_encoder, Data, Dims> : public kernel_benchmark<ndzip::cuda_encoder, Data, Dims> {
-    using kernel_benchmark<ndzip::cuda_encoder, Data, Dims>::kernel_benchmark;
-};
-
+        case ndzip::target::cuda: offloader = ndzip::make_cuda_offloader<T>(dims); break;
 #endif
 
+        default: throw std::runtime_error("Invalid ndzip::target");
+    }
 
-template<template<typename, ndzip::dim_type> typename Encoder, typename Data, ndzip::dim_type Dims>
-static benchmark_result
-benchmark_ndzip_3(const Data *input_buffer, const ndzip::extent<Dims> &size, const benchmark_params &params) {
-    const auto uncompressed_size = ndzip::num_elements(size) * sizeof(Data);
-    const auto input_slice = ndzip::slice{input_buffer, size};
-    auto bench = ndzip_benchmark<Encoder, Data, Dims>{params};
-    auto encoder = ndzip_encoder_factory<Encoder<Data, Dims>>{}.create(params);
+    const auto uncompressed_length = ndzip::num_elements(extent);
+    const auto input_slice = ndzip::slice{input_buffer, extent};
+    auto bench = benchmark{params};
 
-    auto compress_buffer = scratch_buffer{ndzip::compressed_size_bound<Data>(size)};
-    size_t compressed_size;
+    auto compress_buffer = scratch_buffer<compressed_type>{ndzip::compressed_length_bound<T>(extent)};
+    size_t compressed_length;
     while (bench.compress_more()) {
-        compressed_size = bench.time_compression(encoder, input_slice, compress_buffer.data());
+        ndzip::kernel_duration duration;
+        compressed_length = offloader->compress(input_slice, compress_buffer.data(), &duration);
+        bench.record_compression(std::chrono::duration_cast<std::chrono::microseconds>(duration));
     }
 
-    auto decompress_buffer = scratch_buffer<Data>(ndzip::num_elements(size));
-    const auto decompress_slice = ndzip::slice{decompress_buffer.data(), size};
+    auto decompress_buffer = scratch_buffer<T>(ndzip::num_elements(extent));
+    const auto decompress_slice = ndzip::slice{decompress_buffer.data(), extent};
     while (bench.decompress_more()) {
-        bench.time_decompression(encoder, compress_buffer.data(), compressed_size, decompress_slice);
+        ndzip::kernel_duration duration;
+        offloader->decompress(compress_buffer.data(), compressed_length, decompress_slice, &duration);
+        bench.record_decompression(std::chrono::duration_cast<std::chrono::microseconds>(duration));
     }
 
+    const auto compressed_size = compressed_length * sizeof(compressed_type);
+    const auto uncompressed_size = uncompressed_length * sizeof(T);
     assert_buffer_equality(input_buffer, decompress_buffer.data(), uncompressed_size);
     return std::move(bench).result(uncompressed_size, compressed_size);
 }
 
-
-template<template<typename, ndzip::dim_type> typename Encoder, typename Data>
-static benchmark_result
-benchmark_ndzip_2(const Data *input_buffer, const metadata &meta, const benchmark_params &params) {
-    auto &e = meta.extent;
-    if (e.size() == 1) {
-        return benchmark_ndzip_3<Encoder, Data, 1>(input_buffer, ndzip::extent{e[0]}, params);
-    } else if (e.size() == 2) {
-        return benchmark_ndzip_3<Encoder, Data, 2>(input_buffer, ndzip::extent{e[0], e[1]}, params);
-    } else if (e.size() == 3) {
-        return benchmark_ndzip_3<Encoder, Data, 3>(input_buffer, ndzip::extent{e[0], e[1], e[2]}, params);
-    } else {
-        throw not_implemented{};
-    }
-}
-
-
-template<template<typename, ndzip::dim_type> typename Encoder>
-static benchmark_result
-benchmark_ndzip(const void *input_buffer, const metadata &meta, const benchmark_params &params) {
-    if (meta.data_type == data_type::t_float) {
-        return benchmark_ndzip_2<Encoder, float>(static_cast<const float *>(input_buffer), meta, params);
-    } else {
-        return benchmark_ndzip_2<Encoder, double>(static_cast<const double *>(input_buffer), meta, params);
-    }
+static auto benchmark_ndzip(ndzip::target target) {
+    return [=](const void *input_buffer, const metadata &meta, const benchmark_params &params) -> benchmark_result {
+        if (meta.data_type == data_type::t_float) {
+            return benchmark_ndzip_target<float>(target, static_cast<const float *>(input_buffer), meta, params);
+        } else {
+            return benchmark_ndzip_target<double>(target, static_cast<const double *>(input_buffer), meta, params);
+        }
+    };
 }
 
 
@@ -1278,16 +1201,16 @@ const algorithm_map &available_algorithms() {
     // clang-format off
     static const algorithm_map algorithms {
         {"memcpy", {benchmark_memcpy}},
-        {"ndzip", {benchmark_ndzip<ndzip::cpu_encoder>}},
+        {"ndzip", {benchmark_ndzip(ndzip::target::cpu)}},
 #if NDZIP_OPENMP_SUPPORT
         {"memcpy-mt", {benchmark_memcpy_mt, 1, 1, 1, true /* multithreaded */}},
-        {"ndzip-mt", {benchmark_ndzip<ndzip::cpu_encoder>, 1, 1, 1, true /* multithreaded */}},
+        {"ndzip-mt", {benchmark_ndzip(ndzip::target::cpu), 1, 1, 1, true /* multithreaded */}},
 #endif
 #if NDZIP_HIPSYCL_SUPPORT
-        {"ndzip-sycl", {benchmark_ndzip<ndzip::sycl_encoder>}},
+        {"ndzip-sycl", {benchmark_ndzip(ndzip::target::sycl)}},
 #endif
 #if NDZIP_CUDA_SUPPORT
-        {"ndzip-cuda", {benchmark_ndzip<ndzip::cuda_encoder>}},
+        {"ndzip-cuda", {benchmark_ndzip(ndzip::target::cuda)}},
 #endif
 #if NDZIP_BENCHMARK_HAVE_3RDPARTY
         {"fpc", {benchmark_fpc, 1, 15, 25}},

@@ -189,23 +189,25 @@ void for_each_border_slice(const extent<Dims> &size, index_type side_length, con
 }
 
 template<typename DataType, dim_type Dims>
-[[gnu::noinline]] size_t pack_border(void *dest, const slice<DataType, extent<Dims>> &src, index_type side_length) {
+[[gnu::noinline]] index_type
+pack_border(compressed_type<DataType> *dest, const slice<DataType, extent<Dims>> &src, index_type side_length) {
     static_assert(std::is_trivially_copyable_v<DataType>);
-    size_t dest_offset = 0;
+    index_type dest_offset = 0;
     for_each_border_slice(src.size(), side_length, [&](index_type src_offset, index_type count) {
-        memcpy(static_cast<char *>(dest) + dest_offset, src.data() + src_offset, count * sizeof(DataType));
-        dest_offset += count * sizeof(DataType);
+        memcpy(dest + dest_offset, src.data() + src_offset, count * sizeof(DataType));
+        dest_offset += count;
     });
     return dest_offset;
 }
 
 template<typename DataType, dim_type Dims>
-[[gnu::noinline]] size_t unpack_border(const slice<DataType, extent<Dims>> &dest, const void *src, index_type side_length) {
+[[gnu::noinline]] index_type
+unpack_border(const slice<DataType, extent<Dims>> &dest, const compressed_type<DataType> *src, index_type side_length) {
     static_assert(std::is_trivially_copyable_v<DataType>);
-    size_t src_offset = 0;
+    index_type src_offset = 0;
     for_each_border_slice(dest.size(), side_length, [&](index_type dest_offset, index_type count) {
-        memcpy(dest.data() + dest_offset, static_cast<const char *>(src) + src_offset, count * sizeof(DataType));
-        src_offset += count * sizeof(DataType);
+        memcpy(dest.data() + dest_offset, src + src_offset, count * sizeof(DataType));
+        src_offset += count;
     });
     return src_offset;
 }
@@ -295,8 +297,6 @@ class file {
         iter_hypercubes<Profile, 0>(_size, off, i, f);
     }
 
-    constexpr size_t file_header_length() const { return num_hypercubes() * sizeof(index_type); }
-
     const extent<Profile::dimensions> &size() const { return _size; };
 
   private:
@@ -311,8 +311,8 @@ class profile {
 
     constexpr static dim_type dimensions = Dims;
     constexpr static index_type hypercube_side_length = Dims == 1 ? 4096 : Dims == 2 ? 64 : 16;
-    constexpr static size_t compressed_block_size_bound = detail::ipow(hypercube_side_length, Dims)
-            / bits_of<bits_type> * (bits_of<bits_type> + 1) * sizeof(bits_type);
+    constexpr static size_t compressed_block_length_bound
+            = detail::ipow(hypercube_side_length, Dims) / bits_of<bits_type> * (bits_of<bits_type> + 1);
 };
 
 

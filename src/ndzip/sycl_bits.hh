@@ -5,7 +5,6 @@
 #include <type_traits>
 
 #include <SYCL/sycl.hpp>
-#include <ndzip/sycl_encoder.hh>
 
 
 namespace ndzip::detail::gpu_sycl {

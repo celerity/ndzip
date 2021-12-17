@@ -8,7 +8,7 @@
 #include <vector>
 
 #include <ndzip/cuda.hh>
-#include <ndzip/cuda_encoder.hh>
+#include <ndzip/offload.hh>
 
 
 namespace ndzip::detail::gpu_cuda {
@@ -494,8 +494,8 @@ __global__ void expand_border(const typename Profile::bits_type *stream_buf,
 
 template<typename BitsType>
 __global__ void store_stream_length(
-        size_t *stream_length, const index_type *num_compressed_words, index_type num_header_and_border_words) {
-    *stream_length = static_cast<size_t>(num_header_and_border_words + *num_compressed_words) * sizeof(BitsType);
+        index_type *stream_length, const index_type *num_compressed_words, index_type num_header_and_border_words) {
+    *stream_length = num_header_and_border_words + *num_compressed_words;
 }
 
 
@@ -548,7 +548,7 @@ ndzip::cuda_compressor<T, Dims>::~cuda_compressor() = default;
 
 template<typename T, int Dims>
 void ndzip::cuda_compressor<T, Dims>::compress(slice<const T, extent<Dims>> in_device_data,
-        compressed_type *out_device_stream, size_t *out_device_stream_length) {
+        compressed_type *out_device_stream, index_type *out_device_stream_length) {
     using namespace detail;
     using namespace detail::gpu_cuda;
 
@@ -600,8 +600,8 @@ void ndzip::cuda_compressor<T, Dims>::compress(slice<const T, extent<Dims>> in_d
 
 
 template<typename T, ndzip::dim_type Dims>
-size_t ndzip::cuda_encoder<T, Dims>::compress(const slice<const data_type, extent<dimensions>> &data, void *raw_stream,
-        kernel_duration *out_kernel_duration) const {
+ndzip::index_type ndzip::cuda_offloader<T, Dims>::do_compress(const slice<const data_type, dynamic_extent>
+        &data, compressed_type *raw_stream, kernel_duration *out_kernel_duration) {
     using namespace detail;
     using namespace detail::gpu_cuda;
 
@@ -618,10 +618,9 @@ size_t ndzip::cuda_encoder<T, Dims>::compress(const slice<const data_type, exten
     CHECKED_CUDA_CALL(cudaMemcpy, data_buffer.get(), data.data(), data_buffer.size() * bytes_of<data_type>,
             cudaMemcpyHostToDevice);
 
-    cuda_compressor<T, Dims> compressor{data.size()};
-    cuda_buffer<bits_type> stream_buf{static_cast<index_type>(
-            div_ceil(compressed_size_bound<data_type, dimensions>(data.size()), sizeof(bits_type)))};
-    cuda_buffer<size_t> stream_length_buf{1};
+    cuda_compressor<T, Dims> compressor{extent<Dims>{data.size()}};
+    cuda_buffer<bits_type> stream_buf{compressed_length_bound<T>(data.size())};
+    cuda_buffer<index_type> stream_length_buf{1};
 
     cuda_event start, stop;
     bool record_events = out_kernel_duration || verbose();
@@ -637,11 +636,12 @@ size_t ndzip::cuda_encoder<T, Dims>::compress(const slice<const data_type, exten
         if (verbose()) { printf("[profile] total kernel time %.3fms\n", duration.count() * 1e-6); }
     }
 
-    size_t stream_length;
+    index_type stream_length;
     CHECKED_CUDA_CALL(
             cudaMemcpy, &stream_length, stream_length_buf.get(), sizeof stream_length, cudaMemcpyDeviceToHost);
 
-    CHECKED_CUDA_CALL(cudaMemcpy, raw_stream, stream_buf.get(), stream_length, cudaMemcpyDeviceToHost);
+    const auto stream_size = stream_length * sizeof(compressed_type);
+    CHECKED_CUDA_CALL(cudaMemcpy, raw_stream, stream_buf.get(), stream_size, cudaMemcpyDeviceToHost);
 
     return stream_length;
 }
@@ -674,8 +674,8 @@ void ndzip::cuda_decompressor<T, Dims>::decompress(
 
 
 template<typename T, ndzip::dim_type Dims>
-size_t ndzip::cuda_encoder<T, Dims>::decompress(const void *raw_stream, size_t bytes,
-        const slice<data_type, extent<dimensions>> &data, kernel_duration *out_kernel_duration) const {
+ndzip::index_type ndzip::cuda_offloader<T, Dims>::do_decompress(const compressed_type *raw_stream, index_type length,
+        const slice<T, dynamic_extent> &data, kernel_duration *out_kernel_duration) {
     using namespace detail;
     using namespace detail::gpu_cuda;
 
@@ -686,10 +686,10 @@ size_t ndzip::cuda_encoder<T, Dims>::decompress(const void *raw_stream, size_t b
     const auto num_hypercubes = file.num_hypercubes();
 
     // TODO the range computation here is questionable at best
-    cuda_buffer<bits_type> stream_buf{static_cast<index_type>(div_ceil(bytes, sizeof(bits_type)))};
+    cuda_buffer<bits_type> stream_buf{length};
     cuda_buffer<data_type> data_buf{num_elements(data.size())};
 
-    CHECKED_CUDA_CALL(cudaMemcpy, stream_buf.get(), raw_stream, bytes, cudaMemcpyHostToDevice);
+    CHECKED_CUDA_CALL(cudaMemcpy, stream_buf.get(), raw_stream, length * sizeof(bits_type), cudaMemcpyHostToDevice);
 
     cuda_event start, stop;
     bool record_events = out_kernel_duration || verbose();
@@ -714,21 +714,21 @@ size_t ndzip::cuda_encoder<T, Dims>::decompress(const void *raw_stream, size_t b
     CHECKED_CUDA_CALL(
             cudaMemcpy, data.data(), data_buf.get(), data_buf.size() * sizeof(data_type), cudaMemcpyDeviceToHost);
 
-    return num_stream_words * sizeof(bits_type);
+    return num_stream_words;
 }
 
 
 namespace ndzip {
 
-extern template class cuda_encoder<float, 1>;
-extern template class cuda_encoder<float, 2>;
-extern template class cuda_encoder<float, 3>;
-extern template class cuda_encoder<double, 1>;
-extern template class cuda_encoder<double, 2>;
-extern template class cuda_encoder<double, 3>;
+extern template class cuda_offloader<float, 1>;
+extern template class cuda_offloader<float, 2>;
+extern template class cuda_offloader<float, 3>;
+extern template class cuda_offloader<double, 1>;
+extern template class cuda_offloader<double, 2>;
+extern template class cuda_offloader<double, 3>;
 
 #ifdef SPLIT_CONFIGURATION_cuda_encoder
-template class cuda_encoder<DATA_TYPE, DIMENSIONS>;
+template class cuda_offloader<DATA_TYPE, DIMENSIONS>;
 #endif
 
 }  // namespace ndzip

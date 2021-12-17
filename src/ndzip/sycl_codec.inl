@@ -7,8 +7,8 @@
 #include <stdexcept>
 #include <vector>
 
+#include <ndzip/offload.hh>
 #include <ndzip/sycl.hh>
-#include <ndzip/sycl_encoder.hh>
 
 
 namespace ndzip::detail::gpu_sycl {
@@ -692,7 +692,7 @@ ndzip::sycl_decompress_events ndzip::sycl_decompressor<T, Dims>::decompress(
 
 
 template<typename T, ndzip::dim_type Dims>
-struct ndzip::sycl_encoder<T, Dims>::impl {
+struct ndzip::sycl_offloader<T, Dims>::impl {
     sycl::queue q;
 
     static sycl::property_list make_queue_properties(bool profile) {
@@ -716,17 +716,17 @@ struct ndzip::sycl_encoder<T, Dims>::impl {
 };
 
 template<typename T, ndzip::dim_type Dims>
-ndzip::sycl_encoder<T, Dims>::sycl_encoder(bool report_kernel_duration)
+ndzip::sycl_offloader<T, Dims>::sycl_offloader(bool report_kernel_duration)
     : _pimpl(std::make_unique<impl>(report_kernel_duration, detail::verbose())) {
 }
 
 template<typename T, ndzip::dim_type Dims>
-ndzip::sycl_encoder<T, Dims>::~sycl_encoder() = default;
+ndzip::sycl_offloader<T, Dims>::~sycl_offloader() = default;
 
 
 template<typename T, ndzip::dim_type Dims>
-size_t ndzip::sycl_encoder<T, Dims>::compress(
-        const slice<const data_type, extent<dimensions>> &data, void *raw_stream, kernel_duration *out_kernel_duration) const {
+ndzip::index_type ndzip::sycl_offloader<T, Dims>::do_compress(const slice<const data_type, dynamic_extent> &data,
+        compressed_type *raw_stream, kernel_duration *out_kernel_duration) {
     using namespace detail;
     using namespace detail::gpu_sycl;
 
@@ -740,16 +740,15 @@ size_t ndzip::sycl_encoder<T, Dims>::compress(
     const auto num_hypercubes = file.num_hypercubes();
     if (verbose()) { printf("Have %u hypercubes\n", num_hypercubes); }
 
-    sycl::buffer<data_type, dimensions> data_buf{extent_cast<sycl::range<dimensions>>(data.size())};
+    sycl::buffer<data_type, dimensions> data_buf{extent_cast<Dims, sycl::range<dimensions>>(data.size())};
 
     submit_and_profile(_pimpl->q, "copy input to device",
             [&](sycl::handler &cgh) { cgh.copy(data.data(), data_buf.template get_access<sam::discard_write>(cgh)); });
 
-    sycl::buffer<bits_type> stream_buf(
-            div_ceil(compressed_size_bound<data_type, dimensions>(data.size()), sizeof(bits_type)));
+    sycl::buffer<bits_type> stream_buf(compressed_length_bound<T>(data.size()));
     sycl::buffer<index_type> stream_length_buf(1);
 
-    ndzip::sycl_compressor<T, Dims> compressor{_pimpl->q, data.size()};
+    ndzip::sycl_compressor<T, Dims> compressor{_pimpl->q, extent<Dims>{data.size()}};
 
     if (_pimpl->is_profiling()) {
         force_device_allocation(stream_buf, _pimpl->q);
@@ -788,13 +787,13 @@ size_t ndzip::sycl_encoder<T, Dims>::compress(
 
     stream_copy_evt.wait();
 
-    return host_size * sizeof(bits_type);
+    return host_size;
 }
 
 
 template<typename T, ndzip::dim_type Dims>
-size_t ndzip::sycl_encoder<T, Dims>::decompress(const void *raw_stream, size_t bytes,
-        const slice<data_type, extent<dimensions>> &data, kernel_duration *out_kernel_duration) const {
+ndzip::index_type ndzip::sycl_offloader<T, Dims>::do_decompress(const compressed_type *raw_stream, index_type length,
+        const slice<data_type, dynamic_extent> &data, kernel_duration *out_kernel_duration) {
     using namespace detail;
     using namespace detail::gpu_sycl;
 
@@ -805,8 +804,8 @@ size_t ndzip::sycl_encoder<T, Dims>::decompress(const void *raw_stream, size_t b
     detail::file<profile> file(data.size());
 
     // TODO the range computation here is questionable at best
-    sycl::buffer<bits_type> stream_buf{div_ceil(bytes, sizeof(bits_type))};
-    sycl::buffer<data_type, dimensions> data_buf{extent_cast<sycl::range<dimensions>>(data.size())};
+    sycl::buffer<bits_type> stream_buf{length};
+    sycl::buffer<data_type, dimensions> data_buf{extent_cast<Dims, sycl::range<dimensions>>(data.size())};
 
     submit_and_profile(_pimpl->q, "copy stream to device", [&](sycl::handler &cgh) {
         cgh.copy(static_cast<const bits_type *>(raw_stream), stream_buf.template get_access<sam::discard_write>(cgh));
@@ -844,21 +843,21 @@ size_t ndzip::sycl_encoder<T, Dims>::decompress(const void *raw_stream, size_t b
     detail::stream<const profile> stream{num_hypercubes, static_cast<const bits_type *>(raw_stream)};
     const auto border_offset = static_cast<index_type>(stream.border() - stream.buffer);
     const auto num_stream_words = border_offset + num_border_words;
-    return num_stream_words * sizeof(bits_type);
+    return num_stream_words;
 }
 
 
 namespace ndzip {
 
-extern template class sycl_encoder<float, 1>;
-extern template class sycl_encoder<float, 2>;
-extern template class sycl_encoder<float, 3>;
-extern template class sycl_encoder<double, 1>;
-extern template class sycl_encoder<double, 2>;
-extern template class sycl_encoder<double, 3>;
+extern template class sycl_offloader<float, 1>;
+extern template class sycl_offloader<float, 2>;
+extern template class sycl_offloader<float, 3>;
+extern template class sycl_offloader<double, 1>;
+extern template class sycl_offloader<double, 2>;
+extern template class sycl_offloader<double, 3>;
 
 #ifdef SPLIT_CONFIGURATION_sycl_encoder
-template class sycl_encoder<DATA_TYPE, DIMENSIONS>;
+template class sycl_offloader<DATA_TYPE, DIMENSIONS>;
 #endif
 
 }  // namespace ndzip

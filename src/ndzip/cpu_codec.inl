@@ -72,7 +72,8 @@ class simd_aligned_buffer {
 
 template<typename Profile>
 [[gnu::noinline]] void load_hypercube(const extent<Profile::dimensions> &hc_offset,
-        const slice<const typename Profile::data_type, extent<Profile::dimensions>> &data, typename Profile::bits_type *cube) {
+        const slice<const typename Profile::data_type, extent<Profile::dimensions>> &data,
+        typename Profile::bits_type *cube) {
     using data_type = typename Profile::data_type;
     using bits_type = typename Profile::bits_type;
 
@@ -82,8 +83,9 @@ template<typename Profile>
 }
 
 template<typename Profile>
-[[gnu::noinline]] void store_hypercube(const extent<Profile::dimensions> &hc_offset,
-        const typename Profile::bits_type *cube, const slice<typename Profile::data_type, extent<Profile::dimensions>> &data) {
+[[gnu::noinline]] void
+store_hypercube(const extent<Profile::dimensions> &hc_offset, const typename Profile::bits_type *cube,
+        const slice<typename Profile::data_type, extent<Profile::dimensions>> &data) {
     using data_type = typename Profile::data_type;
     using bits_type = typename Profile::bits_type;
 
@@ -585,16 +587,12 @@ struct ndzip::compressor<T, Dims>::st_impl : public compressor<T, Dims>::impl {
 
     detail::cpu::simd_aligned_buffer<bits_type> cube{hc_size};
 
-    size_t compress(const slice<const data_type, extent<dimensions>> &data, bits_type *raw_stream);
+    index_type compress(const slice<const data_type, extent<dimensions>> &data, bits_type *raw_stream) override;
 };
 
 template<typename T, int Dims>
-size_t
-ndzip::compressor<T, Dims>::st_impl::compress(const slice<const data_type, extent<dimensions>> &data, bits_type *raw_stream) {
-    if (reinterpret_cast<uintptr_t>(raw_stream) % sizeof(bits_type) != 0) {
-        throw std::invalid_argument("stream is not properly aligned");
-    }
-
+ndzip::index_type ndzip::compressor<T, Dims>::st_impl::compress(
+        const slice<const data_type, extent<dimensions>> &data, bits_type *raw_stream) {
     detail::file<profile> file(data.size());
     detail::stream<profile> stream{file.num_hypercubes(), raw_stream};
 
@@ -608,8 +606,8 @@ ndzip::compressor<T, Dims>::st_impl::compress(const slice<const data_type, exten
         stream.set_offset_after(hc_index, offset);
     });
 
-    auto border_bytes = detail::pack_border(stream.border(), data, profile::hypercube_side_length);
-    return (stream.border() - stream.buffer) * sizeof(bits_type) + border_bytes;
+    const auto border_length = detail::pack_border(stream.border(), data, profile::hypercube_side_length);
+    return (stream.border() - stream.buffer) + border_length;
 }
 
 
@@ -624,11 +622,11 @@ struct ndzip::decompressor<T, Dims>::st_impl : impl {
 
     detail::cpu::simd_aligned_buffer<bits_type> cube{hc_size};
 
-    size_t decompress(const bits_type *raw_stream, const slice<data_type, extent<dimensions>> &data) override;
+    ndzip::index_type decompress(const bits_type *raw_stream, const slice<data_type, extent<dimensions>> &data) override;
 };
 
 template<typename T, int Dims>
-size_t ndzip::decompressor<T, Dims>::st_impl::decompress(
+ndzip::index_type ndzip::decompressor<T, Dims>::st_impl::decompress(
         const bits_type *raw_stream, const slice<data_type, extent<dimensions>> &data) {
     detail::file<profile> file(data.size());
     detail::stream<const profile> stream{file.num_hypercubes(), raw_stream};
@@ -639,8 +637,8 @@ size_t ndzip::decompressor<T, Dims>::st_impl::decompress(
         detail::cpu::inverse_block_transform<profile>(cube.data());
         detail::cpu::store_hypercube<profile>(hc_offset, cube.data(), data);
     });
-    auto border_bytes = detail::unpack_border(data, stream.border(), profile::hypercube_side_length);
-    return (stream.border() - stream.buffer) * sizeof(bits_type) + border_bytes;
+    const auto border_length = detail::unpack_border(data, stream.border(), profile::hypercube_side_length);
+    return (stream.border() - stream.buffer) + border_length;
 }
 
 
@@ -681,7 +679,7 @@ struct ndzip::compressor<T, Dims>::mt_impl : impl {
 
     struct write_buffer {
         size_t first_hc_index = SIZE_MAX;
-        alignas(8) std::array<std::byte, profile::compressed_block_size_bound * num_hcs_per_chunk> stream;
+        std::array<bits_type, profile::compressed_block_length_bound * num_hcs_per_chunk> stream;
         boost::container::static_vector<uint32_t, num_hcs_per_chunk> offsets_after_hcs;
 
         size_t num_hypercubes() const { return offsets_after_hcs.size(); }
@@ -720,7 +718,7 @@ struct ndzip::compressor<T, Dims>::mt_impl : impl {
         }
     }
 
-    size_t compress(const slice<const data_type, extent<Dims>> &data, bits_type *stream) override;
+    index_type compress(const slice<const data_type, extent<Dims>> &data, bits_type *stream) override;
 };
 
 template<typename T, int Dims>
@@ -738,12 +736,13 @@ struct ndzip::decompressor<T, Dims>::mt_impl : impl {
     mt_impl(std::optional<size_t> opt_num_threads)
         : num_threads(opt_num_threads ? opt_num_threads.value() : boost::thread::physical_concurrency()) {}
 
-    size_t decompress(const compressed_type *stream, const slice<data_type, extent<Dims>> &data) override;
+    index_type decompress(const compressed_type *stream, const slice<data_type, extent<Dims>> &data) override;
 };
 
 
 template<typename T, int Dims>
-size_t ndzip::compressor<T, Dims>::mt_impl::compress(const slice<const data_type, extent<Dims>> &data, bits_type *raw_stream) {
+ndzip::index_type
+ndzip::compressor<T, Dims>::mt_impl::compress(const slice<const data_type, extent<Dims>> &data, bits_type *raw_stream) {
     if (reinterpret_cast<uintptr_t>(raw_stream) % sizeof(bits_type) != 0) {
         throw std::invalid_argument("stream is not properly aligned");
     }
@@ -825,10 +824,10 @@ size_t ndzip::compressor<T, Dims>::mt_impl::compress(const slice<const data_type
                             detail::cpu::load_hypercube<profile>(hc_offset, data, cube.data());
                             detail::cpu::block_transform<profile>(cube.data());
 
-                            task_stream_offset
-                                    += detail::cpu::zero_bit_encode<bits_type>(cube.data(),
-                                               write_task->stream.data() + task_stream_offset * sizeof(bits_type),
-                                               hc_size)
+                            task_stream_offset += detail::cpu::zero_bit_encode<bits_type>(cube.data(),
+                                                          reinterpret_cast<std::byte *>(write_task->stream.data())
+                                                                  + task_stream_offset * sizeof(bits_type),
+                                                          hc_size)
                                     / sizeof(bits_type);
                             write_task->offsets_after_hcs.push_back(task_stream_offset);
                         }
@@ -847,13 +846,13 @@ size_t ndzip::compressor<T, Dims>::mt_impl::compress(const slice<const data_type
         }
     }
 
-    auto border_bytes = detail::pack_border(stream.border(), data, side_length);
-    return (stream.border() - stream.buffer) * sizeof(bits_type) + border_bytes;
+    const auto border_length = detail::pack_border(stream.border(), data, side_length);
+    return (stream.border() - stream.buffer) + border_length;
 }
 
 
 template<typename T, int Dims>
-size_t ndzip::decompressor<T, Dims>::mt_impl::decompress(
+ndzip::index_type ndzip::decompressor<T, Dims>::mt_impl::decompress(
         const compressed_type *raw_stream, const slice<data_type, extent<Dims>> &data) {
     constexpr static auto side_length = profile::hypercube_side_length;
 
@@ -882,8 +881,8 @@ size_t ndzip::decompressor<T, Dims>::mt_impl::decompress(
         }
     }
 
-    auto border_bytes = detail::unpack_border(data, stream.border(), profile::hypercube_side_length);
-    return (stream.border() - stream.buffer) * sizeof(bits_type) + border_bytes;
+    const auto border_length = detail::unpack_border(data, stream.border(), profile::hypercube_side_length);
+    return (stream.border() - stream.buffer) + border_length;
 }
 
 template<typename T, int Dims>

@@ -1,14 +1,13 @@
 #include "test_utils.hh"
 
-#include <ndzip/cpu_encoder.hh>
-#include <ndzip/cpu_encoder.inl>
+#include <ndzip/cpu_codec.inl>
 
 #if NDZIP_HIPSYCL_SUPPORT
-#include <ndzip/sycl_encoder.inl>
+#include <ndzip/sycl_codec.inl>
 #endif
 
 #if NDZIP_CUDA_SUPPORT
-#include <ndzip/cuda_encoder.inl>
+#include <ndzip/cuda_codec.inl>
 #endif
 
 #include <iostream>
@@ -38,6 +37,7 @@ TEMPLATE_TEST_CASE("block transform is reversible", "[profile]", ALL_PROFILES) {
 TEMPLATE_TEST_CASE("decode(encode(input)) reproduces the input", "[encoder][de]", ALL_PROFILES) {
     using profile = TestType;
     using data_type = typename profile::data_type;
+    using bits_type = typename profile::bits_type;
 
     constexpr auto dims = profile::dimensions;
     constexpr auto side_length = profile::hypercube_side_length;
@@ -49,49 +49,49 @@ TEMPLATE_TEST_CASE("decode(encode(input)) reproduces the input", "[encoder][de]"
     std::fill(input_data.begin(), input_data.begin() + bits_of<data_type>, data_type{});
 
     auto test_encoder_decoder_pair = [&](auto &&encoder, auto &&decoder) {
-        slice<const data_type, extent<dims>> input(input_data.data(), extent<dims>::broadcast(n));
-        std::vector<std::byte> stream(ndzip::compressed_size_bound<typename TestType::data_type>(input.size()));
+        slice input{static_cast<const data_type *>(input_data.data()), dynamic_extent::broadcast(dims, n)};
+        std::vector<bits_type> stream(ndzip::compressed_length_bound<data_type>(input.size()));
         stream.resize(encoder.compress(input, stream.data()));
 
         std::vector<data_type> output_data(input_data.size());
-        slice<data_type, extent<dims>> output(output_data.data(), extent<dims>::broadcast(n));
-        auto stream_bytes_read = decoder.decompress(stream.data(), stream.size(), output);
+        slice output{output_data.data(), dynamic_extent::broadcast(dims, n)};
+        auto stream_words_read = decoder.decompress(stream.data(), stream.size(), output);
 
-        CHECK(stream_bytes_read == stream.size());
+        CHECK(stream_words_read == stream.size());
         CHECK_FOR_VECTOR_EQUALITY(input_data, output_data);
     };
 
-    SECTION("cpu_encoder::encode() => cpu_encoder::decode()") {
-        test_encoder_decoder_pair(ndzip::cpu_encoder<data_type, dims>{1}, cpu_encoder<data_type, dims>{1});
+    SECTION("cpu_offloader::encode() => cpu_offloader::decode()") {
+        test_encoder_decoder_pair(ndzip::cpu_offloader<data_type, dims>{1}, cpu_offloader<data_type, dims>{1});
     }
 
 #if NDZIP_OPENMP_SUPPORT
-    SECTION("cpu_encoder::encode() => mt cpu_encoder::decode()", "[omp]") {
-        test_encoder_decoder_pair(cpu_encoder<data_type, dims>{1}, cpu_encoder<data_type, dims>{});
+    SECTION("cpu_offloader::encode() => mt cpu_offloader::decode()", "[omp]") {
+        test_encoder_decoder_pair(cpu_offloader<data_type, dims>{1}, cpu_offloader<data_type, dims>{});
     }
 
-    SECTION("mt cpu_encoder::encode() => cpu_encoder::decode()", "[omp]") {
-        test_encoder_decoder_pair(cpu_encoder<data_type, dims>{}, cpu_encoder<data_type, dims>{1});
+    SECTION("mt cpu_offloader::encode() => cpu_offloader::decode()", "[omp]") {
+        test_encoder_decoder_pair(cpu_offloader<data_type, dims>{}, cpu_offloader<data_type, dims>{1});
     }
 #endif
 
 #if NDZIP_HIPSYCL_SUPPORT
-    SECTION("cpu_encoder::encode() => sycl_encoder::decode()", "[sycl]") {
-        test_encoder_decoder_pair(cpu_encoder<data_type, dims>{1}, sycl_encoder<data_type, dims>{});
+    SECTION("cpu_offloader::encode() => sycl_offloader::decode()", "[sycl]") {
+        test_encoder_decoder_pair(cpu_offloader<data_type, dims>{1}, sycl_offloader<data_type, dims>{});
     }
 
-    SECTION("sycl_encoder::encode() => cpu_encoder::decode()", "[sycl]") {
-        test_encoder_decoder_pair(sycl_encoder<data_type, dims>{}, cpu_encoder<data_type, dims>{1});
+    SECTION("sycl_offloader::encode() => cpu_offloader::decode()", "[sycl]") {
+        test_encoder_decoder_pair(sycl_offloader<data_type, dims>{}, cpu_offloader<data_type, dims>{1});
     }
 #endif
 
 #if NDZIP_CUDA_SUPPORT
-    SECTION("cpu_encoder::encode() => cuda_encoder::decode()", "[cuda]") {
-        test_encoder_decoder_pair(cpu_encoder<data_type, dims>{1}, cuda_encoder<data_type, dims>{});
+    SECTION("cpu_offloader::encode() => cuda_offloader::decode()", "[cuda]") {
+        test_encoder_decoder_pair(cpu_offloader<data_type, dims>{1}, cuda_offloader<data_type, dims>{});
     }
 
-    SECTION("cuda_encoder::encode() => cpu_encoder::decode()", "[cuda]") {
-        test_encoder_decoder_pair(cuda_encoder<data_type, dims>{}, cpu_encoder<data_type, dims>{1});
+    SECTION("cuda_offloader::encode() => cpu_offloader::decode()", "[cuda]") {
+        test_encoder_decoder_pair(cuda_offloader<data_type, dims>{}, cpu_offloader<data_type, dims>{1});
     }
 #endif
 }
@@ -101,18 +101,19 @@ TEMPLATE_TEST_CASE("decode(encode(input)) reproduces the input", "[encoder][de]"
 TEMPLATE_TEST_CASE("file headers from different encoders are identical", "[header]"
 #if NDZIP_OPENMP_SUPPORT
         ,
-        (cpu_encoder<DATA_TYPE, DIMENSIONS>)
+        (cpu_offloader<DATA_TYPE, DIMENSIONS>)
 #endif
 #if NDZIP_HIPSYCL_SUPPORT
                 ,
-        (sycl_encoder<DATA_TYPE, DIMENSIONS>)
+        (sycl_offloader<DATA_TYPE, DIMENSIONS>)
 #endif
 #if NDZIP_CUDA_SUPPORT
                 ,
-        (cuda_encoder<DATA_TYPE, DIMENSIONS>)
+        (cuda_offloader<DATA_TYPE, DIMENSIONS>)
 #endif
 ) {
     using data_type = typename TestType::data_type;
+    using bits_type = typename TestType::compressed_type;
     using profile = detail::profile<data_type, TestType::dimensions>;
 
     constexpr auto dims = profile::dimensions;
@@ -120,20 +121,21 @@ TEMPLATE_TEST_CASE("file headers from different encoders are identical", "[heade
     const index_type n = side_length * 4 - 1;
 
     auto input_data = make_random_vector<data_type>(ipow(n, dims));
-    slice<const data_type, extent<dims>> input(input_data.data(), extent<dims>::broadcast(n));
+    slice input{static_cast<const data_type *>(input_data.data()), dynamic_extent::broadcast(dims, n)};
 
     const auto file = detail::file<profile>(input.size());
     const auto aligned_stream_size_bound
-            = compressed_size_bound<typename TestType::data_type>(input.size()) / sizeof(index_type) + 1;
+            = compressed_length_bound<data_type>(input.size()) * sizeof(bits_type) / sizeof(index_type) + 1;
 
-    cpu_encoder<data_type, dims> reference_encoder{1};
+    cpu_offloader<data_type, dims> reference_encoder{1};
     std::vector<index_type> reference_stream(aligned_stream_size_bound);
-    auto reference_stream_length = reference_encoder.compress(input, reference_stream.data());
+    const auto reference_stream_length
+            = reference_encoder.compress(input, reinterpret_cast<bits_type *>(reference_stream.data()));
     reference_stream.resize(file.num_hypercubes());
 
     TestType test_encoder;
     std::vector<index_type> test_stream(aligned_stream_size_bound);
-    auto test_stream_length = test_encoder.compress(input, test_stream.data());
+    const auto test_stream_length = test_encoder.compress(input, reinterpret_cast<bits_type *>(test_stream.data()));
     test_stream.resize(file.num_hypercubes());
 
     CHECK_FOR_VECTOR_EQUALITY(reference_stream, test_stream);
@@ -148,8 +150,9 @@ using sycl::accessor, sycl::nd_range, sycl::buffer, sycl::nd_item, sycl::range, 
         sycl::sub_group;
 
 template<typename Profile>
-static std::vector<typename Profile::bits_type> sycl_load_and_dump_hypercube(
-        const slice<const typename Profile::data_type, extent<Profile::dimensions>> &in, index_type hc_index, sycl::queue &q) {
+static std::vector<typename Profile::bits_type>
+sycl_load_and_dump_hypercube(const slice<const typename Profile::data_type, extent<Profile::dimensions>> &in,
+        index_type hc_index, sycl::queue &q) {
     using data_type = typename Profile::data_type;
     using bits_type = typename Profile::bits_type;
 
@@ -355,7 +358,8 @@ static void cuda_fill(T *dest, T value, index_type count) {
 }
 
 template<typename Profile>
-static __global__ void cuda_load_and_dump_kernel(slice<const typename Profile::data_type, extent<Profile::dimensions>> data,
+static __global__ void
+cuda_load_and_dump_kernel(slice<const typename Profile::data_type, extent<Profile::dimensions>> data,
         index_type hc_index, typename Profile::data_type *result) {
     using data_type = typename Profile::data_type;
     constexpr auto hc_size = ipow(Profile::hypercube_side_length, Profile::dimensions);
@@ -394,8 +398,9 @@ static std::vector<typename Profile::bits_type> cuda_load_and_dump_hypercube(
 }
 
 template<typename Profile>
-static __global__ void cuda_load_hypercube_kernel(
-        slice<const typename Profile::data_type, extent<Profile::dimensions>> input, typename Profile::bits_type *temp) {
+static __global__ void
+cuda_load_hypercube_kernel(slice<const typename Profile::data_type, extent<Profile::dimensions>> input,
+        typename Profile::bits_type *temp) {
     constexpr index_type hc_size = ipow(Profile::hypercube_side_length, Profile::dimensions);
     auto hc_index = static_cast<index_type>(blockIdx.x);
 
@@ -409,8 +414,8 @@ static __global__ void cuda_load_hypercube_kernel(
 }
 
 template<typename Profile>
-static __global__ void cuda_store_hypercube_kernel(
-        const typename Profile::bits_type *temp, slice<typename Profile::data_type, extent<Profile::dimensions>> output) {
+static __global__ void cuda_store_hypercube_kernel(const typename Profile::bits_type *temp,
+        slice<typename Profile::data_type, extent<Profile::dimensions>> output) {
     constexpr index_type hc_size = ipow(Profile::hypercube_side_length, Profile::dimensions);
     auto hc_index = static_cast<index_type>(blockIdx.x);
 
@@ -561,8 +566,7 @@ TEMPLATE_TEST_CASE("Residual encodings from different encoders are equivalent", 
     auto input = make_random_vector<bits_type>(hc_size);
     for (index_type i = 0; i < hc_size; ++i) {
         for (index_type idx : {0u, 12u, 13u, 29u, bits_of<bits_type> - 2}) {
-            input[i] &= ~(
-                    bits_type{1} << ((idx * (i / bits_of<bits_type>) ) % bits_of<bits_type>));
+            input[i] &= ~(bits_type{1} << ((idx * (i / bits_of<bits_type>) ) % bits_of<bits_type>) );
             input[floor(i, bits_of<bits_type>) + idx] = 0;
         }
     }
@@ -570,7 +574,7 @@ TEMPLATE_TEST_CASE("Residual encodings from different encoders are equivalent", 
     cpu::simd_aligned_buffer<bits_type> cpu_cube(input.size());
     memcpy(cpu_cube.data(), input.data(), input.size() * sizeof(bits_type));
     std::vector<bits_type> cpu_stream(hc_size * 2);
-    auto cpu_length_bytes
+    const auto cpu_length_bytes
             = cpu::zero_bit_encode(cpu_cube.data(), reinterpret_cast<std::byte *>(cpu_stream.data()), hc_size);
 
     const auto num_chunks = 1 + hc_size / col_chunk_size;
@@ -661,7 +665,7 @@ TEMPLATE_TEST_CASE("Residual encodings from different encoders are equivalent", 
         q.submit([&](handler &cgh) {
              cgh.copy(length_buf.template get_access<sam::read>(cgh), &sycl_num_words);
          }).wait();
-        auto sycl_length_bytes = sycl_num_words * sizeof(bits_type);
+        const auto sycl_length_bytes = sycl_num_words * sizeof(bits_type);
 
         q.submit([&](handler &cgh) {
              cgh.copy(stream_buf.template get_access<sam::read>(cgh), sycl_stream.data());
@@ -738,8 +742,7 @@ TEMPLATE_TEST_CASE("GPU hypercube decoding works", "[decode]", ALL_PROFILES) {
     auto input = make_random_vector<bits_type>(hc_size);
     for (index_type i = 0; i < hc_size; ++i) {
         for (index_type idx : {0u, 12u, 13u, 29u, bits_of<bits_type> - 2}) {
-            input[i] &= ~(
-                    bits_type{1} << ((idx * (i / bits_of<bits_type>) ) % bits_of<bits_type>) );
+            input[i] &= ~(bits_type{1} << ((idx * (i / bits_of<bits_type>) ) % bits_of<bits_type>) );
             input[floor(i, bits_of<bits_type>) + idx] = 0;
         }
     }
@@ -951,38 +954,38 @@ TEMPLATE_TEST_CASE("Single block compresses identically on all encoders", "[omp]
     using bits_type = typename TestType::bits_type;
     constexpr auto dimensions = TestType::dimensions;
 
-    const auto size = extent<dimensions>::broadcast(TestType::hypercube_side_length);
+    const auto size = dynamic_extent::broadcast(dimensions, TestType::hypercube_side_length);
     const auto input = make_random_vector<data_type>(num_elements(size));
     const auto input_slice = slice{input.data(), size};
-    const auto max_output_words = div_ceil(compressed_size_bound<data_type>(size), sizeof(data_type));
+    const auto output_length_bound = compressed_length_bound<data_type>(size);
 
-    std::vector<bits_type> cpu_output(max_output_words);
-    auto cpu_output_bytes = cpu_encoder<data_type, dimensions>{1}.compress(input_slice, cpu_output.data());
-    cpu_output.resize(cpu_output_bytes / sizeof(bits_type));
+    std::vector<bits_type> cpu_output(output_length_bound);
+    const auto cpu_output_length = cpu_offloader<data_type, dimensions>{1}.compress(input_slice, cpu_output.data());
+    cpu_output.resize(cpu_output_length);
 
 #if NDZIP_OPENMP_SUPPORT
     SECTION("Multi-threaded vs single-threaded CPU", "[omp]") {
-        std::vector<bits_type> mt_cpu_output(max_output_words);
-        auto mt_cpu_output_bytes = cpu_encoder<data_type, dimensions>{}.compress(input_slice, mt_cpu_output.data());
-        mt_cpu_output.resize(mt_cpu_output_bytes / sizeof(bits_type));
+        std::vector<bits_type> mt_cpu_output(output_length_bound);
+        const auto mt_cpu_output_length = cpu_offloader<data_type, dimensions>{}.compress(input_slice, mt_cpu_output.data());
+        mt_cpu_output.resize(mt_cpu_output_length);
         CHECK_FOR_VECTOR_EQUALITY(mt_cpu_output, cpu_output);
     }
 #endif
 
 #if NDZIP_HIPSYCL_SUPPORT
     SECTION("SYCL vs CPU", "[sycl]") {
-        std::vector<bits_type> sycl_output(max_output_words);
-        auto sycl_output_bytes = sycl_encoder<data_type, dimensions>{}.compress(input_slice, sycl_output.data());
-        sycl_output.resize(sycl_output_bytes / sizeof(bits_type));
+        std::vector<bits_type> sycl_output(output_length_bound);
+        const auto sycl_output_length = sycl_offloader<data_type, dimensions>{}.compress(input_slice, sycl_output.data());
+        sycl_output.resize(sycl_output_length);
         CHECK_FOR_VECTOR_EQUALITY(sycl_output, cpu_output);
     }
 #endif
 
 #if NDZIP_CUDA_SUPPORT
     SECTION("CUDA vs CPU", "[cuda]") {
-        std::vector<bits_type> cuda_output(max_output_words);
-        auto cuda_output_bytes = cuda_encoder<data_type, dimensions>{}.compress(input_slice, cuda_output.data());
-        cuda_output.resize(cuda_output_bytes / sizeof(bits_type));
+        std::vector<bits_type> cuda_output(output_length_bound);
+        const auto cuda_output_length = cuda_offloader<data_type, dimensions>{}.compress(input_slice, cuda_output.data());
+        cuda_output.resize(cuda_output_length);
         CHECK_FOR_VECTOR_EQUALITY(cuda_output, cpu_output);
     }
 #endif
@@ -993,27 +996,27 @@ TEMPLATE_TEST_CASE("Single block decompresses correctly on all encoders", "[deco
     using bits_type = typename TestType::bits_type;
     constexpr auto dimensions = TestType::dimensions;
 
-    const auto size = extent<dimensions>::broadcast(TestType::hypercube_side_length);
+    const auto size = dynamic_extent::broadcast(dimensions, TestType::hypercube_side_length);
     const auto input = make_random_vector<data_type>(num_elements(size));
     const auto input_slice = slice{input.data(), size};
-    const auto max_output_words = div_ceil(compressed_size_bound<data_type>(size), sizeof(data_type));
+    const auto max_output_words = compressed_length_bound<data_type>(size);
 
     std::vector<bits_type> compressed(max_output_words);
-    auto compressed_bytes = cpu_encoder<data_type, dimensions>{1}.compress(input_slice, compressed.data());
-    compressed.resize(compressed_bytes / sizeof(data_type));
+    const auto compressed_length = cpu_offloader<data_type, dimensions>{1}.compress(input_slice, compressed.data());
+    compressed.resize(compressed_length);
 
     SECTION("On single-threaded CPU") {
         std::vector<data_type> cpu_output(num_elements(size));
-        cpu_encoder<data_type, dimensions>{1}.decompress(
-                compressed.data(), compressed_bytes, slice{cpu_output.data(), size});
+        cpu_offloader<data_type, dimensions>{1}.decompress(
+                compressed.data(), compressed_length, slice{cpu_output.data(), size});
         CHECK_FOR_VECTOR_EQUALITY(cpu_output, input);
     }
 
 #if NDZIP_OPENMP_SUPPORT
     SECTION("On multi-threaded CPU", "[omp]") {
         std::vector<data_type> mt_cpu_output(num_elements(size));
-        cpu_encoder<data_type, dimensions>{}.decompress(
-                compressed.data(), compressed_bytes, slice{mt_cpu_output.data(), size});
+        cpu_offloader<data_type, dimensions>{}.decompress(
+                compressed.data(), compressed_length, slice{mt_cpu_output.data(), size});
         CHECK_FOR_VECTOR_EQUALITY(mt_cpu_output, input);
     }
 #endif
@@ -1021,8 +1024,8 @@ TEMPLATE_TEST_CASE("Single block decompresses correctly on all encoders", "[deco
 #if NDZIP_HIPSYCL_SUPPORT
     SECTION("On SYCL", "[sycl]") {
         std::vector<data_type> sycl_output(num_elements(size));
-        sycl_encoder<data_type, dimensions>{}.decompress(
-                compressed.data(), compressed_bytes, slice{sycl_output.data(), size});
+        sycl_offloader<data_type, dimensions>{}.decompress(
+                compressed.data(), compressed_length, slice{sycl_output.data(), size});
         CHECK_FOR_VECTOR_EQUALITY(sycl_output, input);
     }
 #endif
@@ -1030,8 +1033,8 @@ TEMPLATE_TEST_CASE("Single block decompresses correctly on all encoders", "[deco
 #if NDZIP_CUDA_SUPPORT
     SECTION("On CUDA", "[cuda]") {
         std::vector<data_type> cuda_output(num_elements(size));
-        cuda_encoder<data_type, dimensions>{}.decompress(
-                compressed.data(), compressed_bytes, slice{cuda_output.data(), size});
+        cuda_offloader<data_type, dimensions>{}.decompress(
+                compressed.data(), compressed_length, slice{cuda_output.data(), size});
         CHECK_FOR_VECTOR_EQUALITY(cuda_output, input);
     }
 #endif

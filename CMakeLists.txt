@@ -110,15 +110,13 @@ set(NDZIP_PROFILE_CONFIGURATIONS
 
 add_library(ndzip SHARED
     include/ndzip/ndzip.hh
-    include/ndzip/cpu_encoder.hh
-    include/ndzip/cpu_encoder.hh
-    include/ndzip/sycl_encoder.hh
+    include/ndzip/offload.hh
     src/ndzip/common.hh
     src/ndzip/common.cc
-    src/ndzip/cpu_encoder.inl
+    src/ndzip/cpu_codec.inl
 )
 target_split_configured_sources(ndzip PRIVATE
-    GENERATE cpu_encoder.cc FROM src/ndzip/cpu_encoder.inl
+    GENERATE cpu_encoder.cc FROM src/ndzip/cpu_codec.inl
     ${NDZIP_PROFILE_CONFIGURATIONS}
 )
 
@@ -138,10 +136,10 @@ if (NDZIP_USE_HIPSYCL)
     add_library(ndzip-sycl SHARED
         include/ndzip/sycl.hh
         src/ndzip/sycl_bits.hh
-        src/ndzip/sycl_encoder.inl
+        src/ndzip/sycl_codec.inl
     )
     target_split_configured_sources(ndzip-sycl PRIVATE
-        GENERATE sycl_encoder.cc FROM src/ndzip/sycl_encoder.inl
+        GENERATE sycl_encoder.cc FROM src/ndzip/sycl_codec.inl
         ${NDZIP_PROFILE_CONFIGURATIONS}
     )
     target_include_directories(ndzip-sycl PUBLIC include)
@@ -154,10 +152,10 @@ if (NDZIP_USE_CUDA)
     add_library(ndzip-cuda SHARED
         include/ndzip/cuda.hh
         src/ndzip/cuda_bits.cuh
-        src/ndzip/cuda_encoder.inl
+        src/ndzip/cuda_codec.inl
     )
     target_split_configured_sources(ndzip-cuda PRIVATE
-        GENERATE cuda_encoder.cu FROM src/ndzip/cuda_encoder.inl
+        GENERATE cuda_encoder.cu FROM src/ndzip/cuda_codec.inl
         ${NDZIP_PROFILE_CONFIGURATIONS}
     )
     target_include_directories(ndzip-cuda PUBLIC include)
@@ -193,11 +191,11 @@ if (NDZIP_BUILD_TEST AND Catch2_FOUND)
     add_executable(encoder_test
         src/test/test_utils.hh
         src/test/test_main.cc
-        src/test/encoder_generic_test.cc
-        src/test/encoder_profile_test.inl)
+            src/test/codec_generic_test.cc
+            src/test/codec_profile_test.inl)
 
     target_split_configured_sources(encoder_test PRIVATE
-        GENERATE encoder_profile_test.cc FROM src/test/encoder_profile_test.inl
+        GENERATE encoder_profile_test.cc FROM src/test/codec_profile_test.inl
         ${NDZIP_PROFILE_CONFIGURATIONS}
         )
 
@@ -239,11 +237,11 @@ if (NDZIP_BUILD_TEST AND Catch2_FOUND)
 
         add_executable(sycl_ubench
                 src/sycl_ubench/ubench.hh
-                src/sycl_ubench/encoder_ubench.inl
+                src/sycl_ubench/sycl_codec_ubench.inl
                 src/sycl_ubench/sycl_bits_ubench.cc
                 src/sycl_ubench/ubench_main.cc)
         target_split_configured_sources(sycl_ubench PRIVATE
-                GENERATE encoder_ubench.cc FROM src/sycl_ubench/encoder_ubench.inl
+                GENERATE encoder_ubench.cc FROM src/sycl_ubench/sycl_codec_ubench.inl
                 ${NDZIP_PROFILE_CONFIGURATIONS}
                 )
         target_include_directories(sycl_ubench PRIVATE src include)

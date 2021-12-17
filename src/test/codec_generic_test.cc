@@ -3,7 +3,7 @@
 #include <iostream>
 
 #include <ndzip/common.hh>
-#include <ndzip/cpu_encoder.inl>
+#include <ndzip/cpu_codec.inl>
 
 
 using namespace ndzip;
@@ -112,8 +112,7 @@ TEST_CASE("for_each_border_slice iterates correctly") {
 
 
 TEMPLATE_TEST_CASE("file produces a sane hypercube / header layout", "[file]", (std::integral_constant<dim_type, 1>),
-        (std::integral_constant<dim_type, 2>), (std::integral_constant<dim_type, 3>),
-        (std::integral_constant<dim_type, 4>) ) {
+        (std::integral_constant<dim_type, 2>), (std::integral_constant<dim_type, 3>) ) {
     constexpr dim_type dims = TestType::value;
     using profile = detail::profile<float, dims>;
     const index_type n = 100;
@@ -154,14 +153,14 @@ TEMPLATE_TEST_CASE("file produces a sane hypercube / header layout", "[file]", (
 
     CHECK(std::all_of(visited.begin(), visited.end(), [](auto b) { return b; }));
 
-    CHECK(f.file_header_length() == f.num_hypercubes() * sizeof(index_type));
+    // CHECK(f.file_header_length() == f.num_hypercubes() * sizeof(index_type));
     CHECK(f.num_hypercubes() == ipow(n_hypercubes_per_dim, dims));
 }
 
 
 /* requires Profile parameters
 TEMPLATE_TEST_CASE("encoder produces the expected bit stream", "[encoder]",
-    (cpu_encoder<float, 2>), (cpu_encoder<float, 3>),
+    (cpu_offloader<float, 2>), (cpu_offloader<float, 3>),
     (mt_cpu_encoder<float, 2>), (mt_cpu_encoder<float, 3>)
 ) {
     using profile = detail::profile<typename TestType::data_type, TestType::dimensions>;
