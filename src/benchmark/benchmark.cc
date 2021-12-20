@@ -303,7 +303,7 @@ static benchmark_result benchmark_ndzip_target(
     using compressed_type = ndzip::compressed_type<T>;
 
     const auto dims = static_cast<ndzip::dim_type>(meta.dimensions());
-    ndzip::dynamic_extent extent{dims};
+    ndzip::extent extent{dims};
     for (ndzip::dim_type d = 0; d < dims; ++d) {
         extent[d] = static_cast<ndzip::index_type>(meta.extent[d]);
     }

@@ -13,23 +13,22 @@ class offloader {
 
     virtual ~offloader() = default;
 
-    index_type compress(const data_type *data, const dynamic_extent &data_size, compressed_type *stream,
+    index_type compress(const data_type *data, const extent &data_size, compressed_type *stream,
             kernel_duration *duration = nullptr) {
         return do_compress(data, data_size, stream, duration);
     }
 
-    index_type decompress(const compressed_type *stream, index_type length, data_type *data,
-            const dynamic_extent &data_size, kernel_duration *duration = nullptr) {
+    index_type decompress(const compressed_type *stream, index_type length, data_type *data, const extent &data_size,
+            kernel_duration *duration = nullptr) {
         return do_decompress(stream, length, data, data_size, duration);
     }
 
   protected:
-    virtual index_type do_compress(
-            const data_type *data, const dynamic_extent &data_size, compressed_type *stream, kernel_duration *duration)
+    virtual index_type do_compress(const data_type *data, const extent &data_size, compressed_type *stream, kernel_duration *duration)
             = 0;
 
     virtual index_type do_decompress(const compressed_type *stream, index_type length, data_type *data,
-            const dynamic_extent &data_size, kernel_duration *duration)
+            const extent &data_size, kernel_duration *duration)
             = 0;
 };
 
@@ -45,16 +44,16 @@ class cpu_offloader final : public offloader<T> {
     explicit cpu_offloader(index_type num_threads) : _co{num_threads}, _de{num_threads} {}
 
   protected:
-    index_type do_compress(const data_type *data, const dynamic_extent &data_size, compressed_type *stream,
+    index_type do_compress(const data_type *data, const extent &data_size, compressed_type *stream,
             kernel_duration *duration) override {
         // TODO duration
-        return _co.compress(data, extent<Dims>{data_size}, stream);
+        return _co.compress(data, data_size, stream);
     }
 
     index_type do_decompress(const compressed_type *stream, [[maybe_unused]] index_type, data_type *data,
-            const dynamic_extent &data_size, kernel_duration *duration) override {
+            const extent &data_size, kernel_duration *duration) override {
         // TODO duration
-        return _de.decompress(stream, data, extent<Dims>{data_size});
+        return _de.decompress(stream, data, data_size);
     }
 
   private:
@@ -77,11 +76,11 @@ class sycl_offloader final : public offloader<T> {
     sycl_offloader &operator=(sycl_offloader &&) noexcept = default;
 
   protected:
-    index_type do_compress(const data_type *data, const dynamic_extent &data_size, compressed_type *stream,
+    index_type do_compress(const data_type *data, const extent &data_size, compressed_type *stream,
             kernel_duration *duration) override;
 
-    index_type do_decompress(const compressed_type *stream, index_type length, data_type *data,
-            const dynamic_extent &data_size, kernel_duration *duration) override;
+    index_type do_decompress(const compressed_type *stream, index_type length, data_type *data, const extent &data_size,
+            kernel_duration *duration) override;
 
   private:
     struct impl;
@@ -100,11 +99,11 @@ class cuda_offloader final : public offloader<T> {
     constexpr static dim_type dimensions = Dims;
 
   protected:
-    index_type do_compress(const data_type *data, const dynamic_extent &data_size, compressed_type *stream,
+    index_type do_compress(const data_type *data, const extent &data_size, compressed_type *stream,
             kernel_duration *duration) override;
 
-    index_type do_decompress(const compressed_type *stream, index_type length, data_type *data,
-            const dynamic_extent &data_size, kernel_duration *duration) override;
+    index_type do_decompress(const compressed_type *stream, index_type length, data_type *data, const extent &data_size,
+            kernel_duration *duration) override;
 };
 
 #endif  // NDZIP_CUDA_SUPPORT

@@ -20,7 +20,7 @@ inline constexpr index_type banks_of = bytes_of<Bits> / bytes_of<uint_bank_t>;
 
 
 template<typename Profile>
-NDZIP_UNIVERSAL index_type global_offset(index_type local_offset, extent<Profile::dimensions> global_size) {
+NDZIP_UNIVERSAL index_type global_offset(index_type local_offset, static_extent<Profile::dimensions> global_size) {
     index_type global_offset = 0;
     index_type global_stride = 1;
     for (dim_type d = 0; d < Profile::dimensions; ++d) {
@@ -277,7 +277,7 @@ class border_map {
   public:
     constexpr static dim_type dimensions = Profile::dimensions;
 
-    constexpr explicit border_map(extent<dimensions> outer) {
+    constexpr explicit border_map(static_extent<dimensions> outer) {
         index_type outer_acc = 1, inner_acc = 1, edge_acc = 1;
         for (dim_type d = 0; d < dimensions; ++d) {
             dim_type dd = dimensions - 1 - d;
@@ -290,17 +290,17 @@ class border_map {
         }
     }
 
-    NDZIP_UNIVERSAL constexpr extent<dimensions> operator[](index_type i) const {
+    NDZIP_UNIVERSAL constexpr static_extent<dimensions> operator[](index_type i) const {
         return index(dim_tag<dimensions>{}, i);
     }
 
     NDZIP_UNIVERSAL constexpr index_type size() const { return _border[0]; }
 
   private:
-    extent<dimensions> _inner;
-    extent<dimensions> _border;
-    extent<dimensions> _edge;
-    extent<dimensions> _stride;
+    static_extent<dimensions> _inner;
+    static_extent<dimensions> _border;
+    static_extent<dimensions> _edge;
+    static_extent<dimensions> _stride;
 
     // We cannot write index() as a specialized template function because NVCC doesn't allow
     // specializations inside a class definition and border_map is a template itself, so
@@ -308,9 +308,11 @@ class border_map {
     template<dim_type D>
     using dim_tag = std::integral_constant<dim_type, D>;
 
-    NDZIP_UNIVERSAL constexpr extent<1> index(dim_tag<1>, index_type i) const { return {_edge[dimensions - 1] + i}; }
+    NDZIP_UNIVERSAL constexpr static_extent<1> index(dim_tag<1>, index_type i) const {
+        return {_edge[dimensions - 1] + i};
+    }
 
-    NDZIP_UNIVERSAL constexpr extent<2> index(dim_tag<2>, index_type i) const {
+    NDZIP_UNIVERSAL constexpr static_extent<2> index(dim_tag<2>, index_type i) const {
         if (i >= _edge[dimensions - 2]) {
             i -= _edge[dimensions - 2];
             auto y = _inner[dimensions - 2] + i / _stride[dimensions - 2];
@@ -323,7 +325,7 @@ class border_map {
         }
     }
 
-    NDZIP_UNIVERSAL constexpr extent<3> index(dim_tag<3>, index_type i) const {
+    NDZIP_UNIVERSAL constexpr static_extent<3> index(dim_tag<3>, index_type i) const {
         if (i >= _edge[dimensions - 3]) {
             i -= _edge[dimensions - 3];
             auto z = _inner[dimensions - 3] + i / _stride[dimensions - 3];

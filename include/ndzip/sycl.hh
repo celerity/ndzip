@@ -45,7 +45,7 @@ class sycl_compressor : public basic_sycl_compressor<T> {
     using value_type = T;
     using compressed_type = detail::bits_type<T>;
 
-    explicit sycl_compressor(sycl::queue &q, compressor_requirements<Dims> req);
+    explicit sycl_compressor(sycl::queue &q, compressor_requirements req);
 
     sycl_compress_events compress(sycl::buffer<value_type, Dims> &in_data, sycl::buffer<compressed_type> &out_stream,
             sycl::buffer<index_type> *out_stream_length = nullptr);

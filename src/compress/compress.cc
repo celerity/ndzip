@@ -14,7 +14,7 @@ namespace ndzip::detail {
 enum class data_type { t_float, t_double };
 
 template<typename T>
-void compress_stream(const std::string &in, const std::string &out, const ndzip::dynamic_extent &size,
+void compress_stream(const std::string &in, const std::string &out, const ndzip::extent &size,
         ndzip::offloader<T> &offloader, const ndzip::detail::io_factory &io) {
     using compressed_type = ndzip::compressed_type<T>;
 
@@ -56,7 +56,7 @@ void compress_stream(const std::string &in, const std::string &out, const ndzip:
 }
 
 template<typename T>
-void decompress_stream(const std::string &in, const std::string &out, const ndzip::dynamic_extent &size,
+void decompress_stream(const std::string &in, const std::string &out, const ndzip::extent &size,
         ndzip::offloader<T> &offloader, const ndzip::detail::io_factory &io) {
     using compressed_type = ndzip::compressed_type<T>;
 
@@ -85,7 +85,7 @@ void decompress_stream(const std::string &in, const std::string &out, const ndzi
 }
 
 template<typename T>
-void process_stream(bool decompress, const std::string &in, const std::string &out, const ndzip::dynamic_extent &size,
+void process_stream(bool decompress, const std::string &in, const std::string &out, const ndzip::extent &size,
         ndzip::offloader<T> &offloader, const ndzip::detail::io_factory &io) {
     if (decompress) {
         decompress_stream(in, out, size, offloader, io);
@@ -95,7 +95,7 @@ void process_stream(bool decompress, const std::string &in, const std::string &o
 }
 
 template<typename T>
-void process_stream(bool decompress, const ndzip::dynamic_extent &size, ndzip::target target,
+void process_stream(bool decompress, const ndzip::extent &size, ndzip::target target,
         std::optional<size_t> num_cpu_threads, const std::string &in, const std::string &out,
         const ndzip::detail::io_factory &io) {
     std::unique_ptr<ndzip::offloader<T>> offloader;
@@ -107,7 +107,7 @@ void process_stream(bool decompress, const ndzip::dynamic_extent &size, ndzip::t
     process_stream(decompress, in, out, size, *offloader, io);
 }
 
-void process_stream(bool decompress, const ndzip::dynamic_extent &size, ndzip::target target,
+void process_stream(bool decompress, const ndzip::extent &size, ndzip::target target,
         std::optional<size_t> num_cpu_threads, const data_type &data_type, const std::string &in,
         const std::string &out, const ndzip::detail::io_factory &io) {
     switch (data_type) {
@@ -159,7 +159,7 @@ int main(int argc, char **argv) {
 
     opts::variables_map vars;
     ndzip::target target;
-    ndzip::dynamic_extent size;
+    ndzip::extent size;
     ndzip::detail::data_type data_type;
     std::optional<size_t> opt_num_threads;
     try {
@@ -190,7 +190,7 @@ int main(int argc, char **argv) {
         if (size_components.empty() || size_components.size() > 3) {
             throw opts::error{"Expected between 1 and 3 dimensions, got " + std::to_string(size_components.size())};
         }
-        size = ndzip::dynamic_extent{static_cast<ndzip::dim_type>(size_components.size())};
+        size = ndzip::extent{static_cast<ndzip::dim_type>(size_components.size())};
         for (ndzip::dim_type d = 0; d < size.dimensions(); ++d) {
             size[d] = size_components[d];
         }

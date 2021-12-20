@@ -33,6 +33,129 @@
 
 namespace ndzip::detail {
 
+template<dim_type Dims>
+class static_extent {
+  public:
+    static_assert(Dims > 0);
+    static_assert(Dims <= max_dimensionality);
+
+    using const_iterator = const index_type *;
+    using iterator = index_type *;
+
+    constexpr static_extent() noexcept = default;
+
+    template<typename... Init,
+            std::enable_if_t<((sizeof...(Init) == Dims) && ... && std::is_convertible_v<Init, index_type>), int> = 0>
+    NDZIP_UNIVERSAL constexpr static_extent(Init... components) noexcept
+        : _components{static_cast<index_type>(components)...} {}
+
+    NDZIP_UNIVERSAL explicit static_extent(const extent &dyn) {
+        assert(dyn._dims == Dims);
+        for (dim_type d = 0; d < Dims; ++d) {
+            _components[d] = dyn._components[d];
+        }
+    }
+
+    NDZIP_UNIVERSAL static static_extent broadcast(index_type scalar) {
+        static_extent e;
+        for (dim_type d = 0; d < Dims; ++d) {
+            e[d] = scalar;
+        }
+        return e;
+    }
+
+    NDZIP_UNIVERSAL constexpr dim_type dimensions() const { return Dims; }
+
+    NDZIP_UNIVERSAL index_type &operator[](dim_type d) { return _components[d]; }
+
+    NDZIP_UNIVERSAL index_type operator[](dim_type d) const { return _components[d]; }
+
+    NDZIP_UNIVERSAL static_extent &operator+=(const static_extent &other) {
+        for (dim_type d = 0; d < Dims; ++d) {
+            _components[d] += other._components[d];
+        }
+        return *this;
+    }
+
+    NDZIP_UNIVERSAL friend static_extent operator+(const static_extent &left, const static_extent &right) {
+        auto result = left;
+        result += right;
+        return result;
+    }
+
+    NDZIP_UNIVERSAL static_extent &operator-=(const static_extent &other) {
+        for (dim_type d = 0; d < Dims; ++d) {
+            _components[d] -= other._components[d];
+        }
+        return *this;
+    }
+
+    NDZIP_UNIVERSAL friend static_extent operator-(const static_extent &left, const static_extent &right) {
+        auto result = left;
+        result -= right;
+        return result;
+    }
+
+    NDZIP_UNIVERSAL static_extent &operator*=(index_type other) {
+        for (dim_type d = 0; d < Dims; ++d) {
+            _components[d] *= other;
+        }
+        return *this;
+    }
+
+    NDZIP_UNIVERSAL friend static_extent operator*(const static_extent &left, index_type right) {
+        auto result = left;
+        result *= right;
+        return result;
+    }
+
+    NDZIP_UNIVERSAL friend static_extent operator*(index_type left, const static_extent &right) {
+        auto result = right;
+        result *= left;
+        return result;
+    }
+
+    NDZIP_UNIVERSAL static_extent &operator/=(index_type other) {
+        for (dim_type d = 0; d < Dims; ++d) {
+            _components[d] /= other;
+        }
+        return *this;
+    }
+
+    NDZIP_UNIVERSAL friend static_extent operator/(const static_extent &left, index_type right) {
+        auto result = left;
+        result /= right;
+        return result;
+    }
+
+    NDZIP_UNIVERSAL friend bool operator==(const static_extent &left, const static_extent &right) {
+        bool eq = true;
+        for (dim_type d = 0; d < Dims; ++d) {
+            eq &= left[d] == right[d];
+        }
+        return eq;
+    }
+
+    NDZIP_UNIVERSAL friend bool operator!=(const static_extent &left, const static_extent &right) {
+        return !operator==(left, right);
+    }
+
+    NDZIP_UNIVERSAL iterator begin() { return _components; }
+
+    NDZIP_UNIVERSAL iterator end() { return _components + Dims; }
+
+    NDZIP_UNIVERSAL const_iterator begin() const { return _components; }
+
+    NDZIP_UNIVERSAL const_iterator end() const { return _components + Dims; }
+
+  private:
+    friend class ndzip::extent;
+    index_type _components[Dims] = {};
+};
+
+template<typename... Init>
+static_extent(const Init &...) -> static_extent<sizeof...(Init)>;
+
 template<typename Integer>
 NDZIP_UNIVERSAL constexpr inline Integer ipow(Integer base, unsigned exponent) {
     Integer power{1};
@@ -150,8 +273,8 @@ template<typename POD, typename Memory>
 }
 
 template<dim_type Dims, typename Fn>
-void for_each_border_slice_recursive(const extent<Dims> &size, extent<Dims> pos, index_type side_length, dim_type d,
-        dim_type smallest_dim_with_border, const Fn &fn) {
+void for_each_border_slice_recursive(const static_extent<Dims> &size, static_extent<Dims> pos, index_type side_length,
+        dim_type d, dim_type smallest_dim_with_border, const Fn &fn) {
     auto border_begin = size[d] / side_length * side_length;
     auto border_end = size[d];
 
@@ -173,7 +296,7 @@ void for_each_border_slice_recursive(const extent<Dims> &size, extent<Dims> pos,
 }
 
 template<dim_type Dims, typename Fn>
-void for_each_border_slice(const extent<Dims> &size, index_type side_length, const Fn &fn) {
+void for_each_border_slice(const static_extent<Dims> &size, index_type side_length, const Fn &fn) {
     std::optional<dim_type> smallest_dim_with_border;
     for (dim_type d = 0; d < Dims; ++d) {
         if (size[d] / side_length == 0) {
@@ -184,13 +307,13 @@ void for_each_border_slice(const extent<Dims> &size, index_type side_length, con
         if (size[d] % side_length != 0) { smallest_dim_with_border = static_cast<int>(d); }
     }
     if (smallest_dim_with_border) {
-        for_each_border_slice_recursive(size, extent<Dims>{}, side_length, 0, *smallest_dim_with_border, fn);
+        for_each_border_slice_recursive(size, static_extent<Dims>{}, side_length, 0, *smallest_dim_with_border, fn);
     }
 }
 
 template<typename DataType, dim_type Dims>
-[[gnu::noinline]] index_type
-pack_border(compressed_type<DataType> *dest, DataType *src, const extent<Dims> &src_size, index_type side_length) {
+[[gnu::noinline]] index_type pack_border(
+        compressed_type<DataType> *dest, DataType *src, const static_extent<Dims> &src_size, index_type side_length) {
     static_assert(std::is_trivially_copyable_v<DataType>);
     index_type dest_offset = 0;
     for_each_border_slice(src_size, side_length, [&](index_type src_offset, index_type count) {
@@ -201,8 +324,8 @@ pack_border(compressed_type<DataType> *dest, DataType *src, const extent<Dims> &
 }
 
 template<typename DataType, dim_type Dims>
-[[gnu::noinline]] index_type unpack_border(
-        DataType *dest, const extent<Dims> &dest_size, const compressed_type<DataType> *src, index_type side_length) {
+[[gnu::noinline]] index_type unpack_border(DataType *dest, const static_extent<Dims> &dest_size,
+        const compressed_type<DataType> *src, index_type side_length) {
     static_assert(std::is_trivially_copyable_v<DataType>);
     index_type src_offset = 0;
     for_each_border_slice(dest_size, side_length, [&](index_type dest_offset, index_type count) {
@@ -213,7 +336,7 @@ template<typename DataType, dim_type Dims>
 }
 
 template<dim_type Dims>
-index_type border_element_count(const extent<Dims> &e, dim_type side_length) {
+index_type border_element_count(const static_extent<Dims> &e, dim_type side_length) {
     index_type n_cube_elems = 1;
     index_type n_all_elems = 1;
     for (dim_type d = 0; d < Dims; ++d) {
@@ -224,8 +347,8 @@ index_type border_element_count(const extent<Dims> &e, dim_type side_length) {
 }
 
 template<typename Profile, dim_type ThisDim, typename F>
-[[gnu::always_inline]] void
-iter_hypercubes(const extent<Profile::dimensions> &size, extent<Profile::dimensions> &off, index_type &i, F &f) {
+[[gnu::always_inline]] void iter_hypercubes(
+        const static_extent<Profile::dimensions> &size, static_extent<Profile::dimensions> &off, index_type &i, F &f) {
     if constexpr (ThisDim == Profile::dimensions) {
         invoke_for_element(f, i, off);
         ++i;
@@ -235,6 +358,10 @@ iter_hypercubes(const extent<Profile::dimensions> &size, extent<Profile::dimensi
             iter_hypercubes<Profile, ThisDim + 1>(size, off, i, f);
         }
     }
+}
+
+inline index_type get_num_hypercubes(compressor_requirements req) {
+    return req._max_num_hypercubes;
 }
 
 template<typename Profile>
@@ -280,7 +407,7 @@ struct stream {
 template<typename Profile>
 class file {
   public:
-    explicit file(const extent<Profile::dimensions> &size) : _size(size) {}
+    explicit file(const static_extent<Profile::dimensions> &size) : _size(size) {}
 
     index_type num_hypercubes() const {
         index_type num = 1;
@@ -293,14 +420,14 @@ class file {
     template<typename Fn>
     void for_each_hypercube(Fn &&f) const {
         index_type i = 0;
-        extent<Profile::dimensions> off{};
+        static_extent<Profile::dimensions> off{};
         iter_hypercubes<Profile, 0>(_size, off, i, f);
     }
 
-    const extent<Profile::dimensions> &size() const { return _size; };
+    const static_extent<Profile::dimensions> &size() const { return _size; };
 
   private:
-    extent<Profile::dimensions> _size;
+    static_extent<Profile::dimensions> _size;
 };
 
 template<typename T, dim_type Dims>
@@ -419,8 +546,8 @@ inline void inverse_block_transform(T *x, dim_type dims, index_type n) {
 
 
 template<typename Profile, typename SliceDataType, typename CubeDataType, typename F>
-[[gnu::always_inline]] void for_each_hypercube_slice(const extent<Profile::dimensions> &hc_offset, SliceDataType *data,
-        const extent<Profile::dimensions> &data_size, CubeDataType *cube_ptr, F &&f) {
+[[gnu::always_inline]] void for_each_hypercube_slice(const static_extent<Profile::dimensions> &hc_offset,
+        SliceDataType *data, const static_extent<Profile::dimensions> &data_size, CubeDataType *cube_ptr, F &&f) {
     constexpr auto side_length = Profile::hypercube_side_length;
 
     auto slice_ptr = &data[linear_index(data_size, hc_offset)];
@@ -451,8 +578,8 @@ template<typename Profile, typename SliceDataType, typename CubeDataType, typena
 }
 
 template<dim_type Dims>
-NDZIP_UNIVERSAL extent<Dims> extent_from_linear_id(index_type linear_id, const extent<Dims> &size) {
-    extent<Dims> ext;
+NDZIP_UNIVERSAL static_extent<Dims> extent_from_linear_id(index_type linear_id, const static_extent<Dims> &size) {
+    static_extent<Dims> ext;
     for (dim_type nd = 0; nd < Dims; ++nd) {
         auto d = Dims - 1 - nd;
         ext[d] = linear_id % size[d];

@@ -24,7 +24,7 @@ using hypercube_item = known_group_size_item<hypercube_group_size<Profile>>;
 
 template<typename Profile, typename F>
 void for_hypercube_indices(
-        hypercube_group<Profile> grp, index_type hc_index, const extent<Profile::dimensions> &data_size, F &&f) {
+        hypercube_group<Profile> grp, index_type hc_index, const static_extent<Profile::dimensions> &data_size, F &&f) {
     const auto side_length = Profile::hypercube_side_length;
     const auto hc_size = ipow(side_length, Profile::dimensions);
     const auto hc_offset = detail::extent_from_linear_id(hc_index, data_size / side_length) * side_length;
@@ -39,7 +39,7 @@ void for_hypercube_indices(
 
 template<typename Profile>
 void load_hypercube(sycl::group<1> grp, index_type hc_index, const typename Profile::data_type *data,
-        const extent<Profile::dimensions> &data_size, hypercube_ptr<Profile, forward_transform_tag> hc) {
+        const static_extent<Profile::dimensions> &data_size, hypercube_ptr<Profile, forward_transform_tag> hc) {
     using bits_type = typename Profile::bits_type;
 
     for_hypercube_indices<Profile>(grp, hc_index, data_size, [&](index_type global_idx, index_type local_idx) {
@@ -51,7 +51,7 @@ void load_hypercube(sycl::group<1> grp, index_type hc_index, const typename Prof
 
 template<typename Profile>
 void store_hypercube(sycl::group<1> grp, index_type hc_index, typename Profile::data_type *data,
-        const extent<Profile::dimensions> &data_size, hypercube_ptr<Profile, inverse_transform_tag> hc) {
+        const static_extent<Profile::dimensions> &data_size, hypercube_ptr<Profile, inverse_transform_tag> hc) {
     using data_type = typename Profile::data_type;
     for_hypercube_indices<Profile>(grp, hc_index, data_size, [&](index_type global_idx, index_type local_idx) {
         data[global_idx] = bit_cast<data_type>(rotate_right_1(hc.load(local_idx)));
@@ -493,7 +493,7 @@ get_chunks_and_length_buf_size(ndzip::index_type num_hypercubes) {
 }
 
 template<typename T, int Dims>
-ndzip::sycl_compressor<T, Dims>::sycl_compressor(sycl::queue &q, compressor_requirements<Dims> req)
+ndzip::sycl_compressor<T, Dims>::sycl_compressor(sycl::queue &q, compressor_requirements req)
     : sycl_compressor{q, get_chunks_and_length_buf_size<T, Dims>(detail::get_num_hypercubes(req))} {
 }
 
@@ -526,7 +526,7 @@ ndzip::sycl_compress_events ndzip::sycl_compressor<T, Dims>::compress(sycl::buff
 
     // TODO edge case w/ 0 hypercubes
 
-    const auto data_size = extent_cast<extent<Dims>>(in_data.get_range());
+    const auto data_size = extent_cast<static_extent<Dims>>(in_data.get_range());
     detail::file<profile> file(data_size);
     const auto num_hypercubes = file.num_hypercubes();
 
@@ -633,7 +633,7 @@ ndzip::sycl_decompress_events ndzip::sycl_decompressor<T, Dims>::decompress(
     using profile = detail::profile<T, Dims>;
     using sam = sycl::access::mode;
 
-    const auto data_size = extent_cast<extent<Dims>>(out_data.get_range());
+    const auto data_size = extent_cast<static_extent<Dims>>(out_data.get_range());
     const auto file = detail::file<profile>(data_size);
     const auto num_hypercubes = file.num_hypercubes();
 
@@ -714,7 +714,7 @@ ndzip::sycl_offloader<T, Dims>::~sycl_offloader() = default;
 
 
 template<typename T, ndzip::dim_type Dims>
-ndzip::index_type ndzip::sycl_offloader<T, Dims>::do_compress(const data_type *data, const dynamic_extent &data_size,
+ndzip::index_type ndzip::sycl_offloader<T, Dims>::do_compress(const data_type *data, const extent &data_size,
         compressed_type *raw_stream, kernel_duration *out_kernel_duration) {
     using namespace detail;
     using namespace detail::gpu_sycl;
@@ -725,7 +725,7 @@ ndzip::index_type ndzip::sycl_offloader<T, Dims>::do_compress(const data_type *d
 
     // TODO edge case w/ 0 hypercubes
 
-    const detail::file<profile> file{extent<Dims>{data_size}};
+    const detail::file<profile> file{static_extent<Dims>{data_size}};
     const auto num_hypercubes = file.num_hypercubes();
     if (verbose()) { printf("Have %u hypercubes\n", num_hypercubes); }
 
@@ -737,7 +737,7 @@ ndzip::index_type ndzip::sycl_offloader<T, Dims>::do_compress(const data_type *d
     sycl::buffer<bits_type> stream_buf(compressed_length_bound<T>(data_size));
     sycl::buffer<index_type> stream_length_buf(1);
 
-    ndzip::sycl_compressor<T, Dims> compressor{_pimpl->q, extent<Dims>{data_size}};
+    ndzip::sycl_compressor<T, Dims> compressor{_pimpl->q, data_size};
 
     if (_pimpl->is_profiling()) {
         force_device_allocation(stream_buf, _pimpl->q);
@@ -782,7 +782,7 @@ ndzip::index_type ndzip::sycl_offloader<T, Dims>::do_compress(const data_type *d
 
 template<typename T, ndzip::dim_type Dims>
 ndzip::index_type ndzip::sycl_offloader<T, Dims>::do_decompress(const compressed_type *raw_stream, index_type length,
-        data_type *data, const dynamic_extent &data_size, kernel_duration *out_kernel_duration) {
+        data_type *data, const extent &data_size, kernel_duration *out_kernel_duration) {
     using namespace detail;
     using namespace detail::gpu_sycl;
 
@@ -790,7 +790,7 @@ ndzip::index_type ndzip::sycl_offloader<T, Dims>::do_decompress(const compressed
     using bits_type = typename profile::bits_type;
     using sam = sycl::access::mode;
 
-    const detail::file<profile> file{extent<Dims>{data_size}};
+    const detail::file<profile> file{static_extent<Dims>{data_size}};
 
     // TODO the range computation here is questionable at best
     sycl::buffer<bits_type> stream_buf{length};
@@ -826,7 +826,7 @@ ndzip::index_type ndzip::sycl_offloader<T, Dims>::do_decompress(const compressed
     // TODO all this just to return the size? Maybe have a compressed-stream-size-query instead
     //  -- or a stream verification function!
     const auto num_hypercubes = file.num_hypercubes();
-    const auto border_map = gpu::border_map<profile>{extent<Dims>{data_size}};
+    const auto border_map = gpu::border_map<profile>{static_extent<Dims>{data_size}};
     const auto num_border_words = border_map.size();
 
     detail::stream<const profile> stream{num_hypercubes, static_cast<const bits_type *>(raw_stream)};

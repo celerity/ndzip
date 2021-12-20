@@ -39,7 +39,7 @@ TEMPLATE_TEST_CASE("Loading", "[load]", ALL_PROFILES) {
     constexpr index_type n_blocks = 16384;
 
     const auto grid_extent = [] {
-        extent<TestType::dimensions> grid_extent;
+        static_extent<TestType::dimensions> grid_extent;
         const auto n_blocks_regular = static_cast<index_type>(pow(n_blocks, 1.f / dimensions));
         auto n_blocks_to_distribute = n_blocks;
         for (dim_type d = 0; d < dimensions; ++d) {

@@ -42,6 +42,7 @@ TEMPLATE_TEST_CASE("decode(encode(input)) reproduces the input", "[encoder][de]"
     constexpr auto dims = profile::dimensions;
     constexpr auto side_length = profile::hypercube_side_length;
     const index_type n = side_length * 4 - 1;
+    const auto size = extent::broadcast(dims, n);
 
     auto input_data = make_random_vector<data_type>(ipow(n, dims));
 
@@ -49,7 +50,6 @@ TEMPLATE_TEST_CASE("decode(encode(input)) reproduces the input", "[encoder][de]"
     std::fill(input_data.begin(), input_data.begin() + bits_of<data_type>, data_type{});
 
     auto test_encoder_decoder_pair = [&](auto &&encoder, auto &&decoder) {
-        const auto size = dynamic_extent::broadcast(dims, n);
         std::vector<bits_type> stream(ndzip::compressed_length_bound<data_type>(size));
         stream.resize(encoder.compress(input_data.data(), size, stream.data()));
 
@@ -120,9 +120,9 @@ TEMPLATE_TEST_CASE("file headers from different encoders are identical", "[heade
     const index_type n = side_length * 4 - 1;
 
     auto input_data = make_random_vector<data_type>(ipow(n, dims));
-    const auto size = dynamic_extent::broadcast(dims, n);
+    const auto size = extent::broadcast(dims, n);
 
-    const auto file = detail::file<profile>{extent<dims>{size}};
+    const auto file = detail::file<profile>{static_extent<dims>{size}};
     const auto aligned_stream_size_bound
             = compressed_length_bound<data_type>(size) * sizeof(bits_type) / sizeof(index_type) + 1;
 
@@ -151,7 +151,7 @@ using sycl::accessor, sycl::nd_range, sycl::buffer, sycl::nd_item, sycl::range, 
 
 template<typename Profile>
 static std::vector<typename Profile::bits_type> sycl_load_and_dump_hypercube(const typename Profile::data_type *in,
-        const extent<Profile::dimensions> &in_size, index_type hc_index, sycl::queue &q) {
+        const static_extent<Profile::dimensions> &in_size, index_type hc_index, sycl::queue &q) {
     using data_type = typename Profile::data_type;
     using bits_type = typename Profile::bits_type;
 
@@ -223,7 +223,7 @@ TEMPLATE_TEST_CASE(
             17, 27, 37, 47, 57, 67, 77, 87, 97,
         };
         // clang-format on
-        auto result = load_and_dump_hypercube<profile>(data.data(), extent{8, 9}, 6 /* hc_index */, q);
+        auto result = load_and_dump_hypercube<profile>(data.data(), static_extent{8, 9}, 6 /* hc_index */, q);
         CHECK(result == std::vector<TestType>{52, 62, 53, 63, 0, 0, 0, 0});
     }
 
@@ -261,7 +261,7 @@ TEMPLATE_TEST_CASE(
             145, 245, 345, 445, 545,
             155, 255, 355, 455, 555,
         };
-        auto result = load_and_dump_hypercube<profile>(data.data(), extent{5, 5, 5}}, 3 /* hc_index */, q);
+        auto result = load_and_dump_hypercube<profile>(data.data(), static_extent{5, 5, 5}}, 3 /* hc_index */, q);
         CHECK(result == std::vector<TestType>{331, 431, 341, 441, 332, 432, 342, 442,
                       0, 0, 0, 0, 0, 0, 0, 0});
         // clang-format on
@@ -280,7 +280,7 @@ TEMPLATE_TEST_CASE("SYCL store_hypercube is the inverse of load_hypercube", "[sy
     const index_type n = side_length * 3;
 
     auto input_data = make_random_vector<data_type>(ipow(n, dims));
-    const auto size = extent<dims>::broadcast(n);
+    const auto size = static_extent<dims>::broadcast(n);
 
     buffer<data_type> input_buf{input_data.data(), range<1>{num_elements(size)}};
     // buffer needed for hypercube_ptr forward_transform_tag => inverse_transform_tag translation
@@ -351,9 +351,8 @@ static void cuda_fill(T *dest, T value, index_type count) {
 }
 
 template<typename Profile>
-static __global__ void
-cuda_load_and_dump_kernel(const typename Profile::data_type *data, extent<Profile::dimensions> data_size,
-        index_type hc_index, typename Profile::data_type *result) {
+static __global__ void cuda_load_and_dump_kernel(const typename Profile::data_type *data,
+        static_extent<Profile::dimensions> data_size, index_type hc_index, typename Profile::data_type *result) {
     using data_type = typename Profile::data_type;
     constexpr auto hc_size = ipow(Profile::hypercube_side_length, Profile::dimensions);
 
@@ -371,7 +370,7 @@ cuda_load_and_dump_kernel(const typename Profile::data_type *data, extent<Profil
 
 template<typename Profile>
 static std::vector<typename Profile::bits_type> cuda_load_and_dump_hypercube(
-        const typename Profile::data_type *in, const extent<Profile::dimensions> &in_size, index_type hc_index) {
+        const typename Profile::data_type *in, const static_extent<Profile::dimensions> &in_size, index_type hc_index) {
     using data_type = typename Profile::data_type;
     using bits_type = typename Profile::bits_type;
 
@@ -381,8 +380,7 @@ static std::vector<typename Profile::bits_type> cuda_load_and_dump_hypercube(
     gpu_cuda::cuda_buffer<data_type> store_buf(out.size());
     const detail::file<Profile> file{in_size};
 
-    CHECKED_CUDA_CALL(
-            cudaMemcpy, load_buf.get(), in, load_buf.size() * sizeof(data_type), cudaMemcpyHostToDevice);
+    CHECKED_CUDA_CALL(cudaMemcpy, load_buf.get(), in, load_buf.size() * sizeof(data_type), cudaMemcpyHostToDevice);
     cuda_fill(store_buf.get(), data_type{0}, store_buf.size());
     cuda_load_and_dump_kernel<Profile><<<file.num_hypercubes(), (gpu::hypercube_group_size<Profile>)>>>(
             load_buf.get(), in_size, hc_index, store_buf.get());
@@ -391,9 +389,8 @@ static std::vector<typename Profile::bits_type> cuda_load_and_dump_hypercube(
 }
 
 template<typename Profile>
-static __global__ void
-cuda_load_hypercube_kernel(const typename Profile::data_type *input, extent<Profile::dimensions> input_size,
-        typename Profile::bits_type *temp) {
+static __global__ void cuda_load_hypercube_kernel(const typename Profile::data_type *input,
+        static_extent<Profile::dimensions> input_size, typename Profile::bits_type *temp) {
     constexpr index_type hc_size = ipow(Profile::hypercube_side_length, Profile::dimensions);
     auto hc_index = static_cast<index_type>(blockIdx.x);
 
@@ -408,7 +405,7 @@ cuda_load_hypercube_kernel(const typename Profile::data_type *input, extent<Prof
 
 template<typename Profile>
 static __global__ void cuda_store_hypercube_kernel(const typename Profile::bits_type *temp,
-        typename Profile::data_type *output, extent<Profile::dimensions> output_size) {
+        typename Profile::data_type *output, static_extent<Profile::dimensions> output_size) {
     constexpr index_type hc_size = ipow(Profile::hypercube_side_length, Profile::dimensions);
     auto hc_index = static_cast<index_type>(blockIdx.x);
 
@@ -431,7 +428,7 @@ TEMPLATE_TEST_CASE("CUDA store_hypercube is the inverse of load_hypercube", "[cu
 
     auto input_data = make_random_vector<data_type>(ipow(n, dims));
     const auto input = input_data.data();
-    const auto size = extent<dims>::broadcast(n);
+    const auto size = static_extent<dims>::broadcast(n);
 
     gpu_cuda::cuda_buffer<data_type> input_buf{num_elements(size)};
     // buffer needed for hypercube_ptr forward_transform_tag => inverse_transform_tag translation
@@ -523,9 +520,9 @@ TEMPLATE_TEST_CASE("Flattening of hypercubes is identical between encoders", "[l
 
     const auto input_data = make_random_vector<data_type>(ipow(n, dims));
     const auto input = input_data.data();
-    const auto size = extent<dims>::broadcast(n);
+    const auto size = static_extent<dims>::broadcast(n);
 
-    extent<dims> hc_offset;
+    static_extent<dims> hc_offset;
     hc_offset[dims - 1] = side_length;
     index_type hc_index = 1;
 
@@ -949,7 +946,7 @@ TEMPLATE_TEST_CASE("Single block compresses identically on all encoders", "[omp]
     using bits_type = typename TestType::bits_type;
     constexpr auto dimensions = TestType::dimensions;
 
-    const auto size = dynamic_extent::broadcast(dimensions, TestType::hypercube_side_length);
+    const auto size = extent::broadcast(dimensions, TestType::hypercube_side_length);
     const auto input = make_random_vector<data_type>(num_elements(size));
     const auto output_length_bound = compressed_length_bound<data_type>(size);
 
@@ -993,7 +990,7 @@ TEMPLATE_TEST_CASE("Single block decompresses correctly on all encoders", "[deco
     using bits_type = typename TestType::bits_type;
     constexpr auto dimensions = TestType::dimensions;
 
-    const auto size = dynamic_extent::broadcast(dimensions, TestType::hypercube_side_length);
+    const auto size = extent::broadcast(dimensions, TestType::hypercube_side_length);
     const auto input = make_random_vector<data_type>(num_elements(size));
     const auto max_output_words = compressed_length_bound<data_type>(size);
 

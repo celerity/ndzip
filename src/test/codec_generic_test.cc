@@ -91,7 +91,7 @@ ostream &operator<<(ostream &os, const border_slice &s) {
 }  // namespace std
 
 template<dim_type Dims>
-static auto dump_border_slices(const extent<Dims> &size, index_type side_length) {
+static auto dump_border_slices(const static_extent<Dims> &size, index_type side_length) {
     slice_vec v;
     for_each_border_slice(
             size, side_length, [&](index_type offset, index_type count) { v.emplace_back(offset, count); });
@@ -100,14 +100,14 @@ static auto dump_border_slices(const extent<Dims> &size, index_type side_length)
 
 
 TEST_CASE("for_each_border_slice iterates correctly") {
-    CHECK(dump_border_slices(extent<2>{4, 4}, 4) == slice_vec{});
-    CHECK(dump_border_slices(extent<2>{4, 6}, 2) == slice_vec{});
-    CHECK(dump_border_slices(extent<2>{5, 4}, 4) == slice_vec{{16, 4}});
-    CHECK(dump_border_slices(extent<2>{4, 5}, 4) == slice_vec{{4, 1}, {9, 1}, {14, 1}, {19, 1}});
-    CHECK(dump_border_slices(extent<2>{4, 5}, 2) == slice_vec{{4, 1}, {9, 1}, {14, 1}, {19, 1}});
-    CHECK(dump_border_slices(extent<2>{4, 6}, 4) == slice_vec{{4, 2}, {10, 2}, {16, 2}, {22, 2}});
-    CHECK(dump_border_slices(extent<2>{4, 6}, 5) == slice_vec{{0, 24}});
-    CHECK(dump_border_slices(extent<2>{6, 4}, 5) == slice_vec{{0, 24}});
+    CHECK(dump_border_slices(static_extent<2>{4, 4}, 4) == slice_vec{});
+    CHECK(dump_border_slices(static_extent<2>{4, 6}, 2) == slice_vec{});
+    CHECK(dump_border_slices(static_extent<2>{5, 4}, 4) == slice_vec{{16, 4}});
+    CHECK(dump_border_slices(static_extent<2>{4, 5}, 4) == slice_vec{{4, 1}, {9, 1}, {14, 1}, {19, 1}});
+    CHECK(dump_border_slices(static_extent<2>{4, 5}, 2) == slice_vec{{4, 1}, {9, 1}, {14, 1}, {19, 1}});
+    CHECK(dump_border_slices(static_extent<2>{4, 6}, 4) == slice_vec{{4, 2}, {10, 2}, {16, 2}, {22, 2}});
+    CHECK(dump_border_slices(static_extent<2>{4, 6}, 5) == slice_vec{{0, 24}});
+    CHECK(dump_border_slices(static_extent<2>{6, 4}, 5) == slice_vec{{0, 24}});
 }
 
 
@@ -119,16 +119,16 @@ TEMPLATE_TEST_CASE("file produces a sane hypercube / header layout", "[file]", (
     const auto n_hypercubes_per_dim = n / profile::hypercube_side_length;
     const auto side_length = profile::hypercube_side_length;
 
-    extent<dims> size;
+    static_extent<dims> size;
     for (dim_type d = 0; d < dims; ++d) {
         size[d] = n;
     }
 
-    std::vector<std::vector<extent<dims>>> superblocks;
+    std::vector<std::vector<static_extent<dims>>> superblocks;
     std::vector<bool> visited(ipow(n_hypercubes_per_dim, dims));
 
     file<profile> f(size);
-    std::vector<extent<dims>> blocks;
+    std::vector<static_extent<dims>> blocks;
     index_type hypercube_index = 0;
     f.for_each_hypercube([&](auto hc_offset, auto hc_index) {
         CHECK(hc_index == hypercube_index);

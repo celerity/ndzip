@@ -279,7 +279,7 @@ U extent_cast(const T &e) {
 }
 
 template<typename U, dim_type Dims>
-U extent_cast(const extent<Dims> &e) {
+U extent_cast(const static_extent<Dims> &e) {
     return extent_cast<Dims, U>(e);
 }
 
