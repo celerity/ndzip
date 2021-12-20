@@ -18,7 +18,6 @@ namespace ndzip {
 
 using dim_type = int;
 using index_type = uint32_t;
-using stream_size_type = size_t;
 
 inline constexpr dim_type max_dimensionality = 3;
 
@@ -464,6 +463,38 @@ class decompressor final : public basic_decompressor<T> {
     struct mt_impl;
 
     std::unique_ptr<impl> _pimpl;
+};
+
+template<int Dims>
+class compressor_requirements;
+
+}  // namespace ndzip
+
+namespace ndzip::detail {
+
+template<int D>
+index_type get_num_hypercubes(compressor_requirements<D> req) {
+    return req._max_num_hypercubes;
+}
+
+}  // namespace ndzip::detail
+
+namespace ndzip {
+
+template<int Dims>
+class compressor_requirements {
+  public:
+    compressor_requirements() = default;
+    compressor_requirements(ndzip::extent<Dims> single_data_size);  // NOLINT(google-explicit-constructor)
+    compressor_requirements(std::initializer_list<extent<Dims>> data_sizes);
+
+    void include(extent<Dims> data_size);
+
+  private:
+    template<int D>
+    friend index_type detail::get_num_hypercubes(compressor_requirements<D>);
+
+    index_type _max_num_hypercubes = 0;
 };
 
 }  // namespace ndzip

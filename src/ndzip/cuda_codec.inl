@@ -502,14 +502,6 @@ __global__ void store_stream_length(
 }  // namespace ndzip::detail::gpu_cuda
 
 
-template<int Dims>
-void ndzip::cuda_compressor_requirements<Dims>::include(extent<Dims> data_size) {
-    using profile = detail::profile<float, Dims>;  // TODO value_type does not matter here, refactor
-    const auto file = detail::file<profile>(data_size);
-    _max_num_hypercubes = std::max(_max_num_hypercubes, file.num_hypercubes());
-}
-
-
 template<typename T, int Dims>
 struct ndzip::cuda_compressor<T, Dims>::scratch_buffers {
     using profile = detail::profile<T, Dims>;
@@ -519,7 +511,7 @@ struct ndzip::cuda_compressor<T, Dims>::scratch_buffers {
     detail::gpu_cuda::cuda_buffer<index_type> chunk_lengths_buf;
     std::vector<detail::gpu_cuda::cuda_buffer<index_type>> intermediate_bufs;
 
-    scratch_buffers(cuda_compressor_requirements<Dims> reqs) {
+    scratch_buffers(compressor_requirements<Dims> reqs) {
         using namespace ndzip;
 
         constexpr static index_type hc_size = detail::ipow(profile::hypercube_side_length, profile::dimensions);
@@ -527,7 +519,7 @@ struct ndzip::cuda_compressor<T, Dims>::scratch_buffers {
         constexpr static index_type header_chunk_size = hc_size / col_chunk_size;
         constexpr static index_type hc_total_chunks_size = hc_size + header_chunk_size;
 
-        const auto num_hypercubes = reqs._max_num_hypercubes;
+        const auto num_hypercubes = detail::get_num_hypercubes(reqs);
         const auto num_chunks = num_hypercubes * (1 + hc_size / col_chunk_size);
 
         chunks_buf.allocate(num_hypercubes * hc_total_chunks_size);
@@ -539,7 +531,7 @@ struct ndzip::cuda_compressor<T, Dims>::scratch_buffers {
 };
 
 template<typename T, int Dims>
-ndzip::cuda_compressor<T, Dims>::cuda_compressor(cudaStream_t stream, cuda_compressor_requirements<Dims> reqs)
+ndzip::cuda_compressor<T, Dims>::cuda_compressor(cudaStream_t stream, compressor_requirements<Dims> reqs)
     : _stream{stream}, _scratch{std::make_unique<scratch_buffers>(reqs)} {
 }
 

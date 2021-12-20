@@ -474,13 +474,6 @@ class border_expansion_kernel;
 }  // namespace ndzip::detail::gpu_sycl
 
 
-template<int Dims>
-void ndzip::sycl_compressor_requirements<Dims>::include(extent<Dims> data_size) {
-    using profile = detail::profile<float, Dims>;  // TODO value_type does not matter here, refactor
-    const auto file = detail::file<profile>(data_size);
-    _max_num_hypercubes = std::max(_max_num_hypercubes, file.num_hypercubes());
-}
-
 template<typename T, int Dims>
 static std::pair<ndzip::index_type, ndzip::index_type>
 get_chunks_and_length_buf_size(ndzip::index_type num_hypercubes) {
@@ -502,8 +495,8 @@ get_chunks_and_length_buf_size(ndzip::index_type num_hypercubes) {
 }
 
 template<typename T, int Dims>
-ndzip::sycl_compressor<T, Dims>::sycl_compressor(sycl::queue &q, sycl_compressor_requirements<Dims> req)
-    : sycl_compressor{q, get_chunks_and_length_buf_size<T, Dims>(req._max_num_hypercubes)} {
+ndzip::sycl_compressor<T, Dims>::sycl_compressor(sycl::queue &q, compressor_requirements<Dims> req)
+    : sycl_compressor{q, get_chunks_and_length_buf_size<T, Dims>(detail::get_num_hypercubes(req))} {
 }
 
 template<typename T, int Dims>

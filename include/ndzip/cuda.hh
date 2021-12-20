@@ -7,30 +7,6 @@
 
 namespace ndzip {
 
-template<int Dims>
-class cuda_compressor_requirements {
-  public:
-    cuda_compressor_requirements() = default;
-
-    cuda_compressor_requirements(extent<Dims> single_data_size) {  // NOLINT(google-explicit-constructor)
-        include(single_data_size);
-    }
-
-    cuda_compressor_requirements(std::initializer_list<extent<Dims>> data_sizes) {
-        for (auto ds : data_sizes) {
-            include(ds);
-        }
-    }
-
-    void include(extent<Dims> data_size);
-
-  private:
-    template<typename, int>
-    friend class cuda_compressor;
-
-    index_type _max_num_hypercubes = 0;
-};
-
 template<typename T>
 class basic_cuda_compressor {
   public:
@@ -50,9 +26,9 @@ class cuda_compressor final : public basic_cuda_compressor<T> {
     using value_type = T;
     using compressed_type = detail::bits_type<T>;
 
-    explicit cuda_compressor(cuda_compressor_requirements<Dims> reqs) : cuda_compressor{nullptr, reqs} {}
+    explicit cuda_compressor(compressor_requirements<Dims> reqs) : cuda_compressor{nullptr, reqs} {}
 
-    explicit cuda_compressor(cudaStream_t stream, cuda_compressor_requirements<Dims> reqs);
+    explicit cuda_compressor(cudaStream_t stream, compressor_requirements<Dims> reqs);
 
     cuda_compressor(cuda_compressor &&) noexcept = default;
 

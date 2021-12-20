@@ -2,14 +2,38 @@
 
 namespace ndzip {
 
+template<int Dims>
+void compressor_requirements<Dims>::include(extent<Dims> data_size) {
+    using profile = detail::profile<float, Dims>;  // TODO value_type does not matter here, refactor
+    const auto file = detail::file<profile>(data_size);
+    _max_num_hypercubes = std::max(_max_num_hypercubes, file.num_hypercubes());
+}
+
+template<int Dims>
+compressor_requirements<Dims>::compressor_requirements(ndzip::extent<Dims> single_data_size) {
+    include(single_data_size);
+}
+
+template<int Dims>
+compressor_requirements<Dims>::compressor_requirements(std::initializer_list<extent<Dims>> data_sizes) {
+    for (auto ds : data_sizes) {
+        include(ds);
+    }
+}
+
+template class compressor_requirements<1>;
+template class compressor_requirements<2>;
+template class compressor_requirements<3>;
+
+
 template<typename T, ndzip::dim_type Dims>
 index_type compressed_length_bound(const extent<Dims> &size) {
     using profile = detail::profile<T, Dims>;
     using bits_type = typename profile::bits_type;
 
     detail::file<profile> file(size);
-    const auto header_length = detail::div_ceil(file.num_hypercubes(),
-                                                detail::bits_of<bits_type> / detail::bits_of<index_type>);
+    const auto header_length
+            = detail::div_ceil(file.num_hypercubes(), detail::bits_of<bits_type> / detail::bits_of<index_type>);
     const auto compressed_length_bound = file.num_hypercubes() * profile::compressed_block_length_bound;
     const auto border_length = detail::border_element_count(size, profile::hypercube_side_length);
     return header_length + compressed_length_bound + border_length;

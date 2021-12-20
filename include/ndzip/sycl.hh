@@ -27,30 +27,6 @@ struct sycl_decompress_events {
     }
 };
 
-template<int Dims>
-class sycl_compressor_requirements {
-  public:
-    sycl_compressor_requirements() = default;
-
-    sycl_compressor_requirements(ndzip::extent<Dims> single_data_size) {  // NOLINT(google-explicit-constructor)
-        include(single_data_size);
-    }
-
-    sycl_compressor_requirements(std::initializer_list<extent<Dims>> data_sizes) {
-        for (auto ds : data_sizes) {
-            include(ds);
-        }
-    }
-
-    void include(extent<Dims> data_size);
-
-  private:
-    template<typename, int>
-    friend class sycl_compressor;
-
-    index_type _max_num_hypercubes = 0;
-};
-
 template<typename T>
 class basic_sycl_compressor {
   public:
@@ -69,7 +45,7 @@ class sycl_compressor : public basic_sycl_compressor<T> {
     using value_type = T;
     using compressed_type = detail::bits_type<T>;
 
-    explicit sycl_compressor(sycl::queue &q, sycl_compressor_requirements<Dims> req);
+    explicit sycl_compressor(sycl::queue &q, compressor_requirements<Dims> req);
 
     sycl_compress_events compress(sycl::buffer<value_type, Dims> &in_data, sycl::buffer<compressed_type> &out_stream,
             sycl::buffer<index_type> *out_stream_length = nullptr);
