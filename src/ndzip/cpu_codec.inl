@@ -71,27 +71,28 @@ class simd_aligned_buffer {
 };
 
 template<typename Profile>
-[[gnu::noinline]] void load_hypercube(const extent<Profile::dimensions> &hc_offset,
-        const slice<const typename Profile::data_type, extent<Profile::dimensions>> &data,
-        typename Profile::bits_type *cube) {
+[[gnu::noinline]] void load_hypercube(const extent<Profile::dimensions> &hc_offset, const typename Profile::data_type *data,
+        const extent<Profile::dimensions> &data_size, typename Profile::bits_type *cube) {
     using data_type = typename Profile::data_type;
     using bits_type = typename Profile::bits_type;
 
-    for_each_hypercube_slice<Profile>(hc_offset, data, cube, [](const data_type *src, bits_type *dest, size_t n_elems) {
-        memcpy(assume_simd_aligned(dest), src, n_elems * sizeof(data_type));
-    });
+    for_each_hypercube_slice<Profile>(
+            hc_offset, data, data_size, cube, [](const data_type *src, bits_type *dest, size_t n_elems) {
+                memcpy(assume_simd_aligned(dest), src, n_elems * sizeof(data_type));
+            });
 }
 
 template<typename Profile>
 [[gnu::noinline]] void
 store_hypercube(const extent<Profile::dimensions> &hc_offset, const typename Profile::bits_type *cube,
-        const slice<typename Profile::data_type, extent<Profile::dimensions>> &data) {
+        typename Profile::data_type *data, const extent<Profile::dimensions> &data_size) {
     using data_type = typename Profile::data_type;
     using bits_type = typename Profile::bits_type;
 
-    for_each_hypercube_slice<Profile>(hc_offset, data, cube, [](data_type *dest, const bits_type *src, size_t n_elems) {
-        memcpy(dest, assume_simd_aligned(src), n_elems * sizeof(data_type));
-    });
+    for_each_hypercube_slice<Profile>(
+            hc_offset, data, data_size, cube, [](data_type *dest, const bits_type *src, size_t n_elems) {
+                memcpy(dest, assume_simd_aligned(src), n_elems * sizeof(data_type));
+            });
 }
 
 
@@ -587,18 +588,18 @@ struct ndzip::compressor<T, Dims>::st_impl : public compressor<T, Dims>::impl {
 
     detail::cpu::simd_aligned_buffer<bits_type> cube{hc_size};
 
-    index_type compress(const slice<const data_type, extent<dimensions>> &data, bits_type *raw_stream) override;
+    index_type compress(const data_type *data, const extent<dimensions> &data_size, bits_type *raw_stream) override;
 };
 
 template<typename T, int Dims>
 ndzip::index_type ndzip::compressor<T, Dims>::st_impl::compress(
-        const slice<const data_type, extent<dimensions>> &data, bits_type *raw_stream) {
-    detail::file<profile> file(data.size());
+        const data_type *data, const extent<dimensions> &data_size, bits_type *raw_stream) {
+    detail::file<profile> file(data_size);
     detail::stream<profile> stream{file.num_hypercubes(), raw_stream};
 
     index_type offset = 0;
     file.for_each_hypercube([&](auto hc_offset, auto hc_index) {
-        detail::cpu::load_hypercube<profile>(hc_offset, data, cube.data());
+        detail::cpu::load_hypercube<profile>(hc_offset, data, data_size, cube.data());
         detail::cpu::block_transform<profile>(cube.data());
         offset += detail::cpu::zero_bit_encode<bits_type>(
                           cube.data(), reinterpret_cast<std::byte *>(stream.hypercube(hc_index)) /* TODO */, hc_size)
@@ -606,7 +607,7 @@ ndzip::index_type ndzip::compressor<T, Dims>::st_impl::compress(
         stream.set_offset_after(hc_index, offset);
     });
 
-    const auto border_length = detail::pack_border(stream.border(), data, profile::hypercube_side_length);
+    const auto border_length = detail::pack_border(stream.border(), data, data_size, profile::hypercube_side_length);
     return (stream.border() - stream.buffer) + border_length;
 }
 
@@ -622,22 +623,23 @@ struct ndzip::decompressor<T, Dims>::st_impl : impl {
 
     detail::cpu::simd_aligned_buffer<bits_type> cube{hc_size};
 
-    ndzip::index_type decompress(const bits_type *raw_stream, const slice<data_type, extent<dimensions>> &data) override;
+    ndzip::index_type decompress(
+            const bits_type *raw_stream, data_type *data, const extent<dimensions> &data_size) override;
 };
 
 template<typename T, int Dims>
 ndzip::index_type ndzip::decompressor<T, Dims>::st_impl::decompress(
-        const bits_type *raw_stream, const slice<data_type, extent<dimensions>> &data) {
-    detail::file<profile> file(data.size());
+        const bits_type *raw_stream, data_type *data, const extent<dimensions> &data_size) {
+    detail::file<profile> file(data_size);
     detail::stream<const profile> stream{file.num_hypercubes(), raw_stream};
 
     file.for_each_hypercube([&](auto hc_offset, auto hc_index) {
         detail::cpu::zero_bit_decode<bits_type>(
                 reinterpret_cast<const std::byte *>(stream.hypercube(hc_index)), cube.data(), hc_size);
         detail::cpu::inverse_block_transform<profile>(cube.data());
-        detail::cpu::store_hypercube<profile>(hc_offset, cube.data(), data);
+        detail::cpu::store_hypercube<profile>(hc_offset, cube.data(), data, data_size);
     });
-    const auto border_length = detail::unpack_border(data, stream.border(), profile::hypercube_side_length);
+    const auto border_length = detail::unpack_border(data, data_size, stream.border(), profile::hypercube_side_length);
     return (stream.border() - stream.buffer) + border_length;
 }
 
@@ -718,7 +720,7 @@ struct ndzip::compressor<T, Dims>::mt_impl : impl {
         }
     }
 
-    index_type compress(const slice<const data_type, extent<Dims>> &data, bits_type *stream) override;
+    index_type compress(const data_type *data, const extent<Dims> &data_size, bits_type *stream) override;
 };
 
 template<typename T, int Dims>
@@ -736,20 +738,20 @@ struct ndzip::decompressor<T, Dims>::mt_impl : impl {
     mt_impl(std::optional<size_t> opt_num_threads)
         : num_threads(opt_num_threads ? opt_num_threads.value() : boost::thread::physical_concurrency()) {}
 
-    index_type decompress(const compressed_type *stream, const slice<data_type, extent<Dims>> &data) override;
+    index_type decompress(const compressed_type *stream, data_type *data, const extent<Dims> &data_size) override;
 };
 
 
 template<typename T, int Dims>
-ndzip::index_type
-ndzip::compressor<T, Dims>::mt_impl::compress(const slice<const data_type, extent<Dims>> &data, bits_type *raw_stream) {
+ndzip::index_type ndzip::compressor<T, Dims>::mt_impl::compress(
+        const data_type *data, const extent<Dims> &data_size, bits_type *raw_stream) {
     if (reinterpret_cast<uintptr_t>(raw_stream) % sizeof(bits_type) != 0) {
         throw std::invalid_argument("stream is not properly aligned");
     }
 
     prepare();
 
-    const detail::file<profile> file(data.size());
+    const detail::file<profile> file(data_size);
 
     detail::stream<profile> stream{file.num_hypercubes(), raw_stream};
 
@@ -820,8 +822,8 @@ ndzip::compressor<T, Dims>::mt_impl::compress(const slice<const data_type, exten
                                 ++task_hc_index) {
                             auto hc_index = first_hc_index + task_hc_index;
                             auto hc_offset
-                                    = detail::extent_from_linear_id(hc_index, data.size() / side_length) * side_length;
-                            detail::cpu::load_hypercube<profile>(hc_offset, data, cube.data());
+                                    = detail::extent_from_linear_id(hc_index, data_size / side_length) * side_length;
+                            detail::cpu::load_hypercube<profile>(hc_offset, data, data_size, cube.data());
                             detail::cpu::block_transform<profile>(cube.data());
 
                             task_stream_offset += detail::cpu::zero_bit_encode<bits_type>(cube.data(),
@@ -846,21 +848,21 @@ ndzip::compressor<T, Dims>::mt_impl::compress(const slice<const data_type, exten
         }
     }
 
-    const auto border_length = detail::pack_border(stream.border(), data, side_length);
+    const auto border_length = detail::pack_border(stream.border(), data, data_size, side_length);
     return (stream.border() - stream.buffer) + border_length;
 }
 
 
 template<typename T, int Dims>
 ndzip::index_type ndzip::decompressor<T, Dims>::mt_impl::decompress(
-        const compressed_type *raw_stream, const slice<data_type, extent<Dims>> &data) {
+        const compressed_type *raw_stream, data_type *data, const extent<Dims> &data_size) {
     constexpr static auto side_length = profile::hypercube_side_length;
 
     if (reinterpret_cast<uintptr_t>(raw_stream) % sizeof(bits_type) != 0) {
         throw std::invalid_argument("stream is not properly aligned");
     }
 
-    detail::file<profile> file(data.size());
+    detail::file<profile> file(data_size);
     const auto num_hypercubes = file.num_hypercubes();
 
     detail::stream<const profile> stream{file.num_hypercubes(), raw_stream};
@@ -872,16 +874,16 @@ ndzip::index_type ndzip::decompressor<T, Dims>::mt_impl::decompress(
 
 #pragma omp for schedule(static) nowait
         for (size_t hc_index = 0; hc_index < num_hypercubes; ++hc_index) {
-            auto hc_offset = detail::extent_from_linear_id(hc_index, data.size() / side_length) * side_length;
+            auto hc_offset = detail::extent_from_linear_id(hc_index, data_size / side_length) * side_length;
 
             detail::cpu::zero_bit_decode<bits_type>(
                     reinterpret_cast<const std::byte *>(stream.hypercube(hc_index)), cube.data(), hc_size);
             detail::cpu::inverse_block_transform<profile>(cube.data());
-            detail::cpu::store_hypercube<profile>(hc_offset, cube.data(), data);
+            detail::cpu::store_hypercube<profile>(hc_offset, cube.data(), data, data_size);
         }
     }
 
-    const auto border_length = detail::unpack_border(data, stream.border(), profile::hypercube_side_length);
+    const auto border_length = detail::unpack_border(data, data_size, stream.border(), profile::hypercube_side_length);
     return (stream.border() - stream.buffer) + border_length;
 }
 

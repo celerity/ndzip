@@ -324,22 +324,20 @@ static benchmark_result benchmark_ndzip_target(
     }
 
     const auto uncompressed_length = ndzip::num_elements(extent);
-    const auto input_slice = ndzip::slice{input_buffer, extent};
     auto bench = benchmark{params};
 
     auto compress_buffer = scratch_buffer<compressed_type>{ndzip::compressed_length_bound<T>(extent)};
     size_t compressed_length;
     while (bench.compress_more()) {
         ndzip::kernel_duration duration;
-        compressed_length = offloader->compress(input_slice, compress_buffer.data(), &duration);
+        compressed_length = offloader->compress(input_buffer, extent, compress_buffer.data(), &duration);
         bench.record_compression(std::chrono::duration_cast<std::chrono::microseconds>(duration));
     }
 
     auto decompress_buffer = scratch_buffer<T>(ndzip::num_elements(extent));
-    const auto decompress_slice = ndzip::slice{decompress_buffer.data(), extent};
     while (bench.decompress_more()) {
         ndzip::kernel_duration duration;
-        offloader->decompress(compress_buffer.data(), compressed_length, decompress_slice, &duration);
+        offloader->decompress(compress_buffer.data(), compressed_length, decompress_buffer.data(), extent, &duration);
         bench.record_decompression(std::chrono::duration_cast<std::chrono::microseconds>(duration));
     }
 

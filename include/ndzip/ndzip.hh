@@ -32,7 +32,8 @@ class dynamic_extent {
     constexpr dynamic_extent() noexcept = default;
 
     template<dim_type Dims>
-    NDZIP_UNIVERSAL constexpr dynamic_extent(extent<Dims> extent) : _dims{Dims}, _components{extent._components} {
+    NDZIP_UNIVERSAL constexpr dynamic_extent(const extent<Dims> &extent)
+        : _dims{Dims}, _components{extent._components} {
         static_assert(Dims <= max_dimensionality);
     }
 
@@ -163,10 +164,10 @@ class extent {
 
     template<typename... Init,
             std::enable_if_t<((sizeof...(Init) == Dims) && ... && std::is_convertible_v<Init, index_type>), int> = 0>
-    NDZIP_UNIVERSAL constexpr extent(const Init &...components) noexcept
+    NDZIP_UNIVERSAL constexpr extent(Init... components) noexcept
         : _components{static_cast<index_type>(components)...} {}
 
-    NDZIP_UNIVERSAL extent(const dynamic_extent &dyn) {
+    NDZIP_UNIVERSAL explicit extent(const dynamic_extent &dyn) {
         assert(dyn._dims == Dims);
         for (dim_type d = 0; d < Dims; ++d) {
             _components[d] = dyn._components[d];
@@ -340,38 +341,6 @@ namespace ndzip {
 template<typename T>
 using compressed_type = ndzip::detail::bits_type<T>;
 
-template<typename T, typename Extent>
-class slice {
-  public:
-    NDZIP_UNIVERSAL explicit slice(T *data, const Extent &size) : _data(data), _size(size) {}
-
-    template<typename OtherExtent>
-    NDZIP_UNIVERSAL explicit slice(slice<T, OtherExtent> other) : _data(other.data()), _size(other.size()) {}
-
-    NDZIP_UNIVERSAL const Extent &size() const { return _size; }
-
-    NDZIP_UNIVERSAL T *data() const { return _data; }
-
-    NDZIP_UNIVERSAL index_type linear_index(const Extent &pos) const { return detail::linear_index(_size, pos); }
-
-    NDZIP_UNIVERSAL T &operator[](const Extent &pos) const { return _data[linear_index(pos)]; }
-
-#ifdef __NVCC__
-#pragma diag_suppress 554  //  will not be called if T == const T
-#endif
-    // NVCC breaks on a SFINAE'd constructor slice(slice<U, Dims>) with U == std::remove_const_t<T>
-    NDZIP_UNIVERSAL operator slice<const T, Extent>() const { return slice<const T, Extent>{_data, _size}; }
-#ifdef __NVCC__
-#pragma diag_default 554
-#endif
-
-  private:
-    T *_data;
-    Extent _size;
-
-    friend class slice<const T, Extent>;
-};
-
 template<typename T, dim_type Dims>
 index_type compressed_length_bound(const extent<Dims> &e);
 
@@ -388,7 +357,7 @@ class basic_compressor {
 
     virtual ~basic_compressor() = default;
 
-    virtual index_type compress(const slice<const value_type, dynamic_extent> &data, compressed_type *stream) = 0;
+    virtual index_type compress(const value_type *data, const dynamic_extent &data_size, compressed_type *stream) = 0;
 };
 
 template<typename T, int Dims>
@@ -403,18 +372,18 @@ class compressor final : public basic_compressor<T> {
 
     explicit compressor(size_t num_threads);
 
-    index_type compress(const slice<const value_type, extent<Dims>> &data, compressed_type *stream) {
-        return _pimpl->compress(data, stream);
+    index_type compress(const value_type *data, const extent<Dims> &data_size, compressed_type *stream) {
+        return _pimpl->compress(data, data_size, stream);
     }
 
-    index_type compress(const slice<const value_type, dynamic_extent> &data, compressed_type *stream) override {
-        return compress(slice<const value_type, extent<Dims>>{data}, stream);
+    index_type compress(const value_type *data, const dynamic_extent &data_size, compressed_type *stream) override {
+        return compress(data, extent<Dims>{data_size}, stream);
     }
 
   private:
     struct impl {
         virtual ~impl() = default;
-        virtual index_type compress(const slice<const value_type, extent<Dims>> &data, compressed_type *stream) = 0;
+        virtual index_type compress(const value_type *data, const extent<Dims> &data_size, compressed_type *stream) = 0;
     };
     struct st_impl;
     struct mt_impl;
@@ -430,7 +399,7 @@ class basic_decompressor {
 
     virtual ~basic_decompressor() = default;
 
-    virtual index_type decompress(const compressed_type *stream, const slice<value_type, dynamic_extent> &data) = 0;
+    virtual index_type decompress(const compressed_type *stream, value_type *data, const dynamic_extent &data_size) = 0;
 };
 
 template<typename T, int Dims>
@@ -445,19 +414,20 @@ class decompressor final : public basic_decompressor<T> {
 
     explicit decompressor(size_t num_threads);
 
-    index_type decompress(const compressed_type *stream, const slice<value_type, extent<Dims>> &data) {
-        return _pimpl->decompress(stream, data);
+    index_type decompress(const compressed_type *stream, value_type *data, const extent<Dims> &data_size) {
+        return _pimpl->decompress(stream, data, data_size);
     }
 
-    index_type decompress(const compressed_type *stream, const slice<value_type, dynamic_extent> &data) override {
-        return decompress(stream, slice<value_type, extent<Dims>>{data});
+    index_type decompress(const compressed_type *stream, value_type *data, const dynamic_extent &data_size) override {
+        return decompress(stream, data, extent<Dims>{data_size});
     }
 
   private:
     // TODO these can be proper subclasses (with a factory method)
     struct impl {
         virtual ~impl() = default;
-        virtual index_type decompress(const compressed_type *stream, const slice<value_type, extent<Dims>> &data) = 0;
+        virtual index_type decompress(const compressed_type *stream, value_type *data, const extent<Dims> &data_size)
+                = 0;
     };
     struct st_impl;
     struct mt_impl;
@@ -485,10 +455,10 @@ template<int Dims>
 class compressor_requirements {
   public:
     compressor_requirements() = default;
-    compressor_requirements(ndzip::extent<Dims> single_data_size);  // NOLINT(google-explicit-constructor)
+    compressor_requirements(const ndzip::extent<Dims> &single_data_size);  // NOLINT(google-explicit-constructor)
     compressor_requirements(std::initializer_list<extent<Dims>> data_sizes);
 
-    void include(extent<Dims> data_size);
+    void include(const extent<Dims> &data_size);
 
   private:
     template<int D>

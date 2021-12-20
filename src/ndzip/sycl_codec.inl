@@ -24,7 +24,7 @@ using hypercube_item = known_group_size_item<hypercube_group_size<Profile>>;
 
 template<typename Profile, typename F>
 void for_hypercube_indices(
-        hypercube_group<Profile> grp, index_type hc_index, extent<Profile::dimensions> data_size, F &&f) {
+        hypercube_group<Profile> grp, index_type hc_index, const extent<Profile::dimensions> &data_size, F &&f) {
     const auto side_length = Profile::hypercube_side_length;
     const auto hc_size = ipow(side_length, Profile::dimensions);
     const auto hc_offset = detail::extent_from_linear_id(hc_index, data_size / side_length) * side_length;
@@ -38,25 +38,23 @@ void for_hypercube_indices(
 
 
 template<typename Profile>
-void load_hypercube(sycl::group<1> grp, index_type hc_index,
-        slice<const typename Profile::data_type, extent<Profile::dimensions>> data,
-        hypercube_ptr<Profile, forward_transform_tag> hc) {
+void load_hypercube(sycl::group<1> grp, index_type hc_index, const typename Profile::data_type *data,
+        const extent<Profile::dimensions> &data_size, hypercube_ptr<Profile, forward_transform_tag> hc) {
     using bits_type = typename Profile::bits_type;
 
-    for_hypercube_indices<Profile>(grp, hc_index, data.size(), [&](index_type global_idx, index_type local_idx) {
-        hc.store(local_idx, rotate_left_1(bit_cast<bits_type>(data.data()[global_idx])));
+    for_hypercube_indices<Profile>(grp, hc_index, data_size, [&](index_type global_idx, index_type local_idx) {
+        hc.store(local_idx, rotate_left_1(bit_cast<bits_type>(data[global_idx])));
         // TODO merge with block_transform to avoid LM round-trip?
         //  we could assign directly to registers
     });
 }
 
 template<typename Profile>
-void store_hypercube(sycl::group<1> grp, index_type hc_index,
-        slice<typename Profile::data_type, extent<Profile::dimensions>> data,
-        hypercube_ptr<Profile, inverse_transform_tag> hc) {
+void store_hypercube(sycl::group<1> grp, index_type hc_index, typename Profile::data_type *data,
+        const extent<Profile::dimensions> &data_size, hypercube_ptr<Profile, inverse_transform_tag> hc) {
     using data_type = typename Profile::data_type;
-    for_hypercube_indices<Profile>(grp, hc_index, data.size(), [&](index_type global_idx, index_type local_idx) {
-        data.data()[global_idx] = bit_cast<data_type>(rotate_right_1(hc.load(local_idx)));
+    for_hypercube_indices<Profile>(grp, hc_index, data_size, [&](index_type global_idx, index_type local_idx) {
+        data[global_idx] = bit_cast<data_type>(rotate_right_1(hc.load(local_idx)));
     });
 }
 
@@ -542,11 +540,10 @@ ndzip::sycl_compress_events ndzip::sycl_compressor<T, Dims>::compress(sycl::buff
 
         sycl::local_accessor<compressor_local_allocation<profile>> lm{1, cgh};
         cgh.parallel_for<block_compression_kernel<T, Dims>>(nd_range, [=](hypercube_item<profile> item) {
-            slice<const T, extent<Dims>> data{data_acc.get_pointer(), data_size};
             hypercube_ptr<profile, forward_transform_tag> hc{lm[0].hc};
 
             auto hc_index = static_cast<index_type>(item.get_group_id(0));
-            load_hypercube(item.get_group(), hc_index, {data}, hc);
+            load_hypercube(item.get_group(), hc_index, data_acc.get_pointer(), data_size, hc);
             forward_block_transform(item.get_group(), hc);
             write_transposed_chunks(item, hc, &chunks_acc[hc_index * hc_total_chunks_size],
                     &chunk_lengths_acc[1 + hc_index * chunks_per_hc], lm[0].writer);
@@ -601,11 +598,12 @@ ndzip::sycl_compress_events ndzip::sycl_compressor<T, Dims>::compress(sycl::buff
             auto stream_acc = out_stream.template get_access<sam::discard_write>(cgh);
             cgh.parallel_for<border_compaction_kernel<T, Dims>>(  // TODO leverage ILP
                     sycl::range<1>{num_border_words}, [=](sycl::item<1> item) {
-                        slice<const T, extent<Dims>> data{data_acc.get_pointer(), data_size};
+                        const T *data = data_acc.get_pointer();
                         const auto num_compressed_words = offsets_acc[num_compressed_words_offset];
                         const auto border_offset = num_header_words + num_compressed_words;
                         const auto i = static_cast<index_type>(item.get_linear_id());
-                        stream_acc[border_offset + i] = detail::bit_cast<bits_type>(data[border_map[i]]);
+                        stream_acc[border_offset + i]
+                                = detail::bit_cast<bits_type>(data[linear_index(data_size, border_map[i])]);
                     });
         });
         events.stream_available.push_back(compact_border_evt);
@@ -647,14 +645,13 @@ ndzip::sycl_decompress_events ndzip::sycl_decompressor<T, Dims>::decompress(
 
         sycl::local_accessor<decompressor_local_allocation<profile>> lm{1, cgh};
         cgh.parallel_for<block_decompression_kernel<T, Dims>>(nd_range, [=](hypercube_item<profile> item) {
-            slice<T, extent<Dims>> data{data_acc.get_pointer(), data_size};
             hypercube_ptr<profile, inverse_transform_tag> hc{lm[0].hc};
 
             const auto hc_index = static_cast<index_type>(item.get_group_id(0));
             detail::stream<const profile> stream{num_hypercubes, stream_acc.get_pointer()};
             read_transposed_chunks<profile>(item, hc, stream.hypercube(hc_index), lm[0].reader);
             inverse_block_transform<profile>(item, hc, lm[0].transform);
-            store_hypercube(item.get_group(), hc_index, {data}, hc);
+            store_hypercube(item.get_group(), hc_index, data_acc.get_pointer(), data_size, hc);
         });
     });
     events.start = decompress_kernel_evt;
@@ -671,10 +668,9 @@ ndzip::sycl_decompress_events ndzip::sycl_decompressor<T, Dims>::decompress(
                     sycl::range<1>{num_border_words}, [=](sycl::item<1> item) {
                         detail::stream<const profile> stream{file.num_hypercubes(), stream_acc.get_pointer()};
                         const auto border_offset = static_cast<index_type>(stream.border() - stream.buffer);
-
-                        slice<T, extent<Dims>> data{data_acc.get_pointer(), data_size};
+                        T *data = data_acc.get_pointer();
                         auto i = static_cast<index_type>(item.get_linear_id());
-                        data[border_map[i]] = bit_cast<T>(stream_acc[border_offset + i]);
+                        data[linear_index(data_size, border_map[i])] = bit_cast<T>(stream_acc[border_offset + i]);
                     });
         });
         events.data_available.push_back(expand_border_evt);
@@ -718,7 +714,7 @@ ndzip::sycl_offloader<T, Dims>::~sycl_offloader() = default;
 
 
 template<typename T, ndzip::dim_type Dims>
-ndzip::index_type ndzip::sycl_offloader<T, Dims>::do_compress(const slice<const data_type, dynamic_extent> &data,
+ndzip::index_type ndzip::sycl_offloader<T, Dims>::do_compress(const data_type *data, const dynamic_extent &data_size,
         compressed_type *raw_stream, kernel_duration *out_kernel_duration) {
     using namespace detail;
     using namespace detail::gpu_sycl;
@@ -729,19 +725,19 @@ ndzip::index_type ndzip::sycl_offloader<T, Dims>::do_compress(const slice<const 
 
     // TODO edge case w/ 0 hypercubes
 
-    detail::file<profile> file(data.size());
+    const detail::file<profile> file{extent<Dims>{data_size}};
     const auto num_hypercubes = file.num_hypercubes();
     if (verbose()) { printf("Have %u hypercubes\n", num_hypercubes); }
 
-    sycl::buffer<data_type, dimensions> data_buf{extent_cast<Dims, sycl::range<dimensions>>(data.size())};
+    sycl::buffer<data_type, dimensions> data_buf{extent_cast<Dims, sycl::range<dimensions>>(data_size)};
 
     submit_and_profile(_pimpl->q, "copy input to device",
-            [&](sycl::handler &cgh) { cgh.copy(data.data(), data_buf.template get_access<sam::discard_write>(cgh)); });
+            [&](sycl::handler &cgh) { cgh.copy(data, data_buf.template get_access<sam::discard_write>(cgh)); });
 
-    sycl::buffer<bits_type> stream_buf(compressed_length_bound<T>(data.size()));
+    sycl::buffer<bits_type> stream_buf(compressed_length_bound<T>(data_size));
     sycl::buffer<index_type> stream_length_buf(1);
 
-    ndzip::sycl_compressor<T, Dims> compressor{_pimpl->q, extent<Dims>{data.size()}};
+    ndzip::sycl_compressor<T, Dims> compressor{_pimpl->q, extent<Dims>{data_size}};
 
     if (_pimpl->is_profiling()) {
         force_device_allocation(stream_buf, _pimpl->q);
@@ -786,7 +782,7 @@ ndzip::index_type ndzip::sycl_offloader<T, Dims>::do_compress(const slice<const 
 
 template<typename T, ndzip::dim_type Dims>
 ndzip::index_type ndzip::sycl_offloader<T, Dims>::do_decompress(const compressed_type *raw_stream, index_type length,
-        const slice<data_type, dynamic_extent> &data, kernel_duration *out_kernel_duration) {
+        data_type *data, const dynamic_extent &data_size, kernel_duration *out_kernel_duration) {
     using namespace detail;
     using namespace detail::gpu_sycl;
 
@@ -794,11 +790,11 @@ ndzip::index_type ndzip::sycl_offloader<T, Dims>::do_decompress(const compressed
     using bits_type = typename profile::bits_type;
     using sam = sycl::access::mode;
 
-    detail::file<profile> file(data.size());
+    const detail::file<profile> file{extent<Dims>{data_size}};
 
     // TODO the range computation here is questionable at best
     sycl::buffer<bits_type> stream_buf{length};
-    sycl::buffer<data_type, dimensions> data_buf{extent_cast<Dims, sycl::range<dimensions>>(data.size())};
+    sycl::buffer<data_type, dimensions> data_buf{extent_cast<Dims, sycl::range<dimensions>>(data_size)};
 
     submit_and_profile(_pimpl->q, "copy stream to device", [&](sycl::handler &cgh) {
         cgh.copy(static_cast<const bits_type *>(raw_stream), stream_buf.template get_access<sam::discard_write>(cgh));
@@ -813,7 +809,7 @@ ndzip::index_type ndzip::sycl_offloader<T, Dims>::do_decompress(const compressed
     auto events = sycl_decompressor<T, Dims>{_pimpl->q}.decompress(stream_buf, data_buf);
 
     submit_and_profile(_pimpl->q, "copy output to host", [&](sycl::handler &cgh) {
-        cgh.copy(data_buf.template get_access<sam::read>(cgh), data.data());
+        cgh.copy(data_buf.template get_access<sam::read>(cgh), data);
     }).wait();
 
     if (_pimpl->is_profiling()) {
@@ -830,7 +826,7 @@ ndzip::index_type ndzip::sycl_offloader<T, Dims>::do_decompress(const compressed
     // TODO all this just to return the size? Maybe have a compressed-stream-size-query instead
     //  -- or a stream verification function!
     const auto num_hypercubes = file.num_hypercubes();
-    const auto border_map = gpu::border_map<profile>{data.size()};
+    const auto border_map = gpu::border_map<profile>{extent<Dims>{data_size}};
     const auto num_border_words = border_map.size();
 
     detail::stream<const profile> stream{num_hypercubes, static_cast<const bits_type *>(raw_stream)};

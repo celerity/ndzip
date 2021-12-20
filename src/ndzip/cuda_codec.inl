@@ -29,7 +29,7 @@ using hypercube_block = known_size_block<hypercube_group_size<Profile>>;
 
 template<typename Profile, typename F>
 __device__ void for_hypercube_indices(
-        hypercube_block<Profile> block, index_type hc_index, extent<Profile::dimensions> data_size, F &&f) {
+        hypercube_block<Profile> block, index_type hc_index, const extent<Profile::dimensions> &data_size, F &&f) {
     const auto side_length = Profile::hypercube_side_length;
     const auto hc_size = ipow(side_length, Profile::dimensions);
     const auto hc_offset = detail::extent_from_linear_id(hc_index, data_size / side_length) * side_length;
@@ -43,25 +43,24 @@ __device__ void for_hypercube_indices(
 
 
 template<typename Profile>
-__device__ void load_hypercube(hypercube_block<Profile> block, index_type hc_index,
-        slice<const typename Profile::data_type, extent<Profile::dimensions>> data,
-        hypercube_ptr<Profile, forward_transform_tag> hc) {
+__device__ void
+load_hypercube(hypercube_block<Profile> block, index_type hc_index, const typename Profile::data_type *data,
+        const extent<Profile::dimensions> &data_size, hypercube_ptr<Profile, forward_transform_tag> hc) {
     using bits_type = typename Profile::bits_type;
 
-    for_hypercube_indices<Profile>(block, hc_index, data.size(), [&](index_type global_idx, index_type local_idx) {
-        hc.store(local_idx, rotate_left_1(bit_cast<bits_type>(data.data()[global_idx])));
+    for_hypercube_indices<Profile>(block, hc_index, data_size, [&](index_type global_idx, index_type local_idx) {
+        hc.store(local_idx, rotate_left_1(bit_cast<bits_type>(data[global_idx])));
         // TODO merge with block_transform to avoid LM round-trip?
         //  we could assign directly to registers
     });
 }
 
 template<typename Profile>
-__device__ void store_hypercube(hypercube_block<Profile> block, index_type hc_index,
-        slice<typename Profile::data_type, extent<Profile::dimensions>> data,
-        hypercube_ptr<Profile, inverse_transform_tag> hc) {
+__device__ void store_hypercube(hypercube_block<Profile> block, index_type hc_index, typename Profile::data_type *data,
+        const extent<Profile::dimensions> &data_size, hypercube_ptr<Profile, inverse_transform_tag> hc) {
     using data_type = typename Profile::data_type;
-    for_hypercube_indices<Profile>(block, hc_index, data.size(), [&](index_type global_idx, index_type local_idx) {
-        data.data()[global_idx] = bit_cast<data_type>(rotate_right_1(hc.load(local_idx)));
+    for_hypercube_indices<Profile>(block, hc_index, data_size, [&](index_type global_idx, index_type local_idx) {
+        data[global_idx] = bit_cast<data_type>(rotate_right_1(hc.load(local_idx)));
     });
 }
 
@@ -392,7 +391,7 @@ __device__ void compact_chunks(hypercube_block<Profile> block, const typename Pr
 
 
 template<typename Profile>
-__global__ void compress_block(slice<const typename Profile::data_type, extent<Profile::dimensions>> data,
+__global__ void compress_block(const typename Profile::data_type *data, extent<Profile::dimensions> data_size,
         typename Profile::bits_type *chunks, index_type *chunk_lengths) {
     using bits_type = typename Profile::bits_type;
 
@@ -408,7 +407,7 @@ __global__ void compress_block(slice<const typename Profile::data_type, extent<P
 
     auto hc_index = static_cast<index_type>(blockIdx.x);
     auto block = hypercube_block<Profile>{};
-    load_hypercube(block, hc_index, {data}, hc);
+    load_hypercube(block, hc_index, data, data_size, hc);
     __syncthreads();
     forward_block_transform(block, hc);
     __syncthreads();
@@ -450,20 +449,22 @@ constexpr static index_type border_threads_per_block = 256;
 
 
 template<typename Profile>
-__global__ void compact_border(slice<const typename Profile::data_type, extent<Profile::dimensions>> data,
+__global__ void compact_border(const typename Profile::data_type *data, extent<Profile::dimensions> data_size,
         const index_type *num_compressed_words, typename Profile::bits_type *stream_buf, index_type num_header_words,
         border_map<Profile> border_map) {
     using bits_type = typename Profile::bits_type;
 
     auto border_offset = num_header_words + *num_compressed_words;
     auto i = static_cast<index_type>(blockIdx.x * border_threads_per_block + threadIdx.x);
-    if (i < border_map.size()) { stream_buf[border_offset + i] = bit_cast<bits_type>(data[border_map[i]]); }
+    if (i < border_map.size()) {
+        stream_buf[border_offset + i] = bit_cast<bits_type>(data[linear_index(data_size, border_map[i])]);
+    }
 }
 
 
 template<typename Profile>
-__global__ void decompress_block(const typename Profile::bits_type *stream_buf,
-        slice<typename Profile::data_type, extent<Profile::dimensions>> data) {
+__global__ void decompress_block(const typename Profile::bits_type *stream_buf, typename Profile::data_type *data,
+        extent<Profile::dimensions> data_size) {
     auto block = hypercube_block<Profile>{};
     __shared__ hypercube_allocation<Profile, inverse_transform_tag> lm;
     hypercube_ptr<Profile, inverse_transform_tag> hc{lm};
@@ -475,19 +476,18 @@ __global__ void decompress_block(const typename Profile::bits_type *stream_buf,
     __syncthreads();
     inverse_block_transform<Profile>(block, hc);
     __syncthreads();
-    store_hypercube(block, hc_index, {data}, hc);
+    store_hypercube(block, hc_index, data, data_size, hc);
 }
 
 
 template<typename Profile>
-__global__ void expand_border(const typename Profile::bits_type *stream_buf,
-        slice<typename Profile::data_type, extent<Profile::dimensions>> data, border_map<Profile> border_map,
-        index_type num_hypercubes) {
+__global__ void expand_border(const typename Profile::bits_type *stream_buf, typename Profile::data_type *data,
+        extent<Profile::dimensions> data_size, border_map<Profile> border_map, index_type num_hypercubes) {
     using data_type = typename Profile::data_type;
     if (auto i = static_cast<index_type>(blockIdx.x * border_threads_per_block + threadIdx.x); i < border_map.size()) {
         detail::stream<const Profile> stream{num_hypercubes, stream_buf};
         const auto border_offset = static_cast<index_type>(stream.border() - stream.buffer);
-        data[border_map[i]] = bit_cast<data_type>(stream_buf[border_offset + i]);
+        data[linear_index(data_size, border_map[i])] = bit_cast<data_type>(stream_buf[border_offset + i]);
     }
 }
 
@@ -539,7 +539,7 @@ template<typename T, int Dims>
 ndzip::cuda_compressor<T, Dims>::~cuda_compressor() = default;
 
 template<typename T, int Dims>
-void ndzip::cuda_compressor<T, Dims>::compress(slice<const T, extent<Dims>> in_device_data,
+void ndzip::cuda_compressor<T, Dims>::compress(const T *in_device_data, const extent<Dims> &data_size,
         compressed_type *out_device_stream, index_type *out_device_stream_length) {
     using namespace detail;
     using namespace detail::gpu_cuda;
@@ -553,12 +553,12 @@ void ndzip::cuda_compressor<T, Dims>::compress(slice<const T, extent<Dims>> in_d
 
     // TODO edge case w/ 0 hypercubes
 
-    detail::file<profile> file(in_device_data.size());
+    detail::file<profile> file(data_size);
     const auto num_hypercubes = file.num_hypercubes();
     if (verbose()) { printf("Have %u hypercubes\n", num_hypercubes); }
 
     compress_block<profile><<<num_hypercubes, (hypercube_group_size<profile>), 0, _stream>>>(
-            in_device_data, _scratch->chunks_buf.get(), _scratch->chunk_lengths_buf.get());
+            in_device_data, data_size, _scratch->chunks_buf.get(), _scratch->chunk_lengths_buf.get());
 
     hierarchical_inclusive_scan(_scratch->chunk_lengths_buf.get(), _scratch->intermediate_bufs,
             _scratch->chunk_lengths_buf.size(), plus<index_type>{}, _stream);
@@ -570,7 +570,7 @@ void ndzip::cuda_compressor<T, Dims>::compress(slice<const T, extent<Dims>> in_d
     compact_all_chunks<profile><<<num_header_fields, (hypercube_group_size<profile>), 0, _stream>>>(num_hypercubes,
             _scratch->chunks_buf.get(), _scratch->chunk_lengths_buf.get(), static_cast<bits_type *>(out_device_stream));
 
-    const auto border_map = gpu::border_map<profile>{in_device_data.size()};
+    const auto border_map = gpu::border_map<profile>{data_size};
     const auto num_border_words = border_map.size();
 
     detail::stream<profile> stream{num_hypercubes, static_cast<bits_type *>(out_device_stream)};
@@ -579,7 +579,7 @@ void ndzip::cuda_compressor<T, Dims>::compress(slice<const T, extent<Dims>> in_d
 
     if (num_border_words > 0) {
         const index_type border_blocks = div_ceil(num_border_words, border_threads_per_block);
-        compact_border<profile><<<border_blocks, border_threads_per_block, 0, _stream>>>(in_device_data,
+        compact_border<profile><<<border_blocks, border_threads_per_block, 0, _stream>>>(in_device_data, data_size,
                 _scratch->chunk_lengths_buf.get() + num_compressed_words_offset,
                 static_cast<bits_type *>(out_device_stream), num_header_words, border_map);
     }
@@ -592,8 +592,8 @@ void ndzip::cuda_compressor<T, Dims>::compress(slice<const T, extent<Dims>> in_d
 
 
 template<typename T, ndzip::dim_type Dims>
-ndzip::index_type ndzip::cuda_offloader<T, Dims>::do_compress(const slice<const data_type, dynamic_extent>
-        &data, compressed_type *raw_stream, kernel_duration *out_kernel_duration) {
+ndzip::index_type ndzip::cuda_offloader<T, Dims>::do_compress(const data_type *data, const dynamic_extent &data_size,
+        compressed_type *raw_stream, kernel_duration *out_kernel_duration) {
     using namespace detail;
     using namespace detail::gpu_cuda;
 
@@ -602,24 +602,23 @@ ndzip::index_type ndzip::cuda_offloader<T, Dims>::do_compress(const slice<const 
 
     // TODO edge case w/ 0 hypercubes
 
-    detail::file<profile> file(data.size());
+    const detail::file<profile> file{extent<Dims>{data_size}};
     const auto num_hypercubes = file.num_hypercubes();
     if (verbose()) { printf("Have %u hypercubes\n", num_hypercubes); }
 
-    cuda_buffer<data_type> data_buffer{num_elements(data.size())};
-    CHECKED_CUDA_CALL(cudaMemcpy, data_buffer.get(), data.data(), data_buffer.size() * bytes_of<data_type>,
-            cudaMemcpyHostToDevice);
+    cuda_buffer<data_type> data_buffer{num_elements(data_size)};
+    CHECKED_CUDA_CALL(
+            cudaMemcpy, data_buffer.get(), data, data_buffer.size() * bytes_of<data_type>, cudaMemcpyHostToDevice);
 
-    cuda_compressor<T, Dims> compressor{extent<Dims>{data.size()}};
-    cuda_buffer<bits_type> stream_buf{compressed_length_bound<T>(data.size())};
+    cuda_compressor<T, Dims> compressor{extent<Dims>{data_size}};
+    cuda_buffer<bits_type> stream_buf{compressed_length_bound<T>(data_size)};
     cuda_buffer<index_type> stream_length_buf{1};
 
     cuda_event start, stop;
     bool record_events = out_kernel_duration || verbose();
     if (record_events) { start.record(); }
 
-    compressor.compress(
-            slice<const T, extent<Dims>>{data_buffer.get(), data.size()}, stream_buf.get(), stream_length_buf.get());
+    compressor.compress(data_buffer.get(), extent<Dims>{data_size}, stream_buf.get(), stream_length_buf.get());
 
     if (record_events) {
         stop.record();
@@ -641,45 +640,46 @@ ndzip::index_type ndzip::cuda_offloader<T, Dims>::do_compress(const slice<const 
 
 template<typename T, int Dims>
 void ndzip::cuda_decompressor<T, Dims>::decompress(
-        const compressed_type *in_device_stream, slice<T, extent<Dims>> out_device_data) {
+        const compressed_type *in_device_stream, T *out_device_data, const extent<Dims> &data_size) {
     using namespace detail;
     using namespace detail::gpu_cuda;
 
     using profile = detail::profile<T, Dims>;
     using bits_type = typename profile::bits_type;
 
-    const detail::file<profile> file(out_device_data.size());
+    const detail::file<profile> file{data_size};
     const auto num_hypercubes = file.num_hypercubes();
 
     decompress_block<profile><<<num_hypercubes, (hypercube_group_size<profile>), 0, _stream>>>(
-            static_cast<const bits_type *>(in_device_stream), out_device_data);
+            static_cast<const bits_type *>(in_device_stream), out_device_data, data_size);
 
-    const auto border_map = gpu::border_map<profile>{out_device_data.size()};
+    const auto border_map = gpu::border_map<profile>{data_size};
     const auto num_border_words = border_map.size();
 
     if (num_border_words > 0) {
         const index_type border_blocks = div_ceil(num_border_words, border_threads_per_block);
         expand_border<profile><<<border_blocks, border_threads_per_block, 0, _stream>>>(
-                static_cast<const bits_type *>(in_device_stream), out_device_data, border_map, num_hypercubes);
+                static_cast<const bits_type *>(in_device_stream), out_device_data, data_size, border_map,
+                num_hypercubes);
     }
 }
 
 
 template<typename T, ndzip::dim_type Dims>
 ndzip::index_type ndzip::cuda_offloader<T, Dims>::do_decompress(const compressed_type *raw_stream, index_type length,
-        const slice<T, dynamic_extent> &data, kernel_duration *out_kernel_duration) {
+        T *data, const dynamic_extent &data_size, kernel_duration *out_kernel_duration) {
     using namespace detail;
     using namespace detail::gpu_cuda;
 
     using profile = detail::profile<T, Dims>;
     using bits_type = typename profile::bits_type;
 
-    const detail::file<profile> file(data.size());
+    const detail::file<profile> file{extent<Dims>{data_size}};
     const auto num_hypercubes = file.num_hypercubes();
 
     // TODO the range computation here is questionable at best
     cuda_buffer<bits_type> stream_buf{length};
-    cuda_buffer<data_type> data_buf{num_elements(data.size())};
+    cuda_buffer<data_type> data_buf{num_elements(data_size)};
 
     CHECKED_CUDA_CALL(cudaMemcpy, stream_buf.get(), raw_stream, length * sizeof(bits_type), cudaMemcpyHostToDevice);
 
@@ -687,9 +687,9 @@ ndzip::index_type ndzip::cuda_offloader<T, Dims>::do_decompress(const compressed
     bool record_events = out_kernel_duration || verbose();
     if (record_events) { start.record(); }
 
-    ndzip::cuda_decompressor<T, Dims>{}.decompress(stream_buf.get(), slice{data_buf.get(), data.size()});
+    ndzip::cuda_decompressor<T, Dims>{}.decompress(stream_buf.get(), data_buf.get(), data_size);
 
-    const auto border_map = gpu::border_map<profile>{data.size()};
+    const auto border_map = gpu::border_map<profile>{extent<Dims>{data_size}};
     const auto num_border_words = border_map.size();
 
     detail::stream<const profile> stream{num_hypercubes, static_cast<const bits_type *>(raw_stream)};
@@ -703,8 +703,7 @@ ndzip::index_type ndzip::cuda_offloader<T, Dims>::do_decompress(const compressed
         if (verbose()) { printf("[profile] total kernel time %.3fms\n", duration.count() * 1e-6); }
     }
 
-    CHECKED_CUDA_CALL(
-            cudaMemcpy, data.data(), data_buf.get(), data_buf.size() * sizeof(data_type), cudaMemcpyDeviceToHost);
+    CHECKED_CUDA_CALL(cudaMemcpy, data, data_buf.get(), data_buf.size() * sizeof(data_type), cudaMemcpyDeviceToHost);
 
     return num_stream_words;
 }

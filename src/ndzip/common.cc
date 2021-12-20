@@ -3,14 +3,14 @@
 namespace ndzip {
 
 template<int Dims>
-void compressor_requirements<Dims>::include(extent<Dims> data_size) {
+void compressor_requirements<Dims>::include(const extent<Dims> &data_size) {
     using profile = detail::profile<float, Dims>;  // TODO value_type does not matter here, refactor
     const auto file = detail::file<profile>(data_size);
     _max_num_hypercubes = std::max(_max_num_hypercubes, file.num_hypercubes());
 }
 
 template<int Dims>
-compressor_requirements<Dims>::compressor_requirements(ndzip::extent<Dims> single_data_size) {
+compressor_requirements<Dims>::compressor_requirements(const ndzip::extent<Dims> &single_data_size) {
     include(single_data_size);
 }
 

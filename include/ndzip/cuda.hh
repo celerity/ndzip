@@ -15,7 +15,7 @@ class basic_cuda_compressor {
 
     virtual ~basic_cuda_compressor() = default;
 
-    virtual void compress(slice<const T, dynamic_extent> in_device_data, compressed_type *out_device_stream,
+    virtual void compress(const T *in_device_data, const dynamic_extent &data_size, compressed_type *out_device_stream,
             index_type *out_device_stream_length)
             = 0;
 };
@@ -36,12 +36,12 @@ class cuda_compressor final : public basic_cuda_compressor<T> {
 
     cuda_compressor &operator=(cuda_compressor &&) noexcept = default;
 
-    void compress(slice<const T, extent<Dims>> in_device_data, compressed_type *out_device_stream,
+    void compress(const T *in_device_data, const extent<Dims> &data_size, compressed_type *out_device_stream,
             index_type *out_device_stream_length);
 
-    virtual void compress(slice<const T, dynamic_extent> in_device_data, compressed_type *out_device_stream,
+    virtual void compress(const T *in_device_data, const dynamic_extent &data_size, compressed_type *out_device_stream,
             index_type *out_device_stream_length) override {
-        compress(slice<const T, extent<Dims>>{in_device_data}, out_device_stream, out_device_stream_length);
+        compress(in_device_data, extent<Dims>{data_size}, out_device_stream, out_device_stream_length);
     }
 
   private:
@@ -61,7 +61,9 @@ class basic_cuda_decompressor {
 
     virtual ~basic_cuda_decompressor() = default;
 
-    virtual void decompress(const compressed_type *in_device_stream, slice<T, dynamic_extent> out_device_data) = 0;
+    virtual void
+    decompress(const compressed_type *in_device_stream, T *out_device_data, const dynamic_extent &data_size)
+            = 0;
 
   private:
     cudaStream_t _stream = nullptr;
@@ -77,10 +79,11 @@ class cuda_decompressor final : public basic_cuda_decompressor<T> {
 
     explicit cuda_decompressor(cudaStream_t stream) : _stream(stream) {}
 
-    void decompress(const compressed_type *in_device_stream, slice<T, extent<Dims>> out_device_data);
+    void decompress(const compressed_type *in_device_stream, T *out_device_data, const extent<Dims> &data_size);
 
-    void decompress(const compressed_type *in_device_stream, slice<T, dynamic_extent> out_device_data) override {
-        decompress(in_device_stream, slice<T, extent<Dims>>{out_device_data});
+    void decompress(
+            const compressed_type *in_device_stream, T *out_device_data, const dynamic_extent &data_size) override {
+        decompress(in_device_stream, out_device_data, extent<Dims>{data_size});
     }
 
   private:

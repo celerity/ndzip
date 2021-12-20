@@ -34,8 +34,7 @@ void compress_stream(const std::string &in, const std::string &out, const ndzip:
             const auto input_buffer = static_cast<const T *>(chunk);
             const auto write_buffer = static_cast<compressed_type *>(out_stream->get_write_buffer());
             kernel_duration chunk_duration;
-            const auto compressed_chunk_length = offloader.compress(
-                    ndzip::slice<const T, dynamic_extent>(input_buffer, size), write_buffer, &chunk_duration);
+            const auto compressed_chunk_length = offloader.compress(input_buffer, size, write_buffer, &chunk_duration);
             const auto compressed_chunk_size = compressed_chunk_length * sizeof(compressed_type);
             assert(compressed_chunk_length <= max_compressed_chunk_length);
             out_stream->commit_chunk(compressed_chunk_size);
@@ -77,8 +76,7 @@ void decompress_stream(const std::string &in, const std::string &out, const ndzi
         const auto chunk_buffer = static_cast<const compressed_type *>(chunk);
         const auto chunk_buffer_length = bytes_in_chunk / sizeof(compressed_type);  // floor division!
         const auto output_buffer = static_cast<T *>(out_stream->get_write_buffer());
-        const auto compressed_length = offloader.decompress(
-                chunk_buffer, chunk_buffer_length, ndzip::slice<T, ndzip::dynamic_extent>(output_buffer, size));
+        const auto compressed_length = offloader.decompress(chunk_buffer, chunk_buffer_length, output_buffer, size);
         const auto compressed_size = compressed_length * sizeof(compressed_type);
         assert(compressed_length <= chunk_buffer_length);
         out_stream->commit_chunk(array_chunk_size);
@@ -128,7 +126,7 @@ int main(int argc, char **argv) {
 
     bool decompress = false;
     bool no_mmap = false;
-    std::vector<ndzip::index_type> size_components{};
+    std::vector<ndzip::index_type> size_components;
     std::string input = "-";
     std::string output = "-";
     std::string data_type_str = "float";

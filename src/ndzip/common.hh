@@ -190,23 +190,23 @@ void for_each_border_slice(const extent<Dims> &size, index_type side_length, con
 
 template<typename DataType, dim_type Dims>
 [[gnu::noinline]] index_type
-pack_border(compressed_type<DataType> *dest, const slice<DataType, extent<Dims>> &src, index_type side_length) {
+pack_border(compressed_type<DataType> *dest, DataType *src, const extent<Dims> &src_size, index_type side_length) {
     static_assert(std::is_trivially_copyable_v<DataType>);
     index_type dest_offset = 0;
-    for_each_border_slice(src.size(), side_length, [&](index_type src_offset, index_type count) {
-        memcpy(dest + dest_offset, src.data() + src_offset, count * sizeof(DataType));
+    for_each_border_slice(src_size, side_length, [&](index_type src_offset, index_type count) {
+        memcpy(dest + dest_offset, src + src_offset, count * sizeof(DataType));
         dest_offset += count;
     });
     return dest_offset;
 }
 
 template<typename DataType, dim_type Dims>
-[[gnu::noinline]] index_type
-unpack_border(const slice<DataType, extent<Dims>> &dest, const compressed_type<DataType> *src, index_type side_length) {
+[[gnu::noinline]] index_type unpack_border(
+        DataType *dest, const extent<Dims> &dest_size, const compressed_type<DataType> *src, index_type side_length) {
     static_assert(std::is_trivially_copyable_v<DataType>);
     index_type src_offset = 0;
-    for_each_border_slice(dest.size(), side_length, [&](index_type dest_offset, index_type count) {
-        memcpy(dest.data() + dest_offset, src + src_offset, count * sizeof(DataType));
+    for_each_border_slice(dest_size, side_length, [&](index_type dest_offset, index_type count) {
+        memcpy(dest + dest_offset, src + src_offset, count * sizeof(DataType));
         src_offset += count;
     });
     return src_offset;
@@ -280,7 +280,7 @@ struct stream {
 template<typename Profile>
 class file {
   public:
-    explicit file(extent<Profile::dimensions> size) : _size(size) {}
+    explicit file(const extent<Profile::dimensions> &size) : _size(size) {}
 
     index_type num_hypercubes() const {
         index_type num = 1;
@@ -419,23 +419,23 @@ inline void inverse_block_transform(T *x, dim_type dims, index_type n) {
 
 
 template<typename Profile, typename SliceDataType, typename CubeDataType, typename F>
-[[gnu::always_inline]] void for_each_hypercube_slice(const extent<Profile::dimensions> &hc_offset,
-        const slice<SliceDataType, extent<Profile::dimensions>> &data, CubeDataType *cube_ptr, F &&f) {
+[[gnu::always_inline]] void for_each_hypercube_slice(const extent<Profile::dimensions> &hc_offset, SliceDataType *data,
+        const extent<Profile::dimensions> &data_size, CubeDataType *cube_ptr, F &&f) {
     constexpr auto side_length = Profile::hypercube_side_length;
 
-    auto slice_ptr = &data[hc_offset];
+    auto slice_ptr = &data[linear_index(data_size, hc_offset)];
     if constexpr (Profile::dimensions == 1) {
         f(slice_ptr, cube_ptr, side_length);
     } else if constexpr (Profile::dimensions == 2) {
-        const auto stride = data.size()[1];
+        const auto stride = data_size[1];
         for (index_type i = 0; i < side_length; ++i) {
             f(slice_ptr, cube_ptr, side_length);
             slice_ptr += stride;
             cube_ptr += side_length;
         }
     } else if constexpr (Profile::dimensions == 3) {
-        const auto stride0 = data.size()[1] * data.size()[2];
-        const auto stride1 = data.size()[2];
+        const auto stride0 = data_size[1] * data_size[2];
+        const auto stride1 = data_size[2];
         for (index_type i = 0; i < side_length; ++i) {
             auto slice_ptr1 = slice_ptr;
             for (index_type j = 0; j < side_length; ++j) {
