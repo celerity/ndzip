@@ -64,7 +64,7 @@ class basic_sycl_compressor {
 };
 
 template<typename T, int Dims>
-class sycl_compressor: public basic_sycl_compressor<T> {
+class sycl_compressor : public basic_sycl_compressor<T> {
   public:
     using value_type = T;
     using compressed_type = detail::bits_type<T>;
@@ -101,12 +101,12 @@ class basic_sycl_decompressor {
 };
 
 template<typename T, int Dims>
-class sycl_decompressor: public basic_sycl_decompressor<T> {
+class sycl_decompressor : public basic_sycl_decompressor<T> {
   public:
     using value_type = T;
     using compressed_type = detail::bits_type<T>;
 
-    explicit sycl_decompressor(sycl::queue &q): _q{&q} {}
+    explicit sycl_decompressor(sycl::queue &q) : _q{&q} {}
 
     sycl_decompress_events decompress(
             sycl::buffer<compressed_type> &in_stream, sycl::buffer<value_type, Dims> &out_data);
@@ -117,4 +117,4 @@ class sycl_decompressor: public basic_sycl_decompressor<T> {
     sycl::queue *_q;
 };
 
-}  // namespace ndzip_sycl
+}  // namespace ndzip

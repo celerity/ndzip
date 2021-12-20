@@ -92,14 +92,14 @@ class basic_cuda_decompressor {
 };
 
 template<typename T, int Dims>
-class cuda_decompressor final: public basic_cuda_decompressor<T> {
+class cuda_decompressor final : public basic_cuda_decompressor<T> {
   public:
     using value_type = T;
     using compressed_type = detail::bits_type<T>;
 
     cuda_decompressor() = default;
 
-    explicit cuda_decompressor(cudaStream_t stream): _stream(stream) {}
+    explicit cuda_decompressor(cudaStream_t stream) : _stream(stream) {}
 
     void decompress(const compressed_type *in_device_stream, slice<T, extent<Dims>> out_device_data);
 

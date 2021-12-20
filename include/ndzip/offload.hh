@@ -51,9 +51,8 @@ class cpu_offloader final : public offloader<T> {
         return _co.compress(slice<const data_type, extent<Dims>>{data}, stream);
     }
 
-    index_type do_decompress(
-            const compressed_type *stream, [[maybe_unused]] index_type, const slice<data_type, dynamic_extent> &data,
-            kernel_duration *duration) override {
+    index_type do_decompress(const compressed_type *stream, [[maybe_unused]] index_type,
+            const slice<data_type, dynamic_extent> &data, kernel_duration *duration) override {
         // TODO duration
         return _de.decompress(stream, slice<data_type, extent<Dims>>{data});
     }
@@ -113,8 +112,8 @@ class cuda_offloader final : public offloader<T> {
 }  // namespace ndzip
 
 namespace ndzip::detail {
-template<template<typename, dim_type> typename TargetOffloader, typename T, typename ...CtorParams>
-std::unique_ptr<offloader<T>> make_target_offloader(dim_type dimensions, CtorParams ...args) {
+template<template<typename, dim_type> typename TargetOffloader, typename T, typename... CtorParams>
+std::unique_ptr<offloader<T>> make_target_offloader(dim_type dimensions, CtorParams... args) {
     switch (dimensions) {
         case 1: return std::make_unique<TargetOffloader<T, 1>>(args...);
         case 2: return std::make_unique<TargetOffloader<T, 2>>(args...);

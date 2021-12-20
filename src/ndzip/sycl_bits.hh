@@ -67,9 +67,9 @@ class known_size_group : public sycl::group<1> {
 };
 
 template<index_type LocalSize>
-void group_barrier(known_size_group<LocalSize> grp,
-        sycl::memory_scope fence_scope = known_size_group<LocalSize>::fence_scope) {
-    group_barrier(static_cast<sycl::group<1>&>(grp), fence_scope);
+void group_barrier(
+        known_size_group<LocalSize> grp, sycl::memory_scope fence_scope = known_size_group<LocalSize>::fence_scope) {
+    group_barrier(static_cast<sycl::group<1> &>(grp), fence_scope);
 }
 
 template<typename F>
@@ -229,8 +229,8 @@ void hierarchical_inclusive_scan(sycl::queue &queue, sycl::buffer<Scalar> &in_ou
             auto small_acc = small_buffer.template get_access<sam::discard_write>(cgh);
             sycl::local_accessor<inclusive_scan_local_allocation<Scalar, granularity>> lm{1, cgh};
 
-          const auto n_groups = div_ceil(static_cast<index_type>(big_buffer.get_count()), granularity);
-          const auto nd_range = make_nd_range(n_groups, local_size);
+            const auto n_groups = div_ceil(static_cast<index_type>(big_buffer.get_count()), granularity);
+            const auto nd_range = make_nd_range(n_groups, local_size);
             cgh.parallel_for<hierarchical_inclusive_scan_reduction_kernel<Scalar, BinaryOp>>(
                     nd_range, [big_acc, small_acc, lm, op](known_group_size_item<local_size> item) {
                         auto group_index = static_cast<index_type>(item.get_group_id(0));
@@ -255,14 +255,15 @@ void hierarchical_inclusive_scan(sycl::queue &queue, sycl::buffer<Scalar> &in_ou
             auto small_acc = small_buffer.template get_access<sam::read>(cgh);
             auto big_acc = big_buffer.template get_access<sam::read_write>(cgh);
 
-          const auto n_groups = div_ceil(static_cast<index_type>(big_buffer.get_count()), granularity) - 1;
-          const auto nd_range = make_nd_range(n_groups, local_size);
-            cgh.parallel_for<hierarchical_inclusive_scan_expansion_kernel<Scalar, BinaryOp>>(nd_range,
-                    [small_acc, big_acc, op](known_group_size_item<local_size> item) {
+            const auto n_groups = div_ceil(static_cast<index_type>(big_buffer.get_count()), granularity) - 1;
+            const auto nd_range = make_nd_range(n_groups, local_size);
+            cgh.parallel_for<hierarchical_inclusive_scan_expansion_kernel<Scalar, BinaryOp>>(
+                    nd_range, [small_acc, big_acc, op](known_group_size_item<local_size> item) {
                         auto group_index = static_cast<index_type>(item.get_group_id(0));
                         Scalar *big = &big_acc[(group_index + 1) * granularity];
                         Scalar small = small_acc[group_index];
-                        distribute_for(granularity, item.get_group(), [&](index_type i) { big[i] = op(big[i], small); });
+                        distribute_for(
+                                granularity, item.get_group(), [&](index_type i) { big[i] = op(big[i], small); });
                     });
         });
     }
