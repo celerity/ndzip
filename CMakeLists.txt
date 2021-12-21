@@ -189,15 +189,16 @@ endif ()
 
 if (NDZIP_BUILD_TEST AND Catch2_FOUND)
     add_executable(encoder_test
-        src/test/test_utils.hh
-        src/test/test_main.cc
+            src/test/test_utils.hh
+            src/test/test_main.cc
             src/test/codec_generic_test.cc
-            src/test/codec_profile_test.inl)
+            src/test/codec_profile_test.inl
+            )
 
     target_split_configured_sources(encoder_test PRIVATE
         GENERATE encoder_profile_test.cc FROM src/test/codec_profile_test.inl
         ${NDZIP_PROFILE_CONFIGURATIONS}
-        )
+            )
 
     if (NDZIP_USE_CUDA AND NOT NDZIP_USE_HIPSYCL)
         # TODO hack: SYCL / CUDA versions of encoder_test must be compiled separately
@@ -242,8 +243,7 @@ if (NDZIP_BUILD_TEST AND Catch2_FOUND)
                 src/sycl_ubench/ubench_main.cc)
         target_split_configured_sources(sycl_ubench PRIVATE
                 GENERATE encoder_ubench.cc FROM src/sycl_ubench/sycl_codec_ubench.inl
-                ${NDZIP_PROFILE_CONFIGURATIONS}
-                )
+                ${NDZIP_PROFILE_CONFIGURATIONS})
         target_include_directories(sycl_ubench PRIVATE src include)
         target_compile_options(sycl_ubench PRIVATE ${NDZIP_HIPSYCL_FLAGS})
         target_link_libraries(sycl_ubench PRIVATE ndzip-sycl Catch2::Catch2)
@@ -254,10 +254,10 @@ if (NDZIP_BUILD_TEST AND Catch2_FOUND)
         add_executable(cuda_bits_test
                 src/test/test_utils.hh
                 src/test/test_main.cc
-                src/test/cuda_bits_test.cu)
+                src/test/cuda_bits_test.cu
+                )
         target_include_directories(cuda_bits_test PRIVATE src include)
-        set_source_files_properties(src/test/cuda_bits_test.cu
-                PROPERTIES COMPILE_FLAGS "${NDZIP_CUDA_FLAGS_STRING}")
+        set_source_files_properties(src/test/cuda_bits_test.cu PROPERTIES COMPILE_FLAGS "${NDZIP_CUDA_FLAGS_STRING}")
         target_link_libraries(cuda_bits_test PRIVATE ndzip-cuda Catch2::Catch2)
     endif ()
 endif ()
@@ -306,18 +306,17 @@ if (NDZIP_BUILD_BENCHMARK)
         target_link_libraries(benchmark PRIVATE ${STD_CPP_FS})
     endif ()
     target_compile_definitions(benchmark PRIVATE
-        "-DNDZIP_BENCHMARK_HAVE_3RDPARTY=$<BOOL:${NDZIP_WITH_3RDPARTY_BENCHMARKS}>"
-        "-DNDZIP_BENCHMARK_HAVE_ZLIB=$<BOOL:${ZLIB_FOUND}>"
-        "-DNDZIP_BENCHMARK_HAVE_LZ4=$<BOOL:${LZ4_FOUND}>"
-        "-DNDZIP_BENCHMARK_HAVE_LZMA=$<BOOL:${LZMA_FOUND}>"
-        "-DNDZIP_BENCHMARK_HAVE_FPZIP=$<BOOL:${FPZIP_FOUND}>"
-        "-DNDZIP_BENCHMARK_HAVE_CUDPP=$<BOOL:${CUDPP_FOUND}>"
-        "-DNDZIP_BENCHMARK_HAVE_NVCOMP=$<BOOL:${NVCOMP_FOUND}>"
-        "-DNDZIP_BENCHMARK_HAVE_ZFP=$<BOOL:${ZFP_FOUND}>"
-        "-DNDZIP_BENCHMARK_HAVE_GFC=$<BOOL:${CUDAToolkit_FOUND}>"
-        "-DNDZIP_BENCHMARK_HAVE_MPC=$<BOOL:${CUDAToolkit_FOUND}>"
-        "-DNDZIP_BENCHMARK_HAVE_ZSTD=$<BOOL:${ZSTD_FOUND}>"
-        )
+            "-DNDZIP_BENCHMARK_HAVE_3RDPARTY=$<BOOL:${NDZIP_WITH_3RDPARTY_BENCHMARKS}>"
+            "-DNDZIP_BENCHMARK_HAVE_ZLIB=$<BOOL:${ZLIB_FOUND}>"
+            "-DNDZIP_BENCHMARK_HAVE_LZ4=$<BOOL:${LZ4_FOUND}>"
+            "-DNDZIP_BENCHMARK_HAVE_LZMA=$<BOOL:${LZMA_FOUND}>"
+            "-DNDZIP_BENCHMARK_HAVE_FPZIP=$<BOOL:${FPZIP_FOUND}>"
+            "-DNDZIP_BENCHMARK_HAVE_CUDPP=$<BOOL:${CUDPP_FOUND}>"
+            "-DNDZIP_BENCHMARK_HAVE_NVCOMP=$<BOOL:${NVCOMP_FOUND}>"
+            "-DNDZIP_BENCHMARK_HAVE_ZFP=$<BOOL:${ZFP_FOUND}>"
+            "-DNDZIP_BENCHMARK_HAVE_GFC=$<BOOL:${CUDAToolkit_FOUND}>"
+            "-DNDZIP_BENCHMARK_HAVE_MPC=$<BOOL:${CUDAToolkit_FOUND}>"
+            "-DNDZIP_BENCHMARK_HAVE_ZSTD=$<BOOL:${ZSTD_FOUND}>")
     if (NDZIP_USE_OPENMP)
         target_link_libraries(benchmark PRIVATE OpenMP::OpenMP_CXX Boost::thread)
     endif ()

@@ -167,6 +167,7 @@ NDZIP_UNIVERSAL index_type num_elements(const Extent &size) {
     return n;
 }
 
+// TODO what is the difference between linear_offset and linear_index?
 template<typename Extent>
 NDZIP_UNIVERSAL index_type linear_offset(const Extent &position, const Extent &space) {
     assert(position.dimensions() == space.dimensions());
@@ -234,84 +235,33 @@ using compressed_type = ndzip::detail::bits_type<T>;
 template<typename T>
 index_type compressed_length_bound(const extent &e);
 
-using kernel_duration = std::chrono::duration<uint64_t, std::nano>;
-
 template<typename T>
-class basic_compressor {
+class compressor {
   public:
     using value_type = T;
     using compressed_type = detail::bits_type<T>;
 
-    virtual ~basic_compressor() = default;
+    virtual ~compressor() = default;
 
     virtual index_type compress(const value_type *data, const extent &data_size, compressed_type *stream) = 0;
 };
 
-template<typename T, int Dims>
-class compressor final : public basic_compressor<T> {
-  public:
-    using value_type = T;
-    using compressed_type = detail::bits_type<T>;
-
-    inline constexpr static int dimensions = Dims;
-
-    compressor();
-
-    explicit compressor(size_t num_threads);
-
-    index_type compress(const value_type *data, const extent &data_size, compressed_type *stream) override {
-        return _pimpl->compress(data, data_size, stream);
-    }
-
-  private:
-    struct impl {
-        virtual ~impl() = default;
-        virtual index_type compress(const value_type *data, const extent &data_size, compressed_type *stream) = 0;
-    };
-    struct st_impl;
-    struct mt_impl;
-
-    std::unique_ptr<impl> _pimpl;
-};
-
 template<typename T>
-class basic_decompressor {
+class decompressor {
   public:
     using value_type = T;
     using compressed_type = detail::bits_type<T>;
 
-    virtual ~basic_decompressor() = default;
+    virtual ~decompressor() = default;
 
     virtual index_type decompress(const compressed_type *stream, value_type *data, const extent &data_size) = 0;
 };
 
-template<typename T, int Dims>
-class decompressor final : public basic_decompressor<T> {
-  public:
-    using value_type = T;
-    using compressed_type = detail::bits_type<T>;
+template<typename T>
+std::unique_ptr<compressor<T>> make_compressor(dim_type dims, unsigned num_threads = 0);
 
-    inline constexpr static int dimensions = Dims;
-
-    decompressor();
-
-    explicit decompressor(size_t num_threads);
-
-    index_type decompress(const compressed_type *stream, value_type *data, const extent &data_size) override {
-        return _pimpl->decompress(stream, data, data_size);
-    }
-
-  private:
-    // TODO these can be proper subclasses (with a factory method)
-    struct impl {
-        virtual ~impl() = default;
-        virtual index_type decompress(const compressed_type *stream, value_type *data, const extent &data_size) = 0;
-    };
-    struct st_impl;
-    struct mt_impl;
-
-    std::unique_ptr<impl> _pimpl;
-};
+template<typename T>
+std::unique_ptr<decompressor<T>> make_decompressor(dim_type dims, unsigned num_threads = 0);
 
 class compressor_requirements {
   public:
@@ -326,5 +276,7 @@ class compressor_requirements {
 
     index_type _max_num_hypercubes = 0;
 };
+
+using kernel_duration = std::chrono::duration<uint64_t, std::nano>;
 
 }  // namespace ndzip

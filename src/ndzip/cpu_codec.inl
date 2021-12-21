@@ -6,6 +6,7 @@
 #include <vector>
 
 #include <ndzip/ndzip.hh>
+#include <ndzip/offload.hh>
 
 #ifdef __AVX2__
 #include <immintrin.h>
@@ -576,25 +577,25 @@ template<typename Bits>
     return body_pos;
 }
 
-}  // namespace ndzip::detail::cpu
-
 template<typename T, ndzip::dim_type Dims>
-struct ndzip::compressor<T, Dims>::st_impl : public compressor<T, Dims>::impl {
-    using profile = detail::profile<T, Dims>;
+class serial_compressor : public compressor<T> {
+  public:
     using data_type = T;
-    using bits_type = typename profile::bits_type;
 
+  private:
+    using profile = detail::profile<T, Dims>;
+    using bits_type = typename profile::bits_type;
     constexpr static auto side_length = profile::hypercube_side_length;
     constexpr static auto hc_size = detail::ipow(side_length, profile::dimensions);
 
     detail::cpu::simd_aligned_buffer<bits_type> cube{hc_size};
 
+  public:
     index_type compress(const data_type *data, const extent &data_size, bits_type *raw_stream) override;
 };
 
 template<typename T, ndzip::dim_type Dims>
-ndzip::index_type
-ndzip::compressor<T, Dims>::st_impl::compress(const data_type *data, const extent &data_size, bits_type *raw_stream) {
+index_type serial_compressor<T, Dims>::compress(const data_type *data, const extent &data_size, bits_type *raw_stream) {
     if (data_size.dimensions() != Dims) {
         throw std::runtime_error{"data dimensionality does not match compressor dimensionality"};
     }
@@ -619,9 +620,12 @@ ndzip::compressor<T, Dims>::st_impl::compress(const data_type *data, const exten
 
 
 template<typename T, ndzip::dim_type Dims>
-struct ndzip::decompressor<T, Dims>::st_impl : impl {
-    using profile = detail::profile<T, Dims>;
+class serial_decompressor : public decompressor<T> {
+  public:
     using data_type = T;
+
+  private:
+    using profile = detail::profile<T, Dims>;
     using bits_type = typename profile::bits_type;
 
     constexpr static auto side_length = profile::hypercube_side_length;
@@ -629,12 +633,13 @@ struct ndzip::decompressor<T, Dims>::st_impl : impl {
 
     detail::cpu::simd_aligned_buffer<bits_type> cube{hc_size};
 
+  public:
     ndzip::index_type decompress(const bits_type *raw_stream, data_type *data, const extent &data_size) override;
 };
 
 template<typename T, ndzip::dim_type Dims>
-ndzip::index_type ndzip::decompressor<T, Dims>::st_impl::decompress(
-        const bits_type *raw_stream, data_type *data, const extent &data_size) {
+index_type
+serial_decompressor<T, Dims>::decompress(const bits_type *raw_stream, data_type *data, const extent &data_size) {
     if (data_size.dimensions() != Dims) {
         throw std::runtime_error{"data dimensionality does not match decompressor dimensionality"};
     }
@@ -654,10 +659,26 @@ ndzip::index_type ndzip::decompressor<T, Dims>::st_impl::decompress(
     return (stream.border() - stream.buffer) + border_length;
 }
 
+extern template class serial_compressor<float, 1>;
+extern template class serial_compressor<float, 2>;
+extern template class serial_compressor<float, 3>;
+extern template class serial_compressor<double, 1>;
+extern template class serial_compressor<double, 2>;
+extern template class serial_compressor<double, 3>;
+
+extern template class serial_decompressor<float, 1>;
+extern template class serial_decompressor<float, 2>;
+extern template class serial_decompressor<float, 3>;
+extern template class serial_decompressor<double, 1>;
+extern template class serial_decompressor<double, 2>;
+extern template class serial_decompressor<double, 3>;
+
+#ifdef SPLIT_CONFIGURATION_cpu_encoder
+template class serial_compressor<DATA_TYPE, DIMENSIONS>;
+template class serial_decompressor<DATA_TYPE, DIMENSIONS>;
+#endif
 
 #if NDZIP_OPENMP_SUPPORT
-
-namespace ndzip::detail {
 
 template<typename T, ndzip::dim_type Dims>
 struct cube_buffer {
@@ -677,12 +698,13 @@ struct cube_buffer {
     const bits_type *data() const { return detail::cpu::assume_simd_aligned(cube.data()); }
 };
 
-}  // namespace ndzip::detail
-
 template<typename T, ndzip::dim_type Dims>
-struct ndzip::compressor<T, Dims>::mt_impl : impl {
-    using profile = detail::profile<T, Dims>;
+class openmp_compressor : public compressor<T> {
+  public:
     using data_type = T;
+
+  private:
+    using profile = detail::profile<T, Dims>;
     using bits_type = typename profile::bits_type;
 
     constexpr static auto side_length = profile::hypercube_side_length;
@@ -706,14 +728,14 @@ struct ndzip::compressor<T, Dims>::mt_impl : impl {
         }
     };
 
-    const size_t num_threads;
-    std::vector<detail::cube_buffer<T, Dims>> thread_cubes{num_threads};
+    const unsigned num_threads;
+    std::vector<cube_buffer<T, Dims>> thread_cubes{num_threads};
     std::vector<write_buffer> write_buffers{num_write_buffers};
     std::priority_queue<write_buffer *, std::vector<write_buffer *>, hc_index_order> write_task_queue;
     boost::lockfree::queue<write_buffer *, boost::lockfree::capacity<num_write_buffers>> free_write_buffers;
 
-    mt_impl(std::optional<size_t> opt_num_threads)
-        : num_threads(opt_num_threads ? opt_num_threads.value() : boost::thread::physical_concurrency()) {
+  public:
+    explicit openmp_compressor(unsigned num_threads) : num_threads(num_threads) {
         // priority_queue does not expose vector::reserve, push nonsense instead which will be
         // cleared by prepare()
         for (auto &wb : write_buffers) {
@@ -735,27 +757,29 @@ struct ndzip::compressor<T, Dims>::mt_impl : impl {
 };
 
 template<typename T, ndzip::dim_type Dims>
-struct ndzip::decompressor<T, Dims>::mt_impl : impl {
-    using profile = detail::profile<T, Dims>;
+class openmp_decompressor : public decompressor<T> {
+  public:
     using data_type = T;
+
+  private:
+    using profile = detail::profile<T, Dims>;
     using bits_type = typename profile::bits_type;
 
     constexpr static auto side_length = profile::hypercube_side_length;
     constexpr static auto hc_size = detail::ipow(side_length, profile::dimensions);
 
-    const size_t num_threads;
-    std::vector<detail::cube_buffer<T, Dims>> thread_cubes{num_threads};
+    const unsigned num_threads;
+    std::vector<cube_buffer<T, Dims>> thread_cubes{num_threads};
 
-    mt_impl(std::optional<size_t> opt_num_threads)
-        : num_threads(opt_num_threads ? opt_num_threads.value() : boost::thread::physical_concurrency()) {}
+  public:
+    explicit openmp_decompressor(unsigned num_threads) : num_threads(num_threads) {}
 
-    index_type decompress(const compressed_type *stream, data_type *data, const extent &data_size) override;
+    index_type decompress(const bits_type *stream, data_type *data, const extent &data_size) override;
 };
 
 
 template<typename T, ndzip::dim_type Dims>
-ndzip::index_type
-ndzip::compressor<T, Dims>::mt_impl::compress(const data_type *data, const extent &data_size, bits_type *raw_stream) {
+index_type openmp_compressor<T, Dims>::compress(const data_type *data, const extent &data_size, bits_type *raw_stream) {
     if (data_size.dimensions() != Dims) {
         throw std::runtime_error{"data dimensionality does not match compressor dimensionality"};
     }
@@ -763,7 +787,6 @@ ndzip::compressor<T, Dims>::mt_impl::compress(const data_type *data, const exten
     prepare();
 
     const auto static_size = detail::static_extent<Dims>{data_size};
-    ;
     const detail::file<profile> file(static_size);
 
     detail::stream<profile> stream{file.num_hypercubes(), raw_stream};
@@ -867,8 +890,8 @@ ndzip::compressor<T, Dims>::mt_impl::compress(const data_type *data, const exten
 
 
 template<typename T, ndzip::dim_type Dims>
-ndzip::index_type ndzip::decompressor<T, Dims>::mt_impl::decompress(
-        const compressed_type *raw_stream, data_type *data, const extent &data_size) {
+index_type
+openmp_decompressor<T, Dims>::decompress(const bits_type *raw_stream, data_type *data, const extent &data_size) {
     if (data_size.dimensions() != Dims) {
         throw std::runtime_error{"data dimensionality does not match decompressor dimensionality"};
     }
@@ -902,77 +925,118 @@ ndzip::index_type ndzip::decompressor<T, Dims>::mt_impl::decompress(
     return (stream.border() - stream.buffer) + border_length;
 }
 
-template<typename T, ndzip::dim_type Dims>
-ndzip::compressor<T, Dims>::compressor() : compressor{boost::thread::physical_concurrency()} {
-}
+extern template class openmp_compressor<float, 1>;
+extern template class openmp_compressor<float, 2>;
+extern template class openmp_compressor<float, 3>;
+extern template class openmp_compressor<double, 1>;
+extern template class openmp_compressor<double, 2>;
+extern template class openmp_compressor<double, 3>;
 
-template<typename T, ndzip::dim_type Dims>
-ndzip::decompressor<T, Dims>::decompressor() : decompressor{boost::thread::physical_concurrency()} {
-}
+extern template class openmp_decompressor<float, 1>;
+extern template class openmp_decompressor<float, 2>;
+extern template class openmp_decompressor<float, 3>;
+extern template class openmp_decompressor<double, 1>;
+extern template class openmp_decompressor<double, 2>;
+extern template class openmp_decompressor<double, 3>;
 
-#else  // NDZIP_OPENMP_SUPPORT
-
-template<typename T, ndzip::dim_type Dims>
-ndzip::compressor<T, Dims>::compressor() : compressor{1} {
-}
-
-template<typename T, ndzip::dim_type Dims>
-ndzip::decompressor<T, Dims>::decompressor() : decompressor{1} {
-}
+#ifdef SPLIT_CONFIGURATION_cpu_encoder
+template class openmp_compressor<DATA_TYPE, DIMENSIONS>;
+template class openmp_decompressor<DATA_TYPE, DIMENSIONS>;
+#endif
 
 #endif  // NDZIP_OPENMP_SUPPORT
 
 
-template<typename T, ndzip::dim_type Dims>
-ndzip::compressor<T, Dims>::compressor(size_t num_threads) {
-    if (num_threads == 0) {
-        throw std::invalid_argument{"num_threads must be > 0"};
-    } else if (num_threads == 1) {
-        _pimpl = std::make_unique<st_impl>();
-    } else {
+inline unsigned get_final_num_threads(const unsigned user_preference) {
 #if NDZIP_OPENMP_SUPPORT
-        _pimpl = std::make_unique<mt_impl>(num_threads);
-#else
-        throw std::invalid_argument{"ndzip was built without multithreading support, num_threads must be 1"};
-#endif
+    if (user_preference == 0) {
+        return boost::thread::physical_concurrency();
+    } else {
+        return user_preference;
     }
+#else
+    if (user_preference > 1) {
+        throw std::invalid_argument{"ndzip was built without multithreading support, num_threads must be 1"};
+    }
+    return 1;
+#endif
 }
 
-template<typename T, ndzip::dim_type Dims>
-ndzip::decompressor<T, Dims>::decompressor(size_t num_threads) {
-    if (num_threads == 0) {
-        throw std::invalid_argument{"num_threads must be > 0"};
-    } else if (num_threads == 1) {
-        _pimpl = std::make_unique<st_impl>();
-    } else {
-#if NDZIP_OPENMP_SUPPORT
-        _pimpl = std::make_unique<mt_impl>(num_threads);
-#else
-        throw std::invalid_argument{"ndzip was built without multithreading support, num_threads must be 1"};
-#endif
-    }
-}
-
+}  // namespace ndzip::detail::cpu
 
 namespace ndzip {
 
-extern template class compressor<float, 1>;
-extern template class compressor<float, 2>;
-extern template class compressor<float, 3>;
-extern template class compressor<double, 1>;
-extern template class compressor<double, 2>;
-extern template class compressor<double, 3>;
-
-extern template class decompressor<float, 1>;
-extern template class decompressor<float, 2>;
-extern template class decompressor<float, 3>;
-extern template class decompressor<double, 1>;
-extern template class decompressor<double, 2>;
-extern template class decompressor<double, 3>;
-
-#ifdef SPLIT_CONFIGURATION_cpu_encoder
-template class compressor<DATA_TYPE, DIMENSIONS>;
-template class decompressor<DATA_TYPE, DIMENSIONS>;
+template<typename T>
+std::unique_ptr<compressor<T>> make_compressor(dim_type dims, unsigned num_threads) {
+    num_threads = detail::cpu::get_final_num_threads(num_threads);
+    if (num_threads == 1) {
+        return detail::make_specialized<compressor, detail::cpu::serial_compressor, T>(dims);
+    } else {
+#if NDZIP_OPENMP_SUPPORT
+        return detail::make_specialized<compressor, detail::cpu::openmp_compressor, T>(dims, num_threads);
+#else
+        abort();  // unreachable
 #endif
+    }
+}
+
+template<typename T>
+std::unique_ptr<decompressor<T>> make_decompressor(dim_type dims, unsigned num_threads) {
+    num_threads = detail::cpu::get_final_num_threads(num_threads);
+    if (num_threads == 1) {
+        return detail::make_specialized<decompressor, detail::cpu::serial_decompressor, T>(dims);
+    } else {
+#if NDZIP_OPENMP_SUPPORT
+        return detail::make_specialized<decompressor, detail::cpu::openmp_decompressor, T>(dims, num_threads);
+#else
+        abort();  // unreachable
+#endif
+    }
+}
+
+}  // namespace ndzip
+
+namespace ndzip::detail::cpu {
+
+template<typename T>
+class cpu_offloader final : public offloader<T> {
+  public:
+    using data_type = T;
+    using compressed_type = detail::bits_type<T>;
+
+    cpu_offloader() = default;
+
+    explicit cpu_offloader(dim_type dims, unsigned num_threads)
+        : _co{make_compressor<T>(dims, num_threads)}, _de{make_decompressor<T>(dims, num_threads)} {}
+
+  protected:
+    index_type do_compress(const data_type *data, const extent &data_size, compressed_type *stream,
+            kernel_duration *duration) override {
+        // TODO duration
+        return _co->compress(data, data_size, stream);
+    }
+
+    index_type do_decompress(const compressed_type *stream, [[maybe_unused]] index_type stream_length, data_type *data,
+            const extent &data_size, kernel_duration *duration) override {
+        // TODO duration
+        return _de->decompress(stream, data, data_size);
+    }
+
+  private:
+    std::unique_ptr<compressor<T>> _co;
+    std::unique_ptr<decompressor<T>> _de;
+};
+
+}  // namespace ndzip::detail::cpu
+
+namespace ndzip {
+
+template<typename T>
+std::unique_ptr<offloader<T>> make_cpu_offloader(dim_type dims, unsigned num_threads) {
+    return std::make_unique<detail::cpu::cpu_offloader<T>>(dims, num_threads);
+}
+
+template std::unique_ptr<offloader<float>> make_cpu_offloader<float>(dim_type, unsigned);
+template std::unique_ptr<offloader<double>> make_cpu_offloader<double>(dim_type, unsigned);
 
 }  // namespace ndzip

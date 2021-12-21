@@ -1,5 +1,8 @@
 #include "common.hh"
 
+#include <ndzip/offload.hh>
+
+
 namespace ndzip {
 
 template<dim_type Dims>

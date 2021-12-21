@@ -60,82 +60,79 @@ TEMPLATE_TEST_CASE("decode(encode(input)) reproduces the input", "[encoder][de]"
         CHECK_FOR_VECTOR_EQUALITY(input_data, output_data);
     };
 
-    SECTION("cpu_offloader::encode() => cpu_offloader::decode()") {
-        test_encoder_decoder_pair(ndzip::cpu_offloader<data_type, dims>{1}, cpu_offloader<data_type, dims>{1});
+    SECTION("serial CPU compress => serial CPU decompress") {
+        test_encoder_decoder_pair(*make_cpu_offloader<data_type>(dims, 1), *make_cpu_offloader<data_type>(dims, 1));
     }
 
 #if NDZIP_OPENMP_SUPPORT
-    SECTION("cpu_offloader::encode() => mt cpu_offloader::decode()", "[omp]") {
-        test_encoder_decoder_pair(cpu_offloader<data_type, dims>{1}, cpu_offloader<data_type, dims>{});
+    SECTION("serial CPU compress => OpenMP CPU decompress", "[omp]") {
+        test_encoder_decoder_pair(*make_cpu_offloader<data_type>(dims, 1), *make_cpu_offloader<data_type>(dims));
     }
 
-    SECTION("mt cpu_offloader::encode() => cpu_offloader::decode()", "[omp]") {
-        test_encoder_decoder_pair(cpu_offloader<data_type, dims>{}, cpu_offloader<data_type, dims>{1});
+    SECTION("OpenMP CPU compress => serial CPU decompress", "[omp]") {
+        test_encoder_decoder_pair(*make_cpu_offloader<data_type>(dims), *make_cpu_offloader<data_type>(dims, 1));
     }
 #endif
 
 #if NDZIP_HIPSYCL_SUPPORT
-    SECTION("cpu_offloader::encode() => sycl_offloader::decode()", "[sycl]") {
-        test_encoder_decoder_pair(cpu_offloader<data_type, dims>{1}, sycl_offloader<data_type, dims>{});
+    SECTION("serial CPU compress => SYCL decompress", "[sycl]") {
+        test_encoder_decoder_pair(*make_cpu_offloader<data_type>(dims, 1), *make_sycl_offloader<data_type>(dims));
     }
 
-    SECTION("sycl_offloader::encode() => cpu_offloader::decode()", "[sycl]") {
-        test_encoder_decoder_pair(sycl_offloader<data_type, dims>{}, cpu_offloader<data_type, dims>{1});
+    SECTION("SYCL compress => serial CPU decompress", "[sycl]") {
+        test_encoder_decoder_pair(*make_sycl_offloader<data_type>(dims), *make_cpu_offloader<data_type>(dims, 1));
     }
 #endif
 
 #if NDZIP_CUDA_SUPPORT
-    SECTION("cpu_offloader::encode() => cuda_offloader::decode()", "[cuda]") {
-        test_encoder_decoder_pair(cpu_offloader<data_type, dims>{1}, cuda_offloader<data_type, dims>{});
+    SECTION("serial CPU compress => CUDA decompress", "[cuda]") {
+        test_encoder_decoder_pair(*make_cpu_offloader<data_type>(dims, 1), *make_cuda_offloader<data_type>(dims));
     }
 
-    SECTION("cuda_offloader::encode() => cpu_offloader::decode()", "[cuda]") {
-        test_encoder_decoder_pair(cuda_offloader<data_type, dims>{}, cpu_offloader<data_type, dims>{1});
+    SECTION("CUDA compress => serial CPU decompress", "[cuda]") {
+        test_encoder_decoder_pair(*make_cuda_offloader<data_type>(dims), *make_cpu_offloader<data_type>(dims, 1));
     }
 #endif
 }
 
 
-#if NDZIP_OPENMP_SUPPORT || NDZIP_HIPSYCL_SUPPORT
-TEMPLATE_TEST_CASE("file headers from different encoders are identical", "[header]"
-#if NDZIP_OPENMP_SUPPORT
-        ,
-        (cpu_offloader<DATA_TYPE, DIMENSIONS>)
-#endif
-#if NDZIP_HIPSYCL_SUPPORT
-                ,
-        (sycl_offloader<DATA_TYPE, DIMENSIONS>)
-#endif
-#if NDZIP_CUDA_SUPPORT
-                ,
-        (cuda_offloader<DATA_TYPE, DIMENSIONS>)
-#endif
-) {
+#if NDZIP_OPENMP_SUPPORT || NDZIP_HIPSYCL_SUPPORT || NDZIP_CUDA_SUPPORT
+TEMPLATE_TEST_CASE("file headers from different encoders are identical", "[header]", ALL_PROFILES) {
     using data_type = typename TestType::data_type;
-    using bits_type = typename TestType::compressed_type;
+    using bits_type = typename TestType::bits_type;
     using profile = detail::profile<data_type, TestType::dimensions>;
 
     constexpr auto dims = profile::dimensions;
     constexpr auto side_length = profile::hypercube_side_length;
-    const index_type n = side_length * 4 - 1;
+    constexpr index_type n = side_length * 4 - 1;
 
-    auto input_data = make_random_vector<data_type>(ipow(n, dims));
+    std::unique_ptr<offloader<data_type>> test_offloader;
+#if NDZIP_OPENMP_SUPPORT
+    SECTION("OpenMP vs CPU") { test_offloader = make_cpu_offloader<data_type>(dims); }
+#endif
+#if NDZIP_HIPSYCL_SUPPORT
+    SECTION("SYCL vs CPU") { test_offloader = make_sycl_offloader<data_type>(dims); }
+#endif
+#if NDZIP_CUDA_SUPPORT
+    SECTION("CUDA vs CPU") { test_offloader = make_cuda_offloader<data_type>(dims); }
+#endif
+
+    const auto input_data = make_random_vector<data_type>(ipow(n, dims));
     const auto size = extent::broadcast(dims, n);
 
     const auto file = detail::file<profile>{static_extent<dims>{size}};
     const auto aligned_stream_size_bound
             = compressed_length_bound<data_type>(size) * sizeof(bits_type) / sizeof(index_type) + 1;
 
-    cpu_offloader<data_type, dims> reference_encoder{1};
+    const auto reference_offloader = make_cpu_offloader<data_type>(dims, 1);
     std::vector<index_type> reference_stream(aligned_stream_size_bound);
-    const auto reference_stream_length = reference_encoder.compress(
+    const auto reference_stream_length = reference_offloader->compress(
             input_data.data(), size, reinterpret_cast<bits_type *>(reference_stream.data()));
     reference_stream.resize(file.num_hypercubes());
 
-    TestType test_encoder;
     std::vector<index_type> test_stream(aligned_stream_size_bound);
     const auto test_stream_length
-            = test_encoder.compress(input_data.data(), size, reinterpret_cast<bits_type *>(test_stream.data()));
+            = test_offloader->compress(input_data.data(), size, reinterpret_cast<bits_type *>(test_stream.data()));
     test_stream.resize(file.num_hypercubes());
 
     CHECK_FOR_VECTOR_EQUALITY(reference_stream, test_stream);
@@ -155,7 +152,8 @@ static std::vector<typename Profile::bits_type> sycl_load_and_dump_hypercube(con
     using data_type = typename Profile::data_type;
     using bits_type = typename Profile::bits_type;
 
-    auto hc_size = ipow(Profile::hypercube_side_length, Profile::dimensions);
+    constexpr auto hc_size = ipow(Profile::hypercube_side_length, Profile::dimensions);
+
     buffer<data_type> load_buf{in, range<1>{num_elements(in_size)}};
     std::vector<bits_type> out(hc_size * 2);
     buffer<data_type> store_buf{out.size()};
@@ -950,37 +948,38 @@ TEMPLATE_TEST_CASE("Single block compresses identically on all encoders", "[omp]
     const auto input = make_random_vector<data_type>(num_elements(size));
     const auto output_length_bound = compressed_length_bound<data_type>(size);
 
-    std::vector<bits_type> cpu_output(output_length_bound);
-    const auto cpu_output_length = cpu_offloader<data_type, dimensions>{1}.compress(input.data(), size, cpu_output.data());
-    cpu_output.resize(cpu_output_length);
+    std::vector<bits_type> serial_output(output_length_bound);
+    const auto serial_offloader = make_cpu_offloader<data_type>(dimensions, 1);
+    const auto serial_output_length = serial_offloader->compress(input.data(), size, serial_output.data());
+    serial_output.resize(serial_output_length);
 
 #if NDZIP_OPENMP_SUPPORT
     SECTION("Multi-threaded vs single-threaded CPU", "[omp]") {
-        std::vector<bits_type> mt_cpu_output(output_length_bound);
-        const auto mt_cpu_output_length
-                = cpu_offloader<data_type, dimensions>{}.compress(input.data(), size, mt_cpu_output.data());
-        mt_cpu_output.resize(mt_cpu_output_length);
-        CHECK_FOR_VECTOR_EQUALITY(mt_cpu_output, cpu_output);
+        std::vector<bits_type> openmp_output(output_length_bound);
+        const auto openmp_offloader = make_cpu_offloader<data_type>(dimensions);
+        const auto openmp_output_length = openmp_offloader->compress(input.data(), size, openmp_output.data());
+        openmp_output.resize(openmp_output_length);
+        CHECK_FOR_VECTOR_EQUALITY(openmp_output, serial_output);
     }
 #endif
 
 #if NDZIP_HIPSYCL_SUPPORT
     SECTION("SYCL vs CPU", "[sycl]") {
         std::vector<bits_type> sycl_output(output_length_bound);
-        const auto sycl_output_length
-                = sycl_offloader<data_type, dimensions>{}.compress(input.data(), size, sycl_output.data());
+        const auto sycl_offloader = make_sycl_offloader<data_type>(dimensions);
+        const auto sycl_output_length = sycl_offloader->compress(input.data(), size, sycl_output.data());
         sycl_output.resize(sycl_output_length);
-        CHECK_FOR_VECTOR_EQUALITY(sycl_output, cpu_output);
+        CHECK_FOR_VECTOR_EQUALITY(sycl_output, serial_output);
     }
 #endif
 
 #if NDZIP_CUDA_SUPPORT
     SECTION("CUDA vs CPU", "[cuda]") {
         std::vector<bits_type> cuda_output(output_length_bound);
-        const auto cuda_output_length
-                = cuda_offloader<data_type, dimensions>{}.compress(input.data(), size, cuda_output.data());
+        const auto cuda_offloader = make_cuda_offloader<data_type>(dimensions);
+        const auto cuda_output_length = cuda_offloader->compress(input.data(), size, cuda_output.data());
         cuda_output.resize(cuda_output_length);
-        CHECK_FOR_VECTOR_EQUALITY(cuda_output, cpu_output);
+        CHECK_FOR_VECTOR_EQUALITY(cuda_output, serial_output);
     }
 #endif
 }
@@ -995,30 +994,30 @@ TEMPLATE_TEST_CASE("Single block decompresses correctly on all encoders", "[deco
     const auto max_output_words = compressed_length_bound<data_type>(size);
 
     std::vector<bits_type> compressed(max_output_words);
-    const auto compressed_length = cpu_offloader<data_type, dimensions>{1}.compress(input.data(), size, compressed.data());
+    const auto serial_offloader = make_cpu_offloader<data_type>(dimensions, 1);
+    const auto compressed_length = serial_offloader->compress(input.data(), size, compressed.data());
     compressed.resize(compressed_length);
 
     SECTION("On single-threaded CPU") {
         std::vector<data_type> cpu_output(num_elements(size));
-        cpu_offloader<data_type, dimensions>{1}.decompress(
-                compressed.data(), compressed_length, cpu_output.data(), size);
+        serial_offloader->decompress(compressed.data(), compressed_length, cpu_output.data(), size);
         CHECK_FOR_VECTOR_EQUALITY(cpu_output, input);
     }
 
 #if NDZIP_OPENMP_SUPPORT
     SECTION("On multi-threaded CPU", "[omp]") {
-        std::vector<data_type> mt_cpu_output(num_elements(size));
-        cpu_offloader<data_type, dimensions>{}.decompress(
-                compressed.data(), compressed_length, mt_cpu_output.data(), size);
-        CHECK_FOR_VECTOR_EQUALITY(mt_cpu_output, input);
+        std::vector<data_type> openmp_output(num_elements(size));
+        const auto openmp_offloader = make_cpu_offloader<data_type>(dimensions);
+        openmp_offloader->decompress(compressed.data(), compressed_length, openmp_output.data(), size);
+        CHECK_FOR_VECTOR_EQUALITY(openmp_output, input);
     }
 #endif
 
 #if NDZIP_HIPSYCL_SUPPORT
     SECTION("On SYCL", "[sycl]") {
         std::vector<data_type> sycl_output(num_elements(size));
-        sycl_offloader<data_type, dimensions>{}.decompress(
-                compressed.data(), compressed_length, sycl_output.data(), size);
+        const auto sycl_offloader = make_sycl_offloader<data_type>(dimensions);
+        sycl_offloader->decompress(compressed.data(), compressed_length, sycl_output.data(), size);
         CHECK_FOR_VECTOR_EQUALITY(sycl_output, input);
     }
 #endif
@@ -1026,8 +1025,8 @@ TEMPLATE_TEST_CASE("Single block decompresses correctly on all encoders", "[deco
 #if NDZIP_CUDA_SUPPORT
     SECTION("On CUDA", "[cuda]") {
         std::vector<data_type> cuda_output(num_elements(size));
-        cuda_offloader<data_type, dimensions>{}.decompress(
-                compressed.data(), compressed_length, cuda_output.data(), size);
+        const auto cuda_offloader = make_cuda_offloader<data_type>(dimensions);
+        cuda_offloader->decompress(compressed.data(), compressed_length, cuda_output.data(), size);
         CHECK_FOR_VECTOR_EQUALITY(cuda_output, input);
     }
 #endif

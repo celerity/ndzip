@@ -679,20 +679,38 @@ ndzip::sycl_decompress_events ndzip::sycl_decompressor<T, Dims>::decompress(
     return events;
 }
 
+namespace ndzip::detail::gpu_sycl {
 
 template<typename T, ndzip::dim_type Dims>
-struct ndzip::sycl_offloader<T, Dims>::impl {
-    sycl::queue q;
+class sycl_offloader final : public offloader<T> {
+  public:
+    using data_type = T;
+    using compressed_type = detail::bits_type<T>;
+
+  protected:
+    index_type do_compress(const data_type *data, const extent &data_size, compressed_type *stream,
+            kernel_duration *duration) override;
+
+    index_type do_decompress(const compressed_type *stream, index_type length, data_type *data, const extent &data_size,
+            kernel_duration *duration) override;
+
+  private:
+    using profile = detail::profile<T, Dims>;
+
+    sycl::queue _q;
 
     static sycl::property_list make_queue_properties(bool profile) {
         if (profile) { return sycl::property_list{sycl::property::queue::enable_profiling{}}; }
         return sycl::property_list{};
     }
 
-    impl(bool report_kernel_duration, bool verbose)
-        : q{sycl::gpu_selector{}, make_queue_properties(report_kernel_duration || verbose)} {
+    bool is_profiling() const { return _q.has_property<sycl::property::queue::enable_profiling>(); }
+
+  public:
+    sycl_offloader(bool report_kernel_duration, bool verbose)
+        : _q{sycl::gpu_selector{}, make_queue_properties(report_kernel_duration || verbose)} {
         if (verbose) {
-            auto device = q.get_device();
+            auto device = _q.get_device();
             printf("SYCL backend is %s on %s %s (%lu bytes of local memory)\n",
                     device.get_platform().get_info<sycl::info::platform::name>().c_str(),
                     device.get_info<sycl::info::device::vendor>().c_str(),
@@ -700,26 +718,11 @@ struct ndzip::sycl_offloader<T, Dims>::impl {
                     (unsigned long) device.get_info<sycl::info::device::local_mem_size>());
         }
     }
-
-    bool is_profiling() const { return q.template has_property<sycl::property::queue::enable_profiling>(); }
 };
 
-template<typename T, ndzip::dim_type Dims>
-ndzip::sycl_offloader<T, Dims>::sycl_offloader(bool report_kernel_duration)
-    : _pimpl(std::make_unique<impl>(report_kernel_duration, detail::verbose())) {
-}
-
-template<typename T, ndzip::dim_type Dims>
-ndzip::sycl_offloader<T, Dims>::~sycl_offloader() = default;
-
-
-template<typename T, ndzip::dim_type Dims>
-ndzip::index_type ndzip::sycl_offloader<T, Dims>::do_compress(const data_type *data, const extent &data_size,
+template<typename T, dim_type Dims>
+index_type sycl_offloader<T, Dims>::do_compress(const data_type *data, const extent &data_size,
         compressed_type *raw_stream, kernel_duration *out_kernel_duration) {
-    using namespace detail;
-    using namespace detail::gpu_sycl;
-
-    using profile = detail::profile<T, Dims>;
     using bits_type = typename profile::bits_type;
     using sam = sycl::access::mode;
 
@@ -729,42 +732,40 @@ ndzip::index_type ndzip::sycl_offloader<T, Dims>::do_compress(const data_type *d
     const auto num_hypercubes = file.num_hypercubes();
     if (verbose()) { printf("Have %u hypercubes\n", num_hypercubes); }
 
-    sycl::buffer<data_type, dimensions> data_buf{extent_cast<Dims, sycl::range<dimensions>>(data_size)};
+    sycl::buffer<data_type, Dims> data_buf{extent_cast<Dims, sycl::range<Dims>>(data_size)};
 
-    submit_and_profile(_pimpl->q, "copy input to device",
+    submit_and_profile(_q, "copy input to device",
             [&](sycl::handler &cgh) { cgh.copy(data, data_buf.template get_access<sam::discard_write>(cgh)); });
 
     sycl::buffer<bits_type> stream_buf(compressed_length_bound<T>(data_size));
     sycl::buffer<index_type> stream_length_buf(1);
 
-    ndzip::sycl_compressor<T, Dims> compressor{_pimpl->q, data_size};
+    ndzip::sycl_compressor<T, Dims> compressor{_q, data_size};
 
-    if (_pimpl->is_profiling()) {
-        force_device_allocation(stream_buf, _pimpl->q);
-        force_device_allocation(stream_length_buf, _pimpl->q);
-        force_device_allocation(compressor._chunks_buf, _pimpl->q);
-        force_device_allocation(compressor._chunk_lengths_buf, _pimpl->q);
+    if (is_profiling()) {
+        force_device_allocation(stream_buf, _q);
+        force_device_allocation(stream_length_buf, _q);
+        force_device_allocation(compressor._chunks_buf, _q);
+        force_device_allocation(compressor._chunk_lengths_buf, _q);
         for (auto &buf : compressor._hierarchical_scan_bufs) {
-            force_device_allocation(buf, _pimpl->q);
+            force_device_allocation(buf, _q);
         }
 
-        _pimpl->q.wait();
+        _q.wait();
     }
 
     auto events = compressor.compress(data_buf, stream_buf, &stream_length_buf);
 
     index_type host_size;
-    _pimpl->q
-            .submit([&](sycl::handler &cgh) {
-                cgh.copy(stream_length_buf.template get_access<sam::read>(cgh, sycl::range<1>{1}), &host_size);
-            })
-            .wait();
+    _q.submit([&](sycl::handler &cgh) {
+          cgh.copy(stream_length_buf.template get_access<sam::read>(cgh, sycl::range<1>{1}), &host_size);
+      }).wait();
 
-    auto stream_copy_evt = submit_and_profile(_pimpl->q, "copy stream to host", [&](sycl::handler &cgh) {
+    auto stream_copy_evt = submit_and_profile(_q, "copy stream to host", [&](sycl::handler &cgh) {
         cgh.copy(stream_buf.template get_access<sam::read>(cgh, host_size), static_cast<bits_type *>(raw_stream));
     });
 
-    if (_pimpl->is_profiling()) {
+    if (is_profiling()) {
         auto [early, late, kernel_duration] = measure_duration(events.start, events.stream_available);
         if (verbose()) {
             printf("[profile] %8lu %8lu total kernel time %.3fms\n", early, late, kernel_duration.count() * 1e-6);
@@ -779,10 +780,9 @@ ndzip::index_type ndzip::sycl_offloader<T, Dims>::do_compress(const data_type *d
     return host_size;
 }
 
-
-template<typename T, ndzip::dim_type Dims>
-ndzip::index_type ndzip::sycl_offloader<T, Dims>::do_decompress(const compressed_type *raw_stream, index_type length,
-        data_type *data, const extent &data_size, kernel_duration *out_kernel_duration) {
+template<typename T, dim_type Dims>
+index_type sycl_offloader<T, Dims>::do_decompress(const compressed_type *raw_stream, index_type length, data_type *data,
+        const extent &data_size, kernel_duration *out_kernel_duration) {
     using namespace detail;
     using namespace detail::gpu_sycl;
 
@@ -794,25 +794,25 @@ ndzip::index_type ndzip::sycl_offloader<T, Dims>::do_decompress(const compressed
 
     // TODO the range computation here is questionable at best
     sycl::buffer<bits_type> stream_buf{length};
-    sycl::buffer<data_type, dimensions> data_buf{extent_cast<Dims, sycl::range<dimensions>>(data_size)};
+    sycl::buffer<data_type, Dims> data_buf{extent_cast<Dims, sycl::range<Dims>>(data_size)};
 
-    submit_and_profile(_pimpl->q, "copy stream to device", [&](sycl::handler &cgh) {
+    submit_and_profile(_q, "copy stream to device", [&](sycl::handler &cgh) {
         cgh.copy(static_cast<const bits_type *>(raw_stream), stream_buf.template get_access<sam::discard_write>(cgh));
     });
 
-    if (_pimpl->is_profiling()) {
-        force_device_allocation(data_buf, _pimpl->q);
+    if (is_profiling()) {
+        force_device_allocation(data_buf, _q);
 
-        _pimpl->q.wait();
+        _q.wait();
     }
 
-    auto events = sycl_decompressor<T, Dims>{_pimpl->q}.decompress(stream_buf, data_buf);
+    auto events = sycl_decompressor<T, Dims>{_q}.decompress(stream_buf, data_buf);
 
-    submit_and_profile(_pimpl->q, "copy output to host", [&](sycl::handler &cgh) {
+    submit_and_profile(_q, "copy output to host", [&](sycl::handler &cgh) {
         cgh.copy(data_buf.template get_access<sam::read>(cgh), data);
     }).wait();
 
-    if (_pimpl->is_profiling()) {
+    if (is_profiling()) {
         auto [early, late, kernel_duration] = measure_duration(events.start, events.data_available);
         if (verbose()) {
             printf("[profile] %8lu %8lu total kernel time %.3fms\n", early, late, kernel_duration.count() * 1e-6);
@@ -821,7 +821,6 @@ ndzip::index_type ndzip::sycl_offloader<T, Dims>::do_decompress(const compressed
     } else if (out_kernel_duration) {
         *out_kernel_duration = {};
     }
-
 
     // TODO all this just to return the size? Maybe have a compressed-stream-size-query instead
     //  -- or a stream verification function!
@@ -835,9 +834,6 @@ ndzip::index_type ndzip::sycl_offloader<T, Dims>::do_decompress(const compressed
     return num_stream_words;
 }
 
-
-namespace ndzip {
-
 extern template class sycl_offloader<float, 1>;
 extern template class sycl_offloader<float, 2>;
 extern template class sycl_offloader<float, 3>;
@@ -848,5 +844,18 @@ extern template class sycl_offloader<double, 3>;
 #ifdef SPLIT_CONFIGURATION_sycl_encoder
 template class sycl_offloader<DATA_TYPE, DIMENSIONS>;
 #endif
+
+}  // namespace ndzip::detail::gpu_sycl
+
+template<typename T>
+std::unique_ptr<ndzip::offloader<T>> ndzip::make_sycl_offloader(dim_type dimensions, bool enable_profiling) {
+    return detail::make_specialized<offloader, detail::gpu_sycl::sycl_offloader, T>(
+            dimensions, enable_profiling, detail::verbose());
+}
+
+namespace ndzip {
+
+template std::unique_ptr<offloader<float>> make_sycl_offloader<float>(dim_type, bool);
+template std::unique_ptr<offloader<double>> make_sycl_offloader<double>(dim_type, bool);
 
 }  // namespace ndzip

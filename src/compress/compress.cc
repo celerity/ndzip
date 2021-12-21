@@ -102,7 +102,7 @@ void process_stream(bool decompress, const ndzip::extent &size, ndzip::target ta
     if (target == ndzip::target::cpu && num_cpu_threads.has_value()) {
         offloader = ndzip::make_cpu_offloader<T>(size.dimensions(), *num_cpu_threads);
     } else {
-        offloader = ndzip::make_offloader<T>(size.dimensions(), target, true /* enable_profiling */);
+        offloader = ndzip::make_offloader<T>(target, size.dimensions(), true /* enable_profiling */);
     }
     process_stream(decompress, in, out, size, *offloader, io);
 }

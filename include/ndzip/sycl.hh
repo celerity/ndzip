@@ -5,6 +5,13 @@
 #include <SYCL/sycl.hpp>
 
 
+namespace ndzip::detail::gpu_sycl {
+
+template<typename T, dim_type dims>
+class sycl_offloader;
+
+}
+
 namespace ndzip {
 
 struct sycl_compress_events {
@@ -39,7 +46,7 @@ class basic_sycl_compressor {
     // TODO USM variant
 };
 
-template<typename T, int Dims>
+template<typename T, dim_type Dims>
 class sycl_compressor : public basic_sycl_compressor<T> {
   public:
     using value_type = T;
@@ -54,7 +61,7 @@ class sycl_compressor : public basic_sycl_compressor<T> {
 
   private:
     template<typename, dim_type>
-    friend class sycl_offloader;
+    friend class ndzip::detail::gpu_sycl::sycl_offloader;
 
     sycl::queue *_q;
     sycl::buffer<compressed_type> _chunks_buf;
@@ -76,7 +83,7 @@ class basic_sycl_decompressor {
     // TODO USM variant
 };
 
-template<typename T, int Dims>
+template<typename T, dim_type Dims>
 class sycl_decompressor : public basic_sycl_decompressor<T> {
   public:
     using value_type = T;

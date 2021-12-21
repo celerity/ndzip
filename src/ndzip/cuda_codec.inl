@@ -499,58 +499,50 @@ __global__ void store_stream_length(
 }
 
 
-}  // namespace ndzip::detail::gpu_cuda
+template<typename T, dim_type Dims>
+class cuda_compressor_impl final : public cuda_compressor<T> {
+  public:
+    using value_type = T;
+    using bits_type = detail::bits_type<T>;
 
+    explicit cuda_compressor_impl(cudaStream_t stream, compressor_requirements reqs);
 
-template<typename T, int Dims>
-struct ndzip::cuda_compressor<T, Dims>::scratch_buffers {
+    void compress(const T *in_device_data, const extent &data_size, bits_type *out_device_stream,
+            index_type *out_device_stream_length) override;
+
+  private:
     using profile = detail::profile<T, Dims>;
-    using bits_type = typename profile::bits_type;
 
-    detail::gpu_cuda::cuda_buffer<bits_type> chunks_buf;
-    detail::gpu_cuda::cuda_buffer<index_type> chunk_lengths_buf;
+    constexpr static index_type hc_size = detail::ipow(profile::hypercube_side_length, profile::dimensions);
+    constexpr static index_type col_chunk_size = detail::bits_of<bits_type>;
+    constexpr static index_type header_chunk_size = hc_size / col_chunk_size;
+    constexpr static index_type hc_total_chunks_size = hc_size + header_chunk_size;
+    constexpr static index_type chunks_per_hc = 1 /* header */ + hc_size / col_chunk_size;
+
+    template<typename, dim_type>
+    friend class cuda_offloader;
+
+    cuda_buffer<bits_type> chunks_buf;
+    cuda_buffer<index_type> chunk_lengths_buf;
     std::vector<detail::gpu_cuda::cuda_buffer<index_type>> intermediate_bufs;
-
-    explicit scratch_buffers(compressor_requirements reqs) {
-        using namespace ndzip;
-
-        constexpr static index_type hc_size = detail::ipow(profile::hypercube_side_length, profile::dimensions);
-        constexpr static index_type col_chunk_size = detail::bits_of<bits_type>;
-        constexpr static index_type header_chunk_size = hc_size / col_chunk_size;
-        constexpr static index_type hc_total_chunks_size = hc_size + header_chunk_size;
-
-        const auto num_hypercubes = detail::get_num_hypercubes(reqs);
-        const auto num_chunks = num_hypercubes * (1 + hc_size / col_chunk_size);
-
-        chunks_buf.allocate(num_hypercubes * hc_total_chunks_size);
-        chunk_lengths_buf.allocate(
-                detail::ceil(1 + num_chunks, detail::gpu_cuda::hierarchical_inclusive_scan_granularity));
-        intermediate_bufs
-                = detail::gpu_cuda::hierarchical_inclusive_scan_allocate<index_type>(chunk_lengths_buf.size());
-    }
+    cudaStream_t _stream;
 };
 
-template<typename T, int Dims>
-ndzip::cuda_compressor<T, Dims>::cuda_compressor(cudaStream_t stream, compressor_requirements reqs)
-    : _stream{stream}, _scratch{std::make_unique<scratch_buffers>(reqs)} {
+
+template<typename T, dim_type Dims>
+cuda_compressor_impl<T, Dims>::cuda_compressor_impl(cudaStream_t stream, compressor_requirements reqs)
+    : _stream{stream} {
+    const auto num_hypercubes = detail::get_num_hypercubes(reqs);
+    const auto num_chunks = num_hypercubes * (1 + hc_size / col_chunk_size);
+
+    chunks_buf.allocate(num_hypercubes * hc_total_chunks_size);
+    chunk_lengths_buf.allocate(detail::ceil(1 + num_chunks, detail::gpu_cuda::hierarchical_inclusive_scan_granularity));
+    intermediate_bufs = detail::gpu_cuda::hierarchical_inclusive_scan_allocate<index_type>(chunk_lengths_buf.size());
 }
 
-template<typename T, int Dims>
-ndzip::cuda_compressor<T, Dims>::~cuda_compressor() = default;
-
-template<typename T, int Dims>
-void ndzip::cuda_compressor<T, Dims>::compress(const T *in_device_data, const extent &data_size,
-        compressed_type *out_device_stream, index_type *out_device_stream_length) {
-    using namespace detail;
-    using namespace detail::gpu_cuda;
-
-    using profile = detail::profile<T, Dims>;
-    using bits_type = typename profile::bits_type;
-
-    constexpr index_type hc_size = ipow(profile::hypercube_side_length, profile::dimensions);
-    constexpr index_type col_chunk_size = bits_of<bits_type>;
-    constexpr index_type chunks_per_hc = 1 /* header */ + hc_size / col_chunk_size;
-
+template<typename T, dim_type Dims>
+void cuda_compressor_impl<T, Dims>::compress(const T *in_device_data, const extent &data_size,
+        bits_type *out_device_stream, index_type *out_device_stream_length) {
     if (data_size.dimensions() != Dims) {
         throw std::runtime_error{"data dimensionality does not match compressor dimensionality"};
     }
@@ -563,17 +555,17 @@ void ndzip::cuda_compressor<T, Dims>::compress(const T *in_device_data, const ex
     if (verbose()) { printf("Have %u hypercubes\n", num_hypercubes); }
 
     compress_block<profile><<<num_hypercubes, (hypercube_group_size<profile>), 0, _stream>>>(
-            in_device_data, static_size, _scratch->chunks_buf.get(), _scratch->chunk_lengths_buf.get());
+            in_device_data, static_size, chunks_buf.get(), chunk_lengths_buf.get());
 
-    hierarchical_inclusive_scan(_scratch->chunk_lengths_buf.get(), _scratch->intermediate_bufs,
-            _scratch->chunk_lengths_buf.size(), plus<index_type>{}, _stream);
+    hierarchical_inclusive_scan(
+            chunk_lengths_buf.get(), intermediate_bufs, chunk_lengths_buf.size(), plus<index_type>{}, _stream);
 
     const auto num_compressed_words_offset = num_hypercubes * chunks_per_hc;
 
     const auto num_header_fields
             = detail::ceil(num_hypercubes, static_cast<uint32_t>(sizeof(bits_type) / sizeof(index_type)));
-    compact_all_chunks<profile><<<num_header_fields, (hypercube_group_size<profile>), 0, _stream>>>(num_hypercubes,
-            _scratch->chunks_buf.get(), _scratch->chunk_lengths_buf.get(), static_cast<bits_type *>(out_device_stream));
+    compact_all_chunks<profile><<<num_header_fields, (hypercube_group_size<profile>), 0, _stream>>>(
+            num_hypercubes, chunks_buf.get(), chunk_lengths_buf.get(), static_cast<bits_type *>(out_device_stream));
 
     const auto border_map = gpu::border_map<profile>{static_size};
     const auto num_border_words = border_map.size();
@@ -585,19 +577,82 @@ void ndzip::cuda_compressor<T, Dims>::compress(const T *in_device_data, const ex
     if (num_border_words > 0) {
         const index_type border_blocks = div_ceil(num_border_words, border_threads_per_block);
         compact_border<profile><<<border_blocks, border_threads_per_block, 0, _stream>>>(in_device_data, static_size,
-                _scratch->chunk_lengths_buf.get() + num_compressed_words_offset,
-                static_cast<bits_type *>(out_device_stream), num_header_words, border_map);
+                chunk_lengths_buf.get() + num_compressed_words_offset, static_cast<bits_type *>(out_device_stream),
+                num_header_words, border_map);
     }
 
     if (out_device_stream_length) {
         store_stream_length<bits_type><<<1, 1, 0, _stream>>>(out_device_stream_length,
-                _scratch->chunk_lengths_buf.get() + num_compressed_words_offset, num_header_words + num_border_words);
+                chunk_lengths_buf.get() + num_compressed_words_offset, num_header_words + num_border_words);
     }
 }
 
+template<typename T, int Dims>
+class cuda_decompressor_impl final : public cuda_decompressor<T> {
+  public:
+    using value_type = T;
+    using bits_type = detail::bits_type<T>;
 
-template<typename T, ndzip::dim_type Dims>
-ndzip::index_type ndzip::cuda_offloader<T, Dims>::do_compress(const data_type *data, const extent &data_size,
+    cuda_decompressor_impl() = default;
+
+    explicit cuda_decompressor_impl(cudaStream_t stream) : _stream(stream) {}
+
+    void decompress(const bits_type *in_device_stream, T *out_device_data, const extent &data_size) override;
+
+  private:
+    using profile = detail::profile<T, Dims>;
+
+    constexpr static index_type hc_size = detail::ipow(profile::hypercube_side_length, profile::dimensions);
+    constexpr static index_type col_chunk_size = detail::bits_of<bits_type>;
+    constexpr static index_type header_chunk_size = hc_size / col_chunk_size;
+    constexpr static index_type hc_total_chunks_size = hc_size + header_chunk_size;
+    constexpr static index_type chunks_per_hc = 1 /* header */ + hc_size / col_chunk_size;
+
+    cudaStream_t _stream = nullptr;
+};
+
+template<typename T, dim_type Dims>
+void cuda_decompressor_impl<T, Dims>::decompress(
+        const bits_type *in_device_stream, T *out_device_data, const extent &data_size) {
+    if (data_size.dimensions() != Dims) {
+        throw std::runtime_error{"data dimensionality does not match compressor dimensionality"};
+    }
+
+    const auto static_size = detail::static_extent<Dims>{data_size};
+    const detail::file<profile> file{static_size};
+    const auto num_hypercubes = file.num_hypercubes();
+
+    decompress_block<profile><<<num_hypercubes, (hypercube_group_size<profile>), 0, _stream>>>(
+            static_cast<const bits_type *>(in_device_stream), out_device_data, static_size);
+
+    const auto border_map = gpu::border_map<profile>{static_size};
+    const auto num_border_words = border_map.size();
+
+    if (num_border_words > 0) {
+        const index_type border_blocks = div_ceil(num_border_words, border_threads_per_block);
+        expand_border<profile><<<border_blocks, border_threads_per_block, 0, _stream>>>(
+                static_cast<const bits_type *>(in_device_stream), out_device_data, static_size, border_map,
+                num_hypercubes);
+    }
+}
+
+template<typename T, dim_type Dims>
+class cuda_offloader final : public offloader<T> {
+  public:
+    using data_type = T;
+    using compressed_type = detail::bits_type<T>;
+    constexpr static dim_type dimensions = Dims;
+
+  protected:
+    index_type do_compress(const data_type *data, const extent &data_size, compressed_type *stream,
+            kernel_duration *duration) override;
+
+    index_type do_decompress(const compressed_type *stream, index_type length, data_type *data, const extent &data_size,
+            kernel_duration *duration) override;
+};
+
+template<typename T, dim_type Dims>
+index_type cuda_offloader<T, Dims>::do_compress(const data_type *data, const extent &data_size,
         compressed_type *raw_stream, kernel_duration *out_kernel_duration) {
     using namespace detail;
     using namespace detail::gpu_cuda;
@@ -614,7 +669,7 @@ ndzip::index_type ndzip::cuda_offloader<T, Dims>::do_compress(const data_type *d
     CHECKED_CUDA_CALL(
             cudaMemcpy, data_buffer.get(), data, data_buffer.size() * bytes_of<data_type>, cudaMemcpyHostToDevice);
 
-    cuda_compressor<T, Dims> compressor{data_size};
+    cuda_compressor_impl<T, Dims> compressor{nullptr /* stream */, data_size};
     cuda_buffer<bits_type> stream_buf{compressed_length_bound<T>(data_size)};
     cuda_buffer<index_type> stream_length_buf{1};
 
@@ -641,45 +696,9 @@ ndzip::index_type ndzip::cuda_offloader<T, Dims>::do_compress(const data_type *d
     return stream_length;
 }
 
-
-template<typename T, int Dims>
-void ndzip::cuda_decompressor<T, Dims>::decompress(
-        const compressed_type *in_device_stream, T *out_device_data, const extent &data_size) {
-    using namespace detail;
-    using namespace detail::gpu_cuda;
-
-    using profile = detail::profile<T, Dims>;
-    using bits_type = typename profile::bits_type;
-
-    if (data_size.dimensions() != Dims) {
-        throw std::runtime_error{"data dimensionality does not match compressor dimensionality"};
-    }
-
-    const auto static_size = detail::static_extent<Dims>{data_size};
-    const detail::file<profile> file{static_size};
-    const auto num_hypercubes = file.num_hypercubes();
-
-    decompress_block<profile><<<num_hypercubes, (hypercube_group_size<profile>), 0, _stream>>>(
-            static_cast<const bits_type *>(in_device_stream), out_device_data, static_size);
-
-    const auto border_map = gpu::border_map<profile>{static_size};
-    const auto num_border_words = border_map.size();
-
-    if (num_border_words > 0) {
-        const index_type border_blocks = div_ceil(num_border_words, border_threads_per_block);
-        expand_border<profile><<<border_blocks, border_threads_per_block, 0, _stream>>>(
-                static_cast<const bits_type *>(in_device_stream), out_device_data, static_size, border_map,
-                num_hypercubes);
-    }
-}
-
-
-template<typename T, ndzip::dim_type Dims>
-ndzip::index_type ndzip::cuda_offloader<T, Dims>::do_decompress(const compressed_type *raw_stream, index_type length,
-        T *data, const extent &data_size, kernel_duration *out_kernel_duration) {
-    using namespace detail;
-    using namespace detail::gpu_cuda;
-
+template<typename T, dim_type Dims>
+index_type cuda_offloader<T, Dims>::do_decompress(const compressed_type *raw_stream, index_type length, T *data,
+        const extent &data_size, kernel_duration *out_kernel_duration) {
     using profile = detail::profile<T, Dims>;
     using bits_type = typename profile::bits_type;
 
@@ -701,7 +720,7 @@ ndzip::index_type ndzip::cuda_offloader<T, Dims>::do_decompress(const compressed
     bool record_events = out_kernel_duration || verbose();
     if (record_events) { start.record(); }
 
-    ndzip::cuda_decompressor<T, Dims>{}.decompress(stream_buf.get(), data_buf.get(), data_size);
+    cuda_decompressor_impl<T, Dims>{nullptr /* stream */}.decompress(stream_buf.get(), data_buf.get(), data_size);
 
     const auto border_map = gpu::border_map<profile>{static_size};
     const auto num_border_words = border_map.size();
@@ -722,9 +741,6 @@ ndzip::index_type ndzip::cuda_offloader<T, Dims>::do_decompress(const compressed
     return num_stream_words;
 }
 
-
-namespace ndzip {
-
 extern template class cuda_offloader<float, 1>;
 extern template class cuda_offloader<float, 2>;
 extern template class cuda_offloader<float, 3>;
@@ -735,5 +751,17 @@ extern template class cuda_offloader<double, 3>;
 #ifdef SPLIT_CONFIGURATION_cuda_encoder
 template class cuda_offloader<DATA_TYPE, DIMENSIONS>;
 #endif
+
+}  // namespace ndzip::detail::gpu_cuda
+
+namespace ndzip {
+
+template<typename T>
+std::unique_ptr<offloader<T>> make_cuda_offloader(dim_type dimensions) {
+    return detail::make_specialized<offloader, detail::gpu_cuda::cuda_offloader, T>(dimensions);
+}
+
+template std::unique_ptr<offloader<float>> make_cuda_offloader<float>(dim_type);
+template std::unique_ptr<offloader<double>> make_cuda_offloader<double>(dim_type);
 
 }  // namespace ndzip
