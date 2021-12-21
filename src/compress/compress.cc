@@ -190,7 +190,7 @@ int main(int argc, char **argv) {
         if (size_components.empty() || size_components.size() > 3) {
             throw opts::error{"Expected between 1 and 3 dimensions, got " + std::to_string(size_components.size())};
         }
-        size = ndzip::extent{static_cast<ndzip::dim_type>(size_components.size())};
+        size = ndzip::extent(static_cast<ndzip::dim_type>(size_components.size()));
         for (ndzip::dim_type d = 0; d < size.dimensions(); ++d) {
             size[d] = size_components[d];
         }

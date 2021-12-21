@@ -149,6 +149,14 @@ class static_extent {
 
     NDZIP_UNIVERSAL const_iterator end() const { return _components + Dims; }
 
+    NDZIP_UNIVERSAL constexpr operator extent() const {  // NOLINT(google-explicit-constructor)
+        extent dyn(Dims);
+        for (dim_type d = 0; d < Dims; ++d) {
+            dyn[d] = _components[d];
+        }
+        return dyn;
+    }
+
   private:
     friend class ndzip::extent;
     index_type _components[Dims] = {};

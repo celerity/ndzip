@@ -39,23 +39,25 @@ class extent {
 
     constexpr extent() noexcept = default;
 
-    template<dim_type Dims>
-    NDZIP_UNIVERSAL constexpr extent(const detail::static_extent<Dims> &extent)
-        : _dims{Dims}, _components{extent._components} {
-        static_assert(Dims <= max_dimensionality);
-    }
-
-    NDZIP_UNIVERSAL constexpr extent(dim_type dims) noexcept : _dims{dims} {
+    NDZIP_UNIVERSAL constexpr explicit extent(dim_type dims) noexcept : _dims{dims} {
         assert(dims > 0);
         assert(dims <= max_dimensionality);
     }
 
     NDZIP_UNIVERSAL static constexpr extent broadcast(dim_type dims, index_type scalar) {
-        extent e{dims};
+        extent e(dims);
         for (dim_type d = 0; d < dims; ++d) {
             e[d] = scalar;
         }
         return e;
+    }
+
+    NDZIP_UNIVERSAL constexpr extent(std::initializer_list<index_type> components) noexcept
+        : _dims{static_cast<dim_type>(components.size())} {
+        assert(size(components) < static_cast<size_t>(max_dimensionality));
+        for (dim_type d = 0; d < _dims; ++d) {
+            _components[d] = data(components)[d];
+        }
     }
 
     NDZIP_UNIVERSAL constexpr dim_type dimensions() const { return _dims; }
