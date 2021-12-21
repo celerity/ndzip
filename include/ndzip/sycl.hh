@@ -7,7 +7,7 @@
 
 namespace ndzip::detail::gpu_sycl {
 
-template<typename T, dim_type dims>
+template<typename Profile>
 class sycl_offloader;
 
 }
@@ -60,7 +60,7 @@ class sycl_compressor : public basic_sycl_compressor<T> {
     // TODO USM variant
 
   private:
-    template<typename, dim_type>
+    template<typename>
     friend class ndzip::detail::gpu_sycl::sycl_offloader;
 
     sycl::queue *_q;

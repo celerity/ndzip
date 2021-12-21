@@ -644,12 +644,12 @@ inline bool verbose() {
 }
 
 
-template<template<typename> typename Base, template<typename, dim_type> typename Impl, typename T, typename... Params>
-std::unique_ptr<Base<T>> make_specialized(dim_type dims, Params &&...args) {
+template<template<typename> typename Base, template<typename> typename Impl, typename T, typename... Params>
+std::unique_ptr<Base<T>> make_with_profile(dim_type dims, Params &&...args) {
     switch (dims) {
-        case 1: return std::make_unique<Impl<T, 1>>(std::forward<Params>(args)...);
-        case 2: return std::make_unique<Impl<T, 2>>(std::forward<Params>(args)...);
-        case 3: return std::make_unique<Impl<T, 3>>(std::forward<Params>(args)...);
+        case 1: return std::make_unique<Impl<profile<T, 1>>>(std::forward<Params>(args)...);
+        case 2: return std::make_unique<Impl<profile<T, 2>>>(std::forward<Params>(args)...);
+        case 3: return std::make_unique<Impl<profile<T, 3>>>(std::forward<Params>(args)...);
         default: throw std::runtime_error{"Invalid dimensionality"};
     }
 }
