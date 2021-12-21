@@ -21,6 +21,14 @@ static index_type num_hypercubes(const extent &size) {
 }
 
 void compressor_requirements::include(const extent &data_size) {
+    if (_dims == -1) {
+        _dims = data_size.dimensions();
+    } else {
+        if (data_size.dimensions() != _dims) {
+            throw std::runtime_error{"Cannot add a " + std::to_string(data_size.dimensions())
+                    + "-dimensional extent to " + std::to_string(_dims) + "-dimensional compressor_requirements"};
+        }
+    }
     _max_num_hypercubes = std::max(_max_num_hypercubes, num_hypercubes(data_size));
 }
 

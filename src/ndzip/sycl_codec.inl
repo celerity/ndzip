@@ -16,6 +16,9 @@ namespace ndzip::detail::gpu_sycl {
 using namespace ndzip::detail::gpu;
 
 template<typename Profile>
+class sycl_offloader;
+
+template<typename Profile>
 using hypercube_group = known_size_group<hypercube_group_size<Profile>>;
 
 template<typename Profile>
@@ -469,18 +472,11 @@ class block_decompression_kernel;
 template<typename>
 class border_expansion_kernel;
 
-}  // namespace ndzip::detail::gpu_sycl
+template<typename Profile>
+static std::pair<index_type, index_type> get_chunks_and_length_buf_size(ndzip::index_type num_hypercubes) {
+    using bits_type = typename Profile::bits_type;
 
-
-template<typename T, int Dims>
-static std::pair<ndzip::index_type, ndzip::index_type>
-get_chunks_and_length_buf_size(ndzip::index_type num_hypercubes) {
-    using namespace ndzip;
-
-    using profile = detail::profile<T, Dims>;
-    using bits_type = typename profile::bits_type;
-
-    constexpr index_type hc_size = detail::ipow(profile::hypercube_side_length, profile::dimensions);
+    constexpr index_type hc_size = detail::ipow(Profile::hypercube_side_length, Profile::dimensions);
     constexpr index_type col_chunk_size = detail::bits_of<bits_type>;
     constexpr index_type header_chunk_size = hc_size / col_chunk_size;
     constexpr index_type hc_total_chunks_size = hc_size + header_chunk_size;
@@ -492,13 +488,41 @@ get_chunks_and_length_buf_size(ndzip::index_type num_hypercubes) {
     return {chunks_buf_size, length_buf_size};
 }
 
-template<typename T, int Dims>
-ndzip::sycl_compressor<T, Dims>::sycl_compressor(sycl::queue &q, compressor_requirements req)
-    : sycl_compressor{q, get_chunks_and_length_buf_size<T, Dims>(detail::get_num_hypercubes(req))} {
+template<typename Profile>
+class sycl_compressor_impl final : public sycl_buffer_compressor<typename Profile::data_type, Profile::dimensions> {
+  public:
+    using value_type = typename Profile::data_type;
+    using compressed_type = typename Profile::bits_type;
+
+    constexpr static auto dimensions = Profile::dimensions;
+
+    explicit sycl_compressor_impl(sycl::queue &q, compressor_requirements req);
+
+  protected:
+    sycl_compress_events do_compress(sycl::buffer<value_type, dimensions> &in_data,
+            sycl::buffer<compressed_type> &out_stream, sycl::buffer<index_type> *out_stream_length) override;
+
+    // TODO USM variant
+
+  private:
+    template<typename>
+    friend class ndzip::detail::gpu_sycl::sycl_offloader;
+
+    sycl::queue *_q;
+    sycl::buffer<compressed_type> _chunks_buf;
+    sycl::buffer<index_type> _chunk_lengths_buf;
+    std::vector<sycl::buffer<index_type>> _hierarchical_scan_bufs;
+
+    explicit sycl_compressor_impl(sycl::queue &q, std::pair<index_type, index_type> chunks_and_length_buf_sizes);
+};
+
+template<typename Profile>
+sycl_compressor_impl<Profile>::sycl_compressor_impl(sycl::queue &q, compressor_requirements req)
+    : sycl_compressor_impl{q, get_chunks_and_length_buf_size<Profile>(detail::get_num_hypercubes(req))} {
 }
 
-template<typename T, int Dims>
-ndzip::sycl_compressor<T, Dims>::sycl_compressor(
+template<typename Profile>
+sycl_compressor_impl<Profile>::sycl_compressor_impl(
         sycl::queue &q, std::pair<index_type, index_type> chunks_and_length_buf_sizes)
     : _q{&q}
     , _chunks_buf{chunks_and_length_buf_sizes.first}
@@ -507,18 +531,13 @@ ndzip::sycl_compressor<T, Dims>::sycl_compressor(
               detail::gpu_sycl::hierarchical_inclusive_scan_allocate<index_type>(chunks_and_length_buf_sizes.second)} {
 }
 
-template<typename T, ndzip::dim_type Dims>
-ndzip::sycl_compress_events ndzip::sycl_compressor<T, Dims>::compress(sycl::buffer<value_type, Dims> &in_data,
+template<typename Profile>
+sycl_compress_events sycl_compressor_impl<Profile>::do_compress(sycl::buffer<value_type, dimensions> &in_data,
         sycl::buffer<compressed_type> &out_stream, sycl::buffer<index_type> *out_stream_length) {
-    using namespace ndzip;
-    using namespace detail;
-    using namespace detail::gpu_sycl;
-
-    using profile = detail::profile<T, Dims>;
-    using bits_type = typename profile::bits_type;
+    using bits_type = typename Profile::bits_type;
     using sam = sycl::access::mode;
 
-    constexpr index_type hc_size = ipow(profile::hypercube_side_length, profile::dimensions);
+    constexpr index_type hc_size = ipow(Profile::hypercube_side_length, dimensions);
     constexpr index_type col_chunk_size = bits_of<bits_type>;
     constexpr index_type header_chunk_size = hc_size / col_chunk_size;
     constexpr index_type chunks_per_hc = 1 /* header */ + hc_size / col_chunk_size;
@@ -526,8 +545,8 @@ ndzip::sycl_compress_events ndzip::sycl_compressor<T, Dims>::compress(sycl::buff
 
     // TODO edge case w/ 0 hypercubes
 
-    const auto data_size = extent_cast<static_extent<Dims>>(in_data.get_range());
-    detail::file<profile> file(data_size);
+    const auto data_size = extent_cast<static_extent<dimensions>>(in_data.get_range());
+    detail::file<Profile> file(data_size);
     const auto num_hypercubes = file.num_hypercubes();
 
     sycl_compress_events events;
@@ -535,12 +554,12 @@ ndzip::sycl_compress_events ndzip::sycl_compressor<T, Dims>::compress(sycl::buff
         const auto data_acc = in_data.template get_access<sam::read>(cgh);
         const auto chunks_acc = _chunks_buf.template get_access<sam::discard_write>(cgh);
         const auto chunk_lengths_acc = _chunk_lengths_buf.template get_access<sam::discard_write>(cgh);
-        const auto group_size = hypercube_group_size<profile>;
+        const auto group_size = hypercube_group_size<Profile>;
         const auto nd_range = make_nd_range(num_hypercubes, group_size);
 
-        sycl::local_accessor<compressor_local_allocation<profile>> lm{1, cgh};
-        cgh.parallel_for<block_compression_kernel<profile>>(nd_range, [=](hypercube_item<profile> item) {
-            hypercube_ptr<profile, forward_transform_tag> hc{lm[0].hc};
+        sycl::local_accessor<compressor_local_allocation<Profile>> lm{1, cgh};
+        cgh.parallel_for<block_compression_kernel<Profile>>(nd_range, [=](hypercube_item<Profile> item) {
+            hypercube_ptr<Profile, forward_transform_tag> hc{lm[0].hc};
 
             auto hc_index = static_cast<index_type>(item.get_group_id(0));
             load_hypercube(item.get_group(), hc_index, data_acc.get_pointer(), data_size, hc);
@@ -562,12 +581,12 @@ ndzip::sycl_compress_events ndzip::sycl_compressor<T, Dims>::compress(sycl::buff
         const auto stream_acc = out_stream.template get_access<sam::discard_write>(cgh);
         const auto num_header_fields
                 = detail::ceil(num_hypercubes, static_cast<uint32_t>(sizeof(bits_type) / sizeof(index_type)));
-        const auto nd_range = make_nd_range(num_header_fields, hypercube_group_size<profile>);
+        const auto nd_range = make_nd_range(num_header_fields, hypercube_group_size<Profile>);
 
-        sycl::local_accessor<compaction_local_allocation<profile>> lm{1, cgh};
-        cgh.parallel_for<chunk_compaction_kernel<profile>>(nd_range, [=](hypercube_item<profile> item) {
+        sycl::local_accessor<compaction_local_allocation<Profile>> lm{1, cgh};
+        cgh.parallel_for<chunk_compaction_kernel<Profile>>(nd_range, [=](hypercube_item<Profile> item) {
             auto hc_index = static_cast<index_type>(item.get_group_id(0));
-            detail::stream<profile> stream{num_hypercubes, stream_acc.get_pointer()};
+            detail::stream<Profile> stream{num_hypercubes, stream_acc.get_pointer()};
             if (hc_index == num_hypercubes) {
                 // For 64-bit data types and an odd number of hypercubes, we insert a
                 // padding word in the header to guarantee correct alignment. To keep the
@@ -583,10 +602,10 @@ ndzip::sycl_compress_events ndzip::sycl_compressor<T, Dims>::compress(sycl::buff
     });
     events.stream_available.push_back(compact_kernel_evt);
 
-    const auto border_map = gpu::border_map<profile>{data_size};
+    const auto border_map = gpu::border_map<Profile>{data_size};
     const auto num_border_words = border_map.size();
 
-    detail::stream<profile> stream{num_hypercubes, nullptr};
+    detail::stream<Profile> stream{num_hypercubes, nullptr};
     const auto num_header_words = stream.hypercube(0) - stream.buffer;
     // TODO num_header_words == num_header_fields ??
 
@@ -596,9 +615,9 @@ ndzip::sycl_compress_events ndzip::sycl_compressor<T, Dims>::compress(sycl::buff
             auto offsets_acc = _chunk_lengths_buf.template get_access<sam::read>(cgh);
             // TODO ranged accessor to allow overlapping with compact_chunks kernel
             auto stream_acc = out_stream.template get_access<sam::discard_write>(cgh);
-            cgh.parallel_for<border_compaction_kernel<profile>>(  // TODO leverage ILP
+            cgh.parallel_for<border_compaction_kernel<Profile>>(  // TODO leverage ILP
                     sycl::range<1>{num_border_words}, [=](sycl::item<1> item) {
-                        const T *data = data_acc.get_pointer();
+                        const value_type *data = data_acc.get_pointer();
                         const auto num_compressed_words = offsets_acc[num_compressed_words_offset];
                         const auto border_offset = num_header_words + num_compressed_words;
                         const auto i = static_cast<index_type>(item.get_linear_id());
@@ -623,54 +642,74 @@ ndzip::sycl_compress_events ndzip::sycl_compressor<T, Dims>::compress(sycl::buff
     return events;
 }
 
-template<typename T, ndzip::dim_type Dims>
-ndzip::sycl_decompress_events ndzip::sycl_decompressor<T, Dims>::decompress(
-        sycl::buffer<compressed_type> &in_stream, sycl::buffer<value_type, Dims> &out_data) {
-    using namespace ndzip;
-    using namespace detail;
-    using namespace detail::gpu_sycl;
+template<typename T>
+std::unique_ptr<decompressor<T>> make_decompressor(dim_type dims, unsigned num_threads = 0);
 
-    using profile = detail::profile<T, Dims>;
+
+template<typename Profile>
+class sycl_decompressor_impl final : public sycl_buffer_decompressor<typename Profile::data_type, Profile::dimensions> {
+  public:
+    using value_type = typename Profile::data_type;
+    using compressed_type = typename Profile::bits_type;
+
+    constexpr static auto dimensions = Profile::dimensions;
+
+    explicit sycl_decompressor_impl(sycl::queue &q) : _q{&q} {}
+
+  protected:
+    sycl_decompress_events do_decompress(
+            sycl::buffer<compressed_type> &in_stream, sycl::buffer<value_type, dimensions> &out_data) override;
+
+    // TODO USM variant
+
+  private:
+    sycl::queue *_q;
+};
+
+template<typename Profile>
+sycl_decompress_events sycl_decompressor_impl<Profile>::do_decompress(
+        sycl::buffer<compressed_type> &in_stream, sycl::buffer<value_type, dimensions> &out_data) {
     using sam = sycl::access::mode;
 
-    const auto data_size = extent_cast<static_extent<Dims>>(out_data.get_range());
-    const auto file = detail::file<profile>(data_size);
+    const auto data_size = extent_cast<static_extent<dimensions>>(out_data.get_range());
+    const auto file = detail::file<Profile>(data_size);
     const auto num_hypercubes = file.num_hypercubes();
 
     sycl_decompress_events events;
     auto decompress_kernel_evt = submit_and_profile(*_q, "decompress blocks", [&](sycl::handler &cgh) {
         auto stream_acc = in_stream.template get_access<sam::read>(cgh);
         auto data_acc = out_data.template get_access<sam::discard_write>(cgh);
-        auto nd_range = make_nd_range(num_hypercubes, hypercube_group_size<profile>);
+        auto nd_range = make_nd_range(num_hypercubes, hypercube_group_size<Profile>);
 
-        sycl::local_accessor<decompressor_local_allocation<profile>> lm{1, cgh};
-        cgh.parallel_for<block_decompression_kernel<profile>>(nd_range, [=](hypercube_item<profile> item) {
-            hypercube_ptr<profile, inverse_transform_tag> hc{lm[0].hc};
+        sycl::local_accessor<decompressor_local_allocation<Profile>> lm{1, cgh};
+        cgh.parallel_for<block_decompression_kernel<Profile>>(nd_range, [=](hypercube_item<Profile> item) {
+            hypercube_ptr<Profile, inverse_transform_tag> hc{lm[0].hc};
 
             const auto hc_index = static_cast<index_type>(item.get_group_id(0));
-            detail::stream<const profile> stream{num_hypercubes, stream_acc.get_pointer()};
-            read_transposed_chunks<profile>(item, hc, stream.hypercube(hc_index), lm[0].reader);
-            inverse_block_transform<profile>(item, hc, lm[0].transform);
+            detail::stream<const Profile> stream{num_hypercubes, stream_acc.get_pointer()};
+            read_transposed_chunks<Profile>(item, hc, stream.hypercube(hc_index), lm[0].reader);
+            inverse_block_transform<Profile>(item, hc, lm[0].transform);
             store_hypercube(item.get_group(), hc_index, data_acc.get_pointer(), data_size, hc);
         });
     });
     events.start = decompress_kernel_evt;
     events.data_available.push_back(decompress_kernel_evt);
 
-    const auto border_map = gpu::border_map<profile>{data_size};
+    const auto border_map = gpu::border_map<Profile>{data_size};
     const auto num_border_words = border_map.size();
 
     if (num_border_words > 0) {
         auto expand_border_evt = submit_and_profile(*_q, "expand border", [&](sycl::handler &cgh) {
             auto stream_acc = in_stream.template get_access<sam::read>(cgh);
             auto data_acc = out_data.template get_access<sam::discard_write>(cgh);
-            cgh.parallel_for<border_expansion_kernel<profile>>(  // TODO leverage ILP
+            cgh.parallel_for<border_expansion_kernel<Profile>>(  // TODO leverage ILP
                     sycl::range<1>{num_border_words}, [=](sycl::item<1> item) {
-                        detail::stream<const profile> stream{file.num_hypercubes(), stream_acc.get_pointer()};
+                        detail::stream<const Profile> stream{file.num_hypercubes(), stream_acc.get_pointer()};
                         const auto border_offset = static_cast<index_type>(stream.border() - stream.buffer);
-                        T *data = data_acc.get_pointer();
+                        value_type *data = data_acc.get_pointer();
                         auto i = static_cast<index_type>(item.get_linear_id());
-                        data[linear_index(data_size, border_map[i])] = bit_cast<T>(stream_acc[border_offset + i]);
+                        data[linear_index(data_size, border_map[i])]
+                                = bit_cast<value_type>(stream_acc[border_offset + i]);
                     });
         });
         events.data_available.push_back(expand_border_evt);
@@ -678,8 +717,6 @@ ndzip::sycl_decompress_events ndzip::sycl_decompressor<T, Dims>::decompress(
 
     return events;
 }
-
-namespace ndzip::detail::gpu_sycl {
 
 template<typename Profile>
 class sycl_offloader final : public offloader<typename Profile::data_type> {
@@ -738,7 +775,7 @@ index_type sycl_offloader<Profile>::do_compress(
     sycl::buffer<bits_type> stream_buf(compressed_length_bound<data_type>(data_size));
     sycl::buffer<index_type> stream_length_buf(1);
 
-    ndzip::sycl_compressor<data_type, dimensions> compressor{_q, data_size};
+    sycl_compressor_impl<Profile> compressor{_q, data_size};
 
     if (is_profiling()) {
         force_device_allocation(stream_buf, _q);
@@ -799,7 +836,7 @@ index_type sycl_offloader<Profile>::do_decompress(const bits_type *raw_stream, i
         _q.wait();
     }
 
-    auto events = sycl_decompressor<data_type, dimensions>{_q}.decompress(stream_buf, data_buf);
+    auto events = sycl_decompressor_impl<Profile>{_q}.decompress(stream_buf, data_buf);
 
     submit_and_profile(_q, "copy output to host", [&](sycl::handler &cgh) {
         cgh.copy(data_buf.template get_access<sam::read>(cgh), data);
@@ -841,14 +878,69 @@ template class sycl_offloader<profile<DATA_TYPE, DIMENSIONS>>;
 }  // namespace ndzip::detail::gpu_sycl
 
 template<typename T>
+std::unique_ptr<ndzip::sycl_compressor<T>>
+ndzip::make_sycl_compressor(sycl::queue &q, const compressor_requirements &req) {
+    return detail::make_with_profile<sycl_compressor, detail::gpu_sycl::sycl_compressor_impl, T>(
+            detail::get_dimensionality(req), q, req);
+}
+
+template<typename T, ndzip::dim_type Dims>
+std::unique_ptr<ndzip::sycl_buffer_compressor<T, Dims>>
+ndzip::make_sycl_buffer_compressor(sycl::queue &q, const compressor_requirements &req) {
+    return std::make_unique<detail::gpu_sycl::sycl_compressor_impl<detail::profile<T, Dims>>>(q, req);
+}
+
+template<typename T>
+std::unique_ptr<ndzip::sycl_decompressor<T>> ndzip::make_sycl_decompressor(sycl::queue &q, dim_type dims) {
+    return detail::make_with_profile<sycl_decompressor, detail::gpu_sycl::sycl_decompressor_impl, T>(dims, q);
+}
+
+template<typename T, ndzip::dim_type Dims>
+std::unique_ptr<ndzip::sycl_buffer_decompressor<T, Dims>> ndzip::make_sycl_buffer_decompressor(sycl::queue &q) {
+    return std::make_unique<detail::gpu_sycl::sycl_decompressor_impl<detail::profile<T, Dims>>>(q);
+}
+
+template<typename T>
 std::unique_ptr<ndzip::offloader<T>> ndzip::make_sycl_offloader(dim_type dimensions, bool enable_profiling) {
     return detail::make_with_profile<offloader, detail::gpu_sycl::sycl_offloader, T>(
             dimensions, enable_profiling, detail::verbose());
 }
 
+#ifdef SPLIT_CONFIGURATION_sycl_encoder
+
 namespace ndzip {
+
+template std::unique_ptr<sycl_compressor<float>> make_sycl_compressor<float>(
+        sycl::queue &, const compressor_requirements &);
+template std::unique_ptr<sycl_buffer_compressor<float, 1>> make_sycl_buffer_compressor<float, 1>(
+        sycl::queue &, const compressor_requirements &);
+template std::unique_ptr<sycl_buffer_compressor<float, 2>> make_sycl_buffer_compressor<float, 2>(
+        sycl::queue &, const compressor_requirements &);
+template std::unique_ptr<sycl_buffer_compressor<float, 3>> make_sycl_buffer_compressor<float, 3>(
+        sycl::queue &, const compressor_requirements &);
+
+template std::unique_ptr<sycl_compressor<double>> make_sycl_compressor<double>(
+        sycl::queue &, const compressor_requirements &);
+template std::unique_ptr<sycl_buffer_compressor<double, 1>> make_sycl_buffer_compressor<double, 1>(
+        sycl::queue &, const compressor_requirements &);
+template std::unique_ptr<sycl_buffer_compressor<double, 2>> make_sycl_buffer_compressor<double, 2>(
+        sycl::queue &, const compressor_requirements &);
+template std::unique_ptr<sycl_buffer_compressor<double, 3>> make_sycl_buffer_compressor<double, 3>(
+        sycl::queue &, const compressor_requirements &);
+
+template std::unique_ptr<sycl_decompressor<float>> make_sycl_decompressor<float>(sycl::queue &, dim_type);
+template std::unique_ptr<sycl_buffer_decompressor<float, 1>> make_sycl_buffer_decompressor<float, 1>(sycl::queue &);
+template std::unique_ptr<sycl_buffer_decompressor<float, 2>> make_sycl_buffer_decompressor<float, 2>(sycl::queue &);
+template std::unique_ptr<sycl_buffer_decompressor<float, 3>> make_sycl_buffer_decompressor<float, 3>(sycl::queue &);
+
+template std::unique_ptr<sycl_decompressor<double>> make_sycl_decompressor<double>(sycl::queue &, dim_type);
+template std::unique_ptr<sycl_buffer_decompressor<double, 1>> make_sycl_buffer_decompressor<double, 1>(sycl::queue &);
+template std::unique_ptr<sycl_buffer_decompressor<double, 2>> make_sycl_buffer_decompressor<double, 2>(sycl::queue &);
+template std::unique_ptr<sycl_buffer_decompressor<double, 3>> make_sycl_buffer_decompressor<double, 3>(sycl::queue &);
 
 template std::unique_ptr<offloader<float>> make_sycl_offloader<float>(dim_type, bool);
 template std::unique_ptr<offloader<double>> make_sycl_offloader<double>(dim_type, bool);
 
 }  // namespace ndzip
+
+#endif  // SPLIT_CONFIGURATION_sycl_encoder

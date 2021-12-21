@@ -225,7 +225,8 @@ struct bits_type_s<8> {
 template<typename T>
 using bits_type = typename bits_type_s<sizeof(T)>::type;
 
-index_type get_num_hypercubes(compressor_requirements req);
+dim_type get_dimensionality(const compressor_requirements &req);
+index_type get_num_hypercubes(const compressor_requirements &req);
 
 }  // namespace ndzip::detail
 
@@ -274,8 +275,10 @@ class compressor_requirements {
     void include(const extent &data_size);
 
   private:
-    friend index_type detail::get_num_hypercubes(compressor_requirements);
+    friend dim_type detail::get_dimensionality(const compressor_requirements &);
+    friend index_type detail::get_num_hypercubes(const compressor_requirements &);
 
+    dim_type _dims = -1;
     index_type _max_num_hypercubes = 0;
 };
 

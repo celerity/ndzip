@@ -196,8 +196,8 @@ if (NDZIP_BUILD_TEST AND Catch2_FOUND)
             )
 
     target_split_configured_sources(encoder_test PRIVATE
-        GENERATE encoder_profile_test.cc FROM src/test/codec_profile_test.inl
-        ${NDZIP_PROFILE_CONFIGURATIONS}
+            GENERATE codec_profile_test.cc FROM src/test/codec_profile_test.inl
+            ${NDZIP_PROFILE_CONFIGURATIONS}
             )
 
     if (NDZIP_USE_CUDA AND NOT NDZIP_USE_HIPSYCL)
@@ -206,10 +206,10 @@ if (NDZIP_BUILD_TEST AND Catch2_FOUND)
         #   works with NVCC if SYCL is disabled.
         get_target_property(ENCODER_TEST_SOURCES encoder_test SOURCES)
         foreach (source in ${ENCODER_TEST_SOURCES})
-            if (source MATCHES ".*/encoder_profile_test.*\\.cc")
+            if (source MATCHES ".*/codec_profile_test.*\\.cc")
                 set_source_files_properties("${source}" PROPERTIES
-                    LANGUAGE CUDA
-                    COMPILE_FLAGS "${NDZIP_CUDA_FLAGS_STRING}")
+                        LANGUAGE CUDA
+                        COMPILE_FLAGS "${NDZIP_CUDA_FLAGS_STRING}")
             endif ()
         endforeach ()
     endif()

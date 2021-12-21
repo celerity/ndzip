@@ -369,7 +369,12 @@ template<typename Profile, dim_type ThisDim, typename F>
     }
 }
 
-inline index_type get_num_hypercubes(compressor_requirements req) {
+inline dim_type get_dimensionality(const compressor_requirements &req) {
+    if (req._dims == -1) { throw std::runtime_error{"Cannot construct a compressor with empty requirements"}; }
+    return req._dims;
+}
+
+inline index_type get_num_hypercubes(const compressor_requirements &req) {
     return req._max_num_hypercubes;
 }
 

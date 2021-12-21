@@ -31,4 +31,11 @@ class cuda_decompressor {
     virtual void decompress(const compressed_type *in_device_stream, T *out_device_data, const extent &data_size) = 0;
 };
 
+template<typename T>
+std::unique_ptr<cuda_compressor<T>>
+make_cuda_compressor(const compressor_requirements &req, cudaStream_t stream = nullptr);
+
+template<typename T>
+std::unique_ptr<cuda_decompressor<T>> make_cuda_decompressor(dim_type dims, cudaStream_t stream = nullptr);
+
 }  // namespace ndzip
