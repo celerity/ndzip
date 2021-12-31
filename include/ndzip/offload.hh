@@ -8,26 +8,27 @@ namespace ndzip {
 template<typename T>
 class offloader {
   public:
-    using data_type = T;
+    using value_type = T;
     using compressed_type = detail::bits_type<T>;
 
     virtual ~offloader() = default;
 
-    index_type compress(const data_type *data, const extent &data_size, compressed_type *stream,
+    index_type compress(const value_type *data, const extent &data_size, compressed_type *stream,
             kernel_duration *duration = nullptr) {
         return do_compress(data, data_size, stream, duration);
     }
 
-    index_type decompress(const compressed_type *stream, index_type length, data_type *data, const extent &data_size,
+    index_type decompress(const compressed_type *stream, index_type length, value_type *data, const extent &data_size,
             kernel_duration *duration = nullptr) {
         return do_decompress(stream, length, data, data_size, duration);
     }
 
   protected:
-    virtual index_type do_compress(const data_type *data, const extent &data_size, compressed_type *stream, kernel_duration *duration)
+    virtual index_type
+    do_compress(const value_type *data, const extent &data_size, compressed_type *stream, kernel_duration *duration)
             = 0;
 
-    virtual index_type do_decompress(const compressed_type *stream, index_type length, data_type *data,
+    virtual index_type do_decompress(const compressed_type *stream, index_type length, value_type *data,
             const extent &data_size, kernel_duration *duration)
             = 0;
 };

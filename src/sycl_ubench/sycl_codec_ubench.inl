@@ -32,7 +32,7 @@ class chunk_compact_kernel;
 
 
 TEMPLATE_TEST_CASE("Loading", "[load]", ALL_PROFILES) {
-    using data_type = typename TestType::data_type;
+    using value_type = typename TestType::value_type;
     using bits_type = typename TestType::bits_type;
 
     constexpr dim_type dimensions = TestType::dimensions;
@@ -51,8 +51,8 @@ TEMPLATE_TEST_CASE("Loading", "[load]", ALL_PROFILES) {
         return grid_extent;
     }();
 
-    const auto data = make_random_vector<data_type>(num_elements(grid_extent));
-    sycl::buffer<data_type> data_buffer(data.data(), data.size());
+    const auto data = make_random_vector<value_type>(num_elements(grid_extent));
+    sycl::buffer<value_type> data_buffer(data.data(), data.size());
 
     SYCL_BENCHMARK("Load hypercube")(sycl::queue & q) {
         constexpr auto hc_size = ipow(TestType::hypercube_side_length, TestType::dimensions);

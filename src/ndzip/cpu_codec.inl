@@ -73,27 +73,27 @@ class simd_aligned_buffer {
 
 template<typename Profile>
 [[gnu::noinline]] void
-load_hypercube(const static_extent<Profile::dimensions> &hc_offset, const typename Profile::data_type *data,
+load_hypercube(const static_extent<Profile::dimensions> &hc_offset, const typename Profile::value_type *data,
         const static_extent<Profile::dimensions> &data_size, typename Profile::bits_type *cube) {
-    using data_type = typename Profile::data_type;
+    using value_type = typename Profile::value_type;
     using bits_type = typename Profile::bits_type;
 
     for_each_hypercube_slice<Profile>(
-            hc_offset, data, data_size, cube, [](const data_type *src, bits_type *dest, size_t n_elems) {
-                memcpy(assume_simd_aligned(dest), src, n_elems * sizeof(data_type));
+            hc_offset, data, data_size, cube, [](const value_type *src, bits_type *dest, size_t n_elems) {
+                memcpy(assume_simd_aligned(dest), src, n_elems * sizeof(value_type));
             });
 }
 
 template<typename Profile>
 [[gnu::noinline]] void
 store_hypercube(const static_extent<Profile::dimensions> &hc_offset, const typename Profile::bits_type *cube,
-        typename Profile::data_type *data, const static_extent<Profile::dimensions> &data_size) {
-    using data_type = typename Profile::data_type;
+        typename Profile::value_type *data, const static_extent<Profile::dimensions> &data_size) {
+    using value_type = typename Profile::value_type;
     using bits_type = typename Profile::bits_type;
 
     for_each_hypercube_slice<Profile>(
-            hc_offset, data, data_size, cube, [](data_type *dest, const bits_type *src, size_t n_elems) {
-                memcpy(dest, assume_simd_aligned(src), n_elems * sizeof(data_type));
+            hc_offset, data, data_size, cube, [](value_type *dest, const bits_type *src, size_t n_elems) {
+                memcpy(dest, assume_simd_aligned(src), n_elems * sizeof(value_type));
             });
 }
 
@@ -578,9 +578,9 @@ template<typename Bits>
 }
 
 template<typename Profile>
-class serial_compressor : public compressor<typename Profile::data_type> {
+class serial_compressor : public compressor<typename Profile::value_type> {
   public:
-    using data_type = typename Profile::data_type;
+    using value_type = typename Profile::value_type;
 
   private:
     using bits_type = typename Profile::bits_type;
@@ -591,21 +591,21 @@ class serial_compressor : public compressor<typename Profile::data_type> {
     detail::cpu::simd_aligned_buffer<bits_type> cube{hc_size};
 
   public:
-    index_type compress(const data_type *data, const extent &data_size, bits_type *raw_stream) override;
+    index_type compress(const value_type *data, const extent &data_size, bits_type *raw_stream) override;
 };
 
 template<typename Profile>
-index_type serial_compressor<Profile>::compress(const data_type *data, const extent &data_size, bits_type *raw_stream) {
+index_type
+serial_compressor<Profile>::compress(const value_type *data, const extent &data_size, bits_type *raw_stream) {
     if (data_size.dimensions() != dimensions) {
         throw std::runtime_error{"data dimensionality does not match compressor dimensionality"};
     }
 
     const auto static_size = detail::static_extent<dimensions>{data_size};
-    const detail::file<Profile> file{static_size};
-    detail::stream<Profile> stream{file.num_hypercubes(), raw_stream};
+    detail::stream<Profile> stream{num_hypercubes(static_size), raw_stream};
 
     index_type offset = 0;
-    file.for_each_hypercube([&](auto hc_offset, auto hc_index) {
+    for_each_hypercube(static_size, [&](auto hc_offset, auto hc_index) {
         detail::cpu::load_hypercube<Profile>(hc_offset, data, static_size, cube.data());
         detail::cpu::block_transform<Profile>(cube.data());
         offset += detail::cpu::zero_bit_encode<bits_type>(
@@ -620,9 +620,9 @@ index_type serial_compressor<Profile>::compress(const data_type *data, const ext
 
 
 template<typename Profile>
-class serial_decompressor : public decompressor<typename Profile::data_type> {
+class serial_decompressor : public decompressor<typename Profile::value_type> {
   public:
-    using data_type = typename Profile::data_type;
+    using value_type = typename Profile::value_type;
 
   private:
     using bits_type = typename Profile::bits_type;
@@ -634,21 +634,20 @@ class serial_decompressor : public decompressor<typename Profile::data_type> {
     detail::cpu::simd_aligned_buffer<bits_type> cube{hc_size};
 
   public:
-    ndzip::index_type decompress(const bits_type *raw_stream, data_type *data, const extent &data_size) override;
+    ndzip::index_type decompress(const bits_type *raw_stream, value_type *data, const extent &data_size) override;
 };
 
 template<typename Profile>
 index_type
-serial_decompressor<Profile>::decompress(const bits_type *raw_stream, data_type *data, const extent &data_size) {
+serial_decompressor<Profile>::decompress(const bits_type *raw_stream, value_type *data, const extent &data_size) {
     if (data_size.dimensions() != dimensions) {
         throw std::runtime_error{"data dimensionality does not match decompressor dimensionality"};
     }
 
     const auto static_size = detail::static_extent<dimensions>(data_size);
-    const detail::file<Profile> file{static_size};
-    detail::stream<const Profile> stream{file.num_hypercubes(), raw_stream};
+    detail::stream<const Profile> stream{num_hypercubes(static_size), raw_stream};
 
-    file.for_each_hypercube([&](auto hc_offset, auto hc_index) {
+    for_each_hypercube(static_size, [&](auto hc_offset, auto hc_index) {
         detail::cpu::zero_bit_decode<bits_type>(
                 reinterpret_cast<const std::byte *>(stream.hypercube(hc_index)), cube.data(), hc_size);
         detail::cpu::inverse_block_transform<Profile>(cube.data());
@@ -682,13 +681,13 @@ template class serial_decompressor<profile<DATA_TYPE, DIMENSIONS>>;
 
 template<typename Profile>
 struct cube_buffer {
-    using data_type = typename Profile::data_type;
+    using value_type = typename Profile::value_type;
     using bits_type = typename Profile::bits_type;
 
     constexpr static auto dimensions = Profile::dimensions;
     constexpr static auto side_length = Profile::hypercube_side_length;
     constexpr static auto hc_size = detail::ipow(side_length, dimensions);
-    // constexpr static index_type num_hcs_per_chunk = 64 / sizeof(data_type);
+    // constexpr static index_type num_hcs_per_chunk = 64 / sizeof(value_type);
     // constexpr static index_type num_write_buffers = 30;
 
     alignas(detail::cpu::simd_width_bytes) std::array<bits_type, hc_size> cube;
@@ -699,9 +698,9 @@ struct cube_buffer {
 };
 
 template<typename Profile>
-class openmp_compressor : public compressor<typename Profile::data_type> {
+class openmp_compressor : public compressor<typename Profile::value_type> {
   public:
-    using data_type = typename Profile::data_type;
+    using value_type = typename Profile::value_type;
 
   private:
     using bits_type = typename Profile::bits_type;
@@ -709,7 +708,7 @@ class openmp_compressor : public compressor<typename Profile::data_type> {
     constexpr static auto dimensions = Profile::dimensions;
     constexpr static auto side_length = Profile::hypercube_side_length;
     constexpr static auto hc_size = detail::ipow(side_length, dimensions);
-    constexpr static index_type num_hcs_per_chunk = 64 / sizeof(data_type);
+    constexpr static index_type num_hcs_per_chunk = 64 / sizeof(value_type);
     constexpr static index_type num_write_buffers = 30;
 
     struct write_buffer {
@@ -753,13 +752,13 @@ class openmp_compressor : public compressor<typename Profile::data_type> {
         }
     }
 
-    index_type compress(const data_type *data, const extent &data_size, bits_type *stream) override;
+    index_type compress(const value_type *data, const extent &data_size, bits_type *stream) override;
 };
 
 template<typename Profile>
-class openmp_decompressor : public decompressor<typename Profile::data_type> {
+class openmp_decompressor : public decompressor<typename Profile::value_type> {
   public:
-    using data_type = typename Profile::data_type;
+    using value_type = typename Profile::value_type;
 
   private:
     using bits_type = typename Profile::bits_type;
@@ -774,12 +773,13 @@ class openmp_decompressor : public decompressor<typename Profile::data_type> {
   public:
     explicit openmp_decompressor(unsigned num_threads) : num_threads(num_threads) {}
 
-    index_type decompress(const bits_type *stream, data_type *data, const extent &data_size) override;
+    index_type decompress(const bits_type *stream, value_type *data, const extent &data_size) override;
 };
 
 
 template<typename Profile>
-index_type openmp_compressor<Profile>::compress(const data_type *data, const extent &data_size, bits_type *raw_stream) {
+index_type
+openmp_compressor<Profile>::compress(const value_type *data, const extent &data_size, bits_type *raw_stream) {
     if (data_size.dimensions() != dimensions) {
         throw std::runtime_error{"data dimensionality does not match compressor dimensionality"};
     }
@@ -787,16 +787,14 @@ index_type openmp_compressor<Profile>::compress(const data_type *data, const ext
     prepare();
 
     const auto static_size = detail::static_extent<dimensions>{data_size};
-    const detail::file<Profile> file(static_size);
+    const auto num_hypercubes = detail::num_hypercubes(static_size);
 
-    detail::stream<Profile> stream{file.num_hypercubes(), raw_stream};
+    detail::stream<Profile> stream{num_hypercubes, raw_stream};
 
     std::atomic<size_t> next_hc_index_to_read = 0;
     std::atomic<size_t> next_hc_index_to_write = 0;
     std::atomic<size_t> next_available_write_task_hc_index = SIZE_MAX;
     index_type stream_offset = 0;
-
-    const auto num_hypercubes = file.num_hypercubes();
 
 #pragma omp parallel num_threads(num_threads)
 #pragma omp single nowait
@@ -891,7 +889,7 @@ index_type openmp_compressor<Profile>::compress(const data_type *data, const ext
 
 template<typename Profile>
 index_type
-openmp_decompressor<Profile>::decompress(const bits_type *raw_stream, data_type *data, const extent &data_size) {
+openmp_decompressor<Profile>::decompress(const bits_type *raw_stream, value_type *data, const extent &data_size) {
     if (data_size.dimensions() != dimensions) {
         throw std::runtime_error{"data dimensionality does not match decompressor dimensionality"};
     }
@@ -899,10 +897,9 @@ openmp_decompressor<Profile>::decompress(const bits_type *raw_stream, data_type 
     constexpr static auto side_length = Profile::hypercube_side_length;
 
     const auto static_size = detail::static_extent<dimensions>{data_size};
-    detail::file<Profile> file{static_size};
-    const auto num_hypercubes = file.num_hypercubes();
+    const auto num_hypercubes = detail::num_hypercubes(static_size);
 
-    detail::stream<const Profile> stream{file.num_hypercubes(), raw_stream};
+    detail::stream<const Profile> stream{num_hypercubes, raw_stream};
 
 #pragma omp parallel num_threads(num_threads)
     {
@@ -1001,7 +998,7 @@ namespace ndzip::detail::cpu {
 template<typename T>
 class cpu_offloader final : public offloader<T> {
   public:
-    using data_type = T;
+    using value_type = T;
     using compressed_type = detail::bits_type<T>;
 
     cpu_offloader() = default;
@@ -1010,13 +1007,13 @@ class cpu_offloader final : public offloader<T> {
         : _co{make_compressor<T>(dims, num_threads)}, _de{make_decompressor<T>(dims, num_threads)} {}
 
   protected:
-    index_type do_compress(const data_type *data, const extent &data_size, compressed_type *stream,
+    index_type do_compress(const value_type *data, const extent &data_size, compressed_type *stream,
             kernel_duration *duration) override {
         // TODO duration
         return _co->compress(data, data_size, stream);
     }
 
-    index_type do_decompress(const compressed_type *stream, [[maybe_unused]] index_type stream_length, data_type *data,
+    index_type do_decompress(const compressed_type *stream, [[maybe_unused]] index_type stream_length, value_type *data,
             const extent &data_size, kernel_duration *duration) override {
         // TODO duration
         return _de->decompress(stream, data, data_size);

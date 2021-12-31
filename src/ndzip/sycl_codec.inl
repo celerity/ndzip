@@ -41,7 +41,7 @@ void for_hypercube_indices(
 
 
 template<typename Profile>
-void load_hypercube(sycl::group<1> grp, index_type hc_index, const typename Profile::data_type *data,
+void load_hypercube(sycl::group<1> grp, index_type hc_index, const typename Profile::value_type *data,
         const static_extent<Profile::dimensions> &data_size, hypercube_ptr<Profile, forward_transform_tag> hc) {
     using bits_type = typename Profile::bits_type;
 
@@ -53,11 +53,11 @@ void load_hypercube(sycl::group<1> grp, index_type hc_index, const typename Prof
 }
 
 template<typename Profile>
-void store_hypercube(sycl::group<1> grp, index_type hc_index, typename Profile::data_type *data,
+void store_hypercube(sycl::group<1> grp, index_type hc_index, typename Profile::value_type *data,
         const static_extent<Profile::dimensions> &data_size, hypercube_ptr<Profile, inverse_transform_tag> hc) {
-    using data_type = typename Profile::data_type;
+    using value_type = typename Profile::value_type;
     for_hypercube_indices<Profile>(grp, hc_index, data_size, [&](index_type global_idx, index_type local_idx) {
-        data[global_idx] = bit_cast<data_type>(rotate_right_1(hc.load(local_idx)));
+        data[global_idx] = bit_cast<value_type>(rotate_right_1(hc.load(local_idx)));
     });
 }
 
@@ -489,9 +489,9 @@ static std::pair<index_type, index_type> get_chunks_and_length_buf_size(ndzip::i
 }
 
 template<typename Profile>
-class sycl_compressor_impl final : public sycl_buffer_compressor<typename Profile::data_type, Profile::dimensions> {
+class sycl_compressor_impl final : public sycl_buffer_compressor<typename Profile::value_type, Profile::dimensions> {
   public:
-    using value_type = typename Profile::data_type;
+    using value_type = typename Profile::value_type;
     using compressed_type = typename Profile::bits_type;
 
     constexpr static auto dimensions = Profile::dimensions;
@@ -546,8 +546,7 @@ sycl_compress_events sycl_compressor_impl<Profile>::do_compress(sycl::buffer<val
     // TODO edge case w/ 0 hypercubes
 
     const auto data_size = extent_cast<static_extent<dimensions>>(in_data.get_range());
-    detail::file<Profile> file(data_size);
-    const auto num_hypercubes = file.num_hypercubes();
+    const auto num_hypercubes = detail::num_hypercubes(data_size);
 
     sycl_compress_events events;
     events.start = submit_and_profile(*_q, "transform + chunk encode", [&](sycl::handler &cgh) {
@@ -647,9 +646,10 @@ std::unique_ptr<decompressor<T>> make_decompressor(dim_type dims, unsigned num_t
 
 
 template<typename Profile>
-class sycl_decompressor_impl final : public sycl_buffer_decompressor<typename Profile::data_type, Profile::dimensions> {
+class sycl_decompressor_impl final
+    : public sycl_buffer_decompressor<typename Profile::value_type, Profile::dimensions> {
   public:
-    using value_type = typename Profile::data_type;
+    using value_type = typename Profile::value_type;
     using compressed_type = typename Profile::bits_type;
 
     constexpr static auto dimensions = Profile::dimensions;
@@ -672,8 +672,7 @@ sycl_decompress_events sycl_decompressor_impl<Profile>::do_decompress(
     using sam = sycl::access::mode;
 
     const auto data_size = extent_cast<static_extent<dimensions>>(out_data.get_range());
-    const auto file = detail::file<Profile>(data_size);
-    const auto num_hypercubes = file.num_hypercubes();
+    const auto num_hypercubes = detail::num_hypercubes(data_size);
 
     sycl_decompress_events events;
     auto decompress_kernel_evt = submit_and_profile(*_q, "decompress blocks", [&](sycl::handler &cgh) {
@@ -704,7 +703,7 @@ sycl_decompress_events sycl_decompressor_impl<Profile>::do_decompress(
             auto data_acc = out_data.template get_access<sam::discard_write>(cgh);
             cgh.parallel_for<border_expansion_kernel<Profile>>(  // TODO leverage ILP
                     sycl::range<1>{num_border_words}, [=](sycl::item<1> item) {
-                        detail::stream<const Profile> stream{file.num_hypercubes(), stream_acc.get_pointer()};
+                        detail::stream<const Profile> stream{num_hypercubes, stream_acc.get_pointer()};
                         const auto border_offset = static_cast<index_type>(stream.border() - stream.buffer);
                         value_type *data = data_acc.get_pointer();
                         auto i = static_cast<index_type>(item.get_linear_id());
@@ -719,17 +718,17 @@ sycl_decompress_events sycl_decompressor_impl<Profile>::do_decompress(
 }
 
 template<typename Profile>
-class sycl_offloader final : public offloader<typename Profile::data_type> {
+class sycl_offloader final : public offloader<typename Profile::value_type> {
   public:
-    using data_type = typename Profile::data_type;
+    using value_type = typename Profile::value_type;
     using bits_type = typename Profile::bits_type;
     constexpr static auto dimensions = Profile::dimensions;
 
   protected:
     index_type do_compress(
-            const data_type *data, const extent &data_size, bits_type *stream, kernel_duration *duration) override;
+            const value_type *data, const extent &data_size, bits_type *stream, kernel_duration *duration) override;
 
-    index_type do_decompress(const bits_type *stream, index_type length, data_type *data, const extent &data_size,
+    index_type do_decompress(const bits_type *stream, index_type length, value_type *data, const extent &data_size,
             kernel_duration *duration) override;
 
   private:
@@ -758,21 +757,20 @@ class sycl_offloader final : public offloader<typename Profile::data_type> {
 
 template<typename Profile>
 index_type sycl_offloader<Profile>::do_compress(
-        const data_type *data, const extent &data_size, bits_type *raw_stream, kernel_duration *out_kernel_duration) {
+        const value_type *data, const extent &data_size, bits_type *raw_stream, kernel_duration *out_kernel_duration) {
     using sam = sycl::access::mode;
 
     // TODO edge case w/ 0 hypercubes
 
-    const detail::file<Profile> file{static_extent<dimensions>{data_size}};
-    const auto num_hypercubes = file.num_hypercubes();
+    const auto num_hypercubes = detail::num_hypercubes(data_size);
     if (verbose()) { printf("Have %u hypercubes\n", num_hypercubes); }
 
-    sycl::buffer<data_type, dimensions> data_buf{extent_cast<dimensions, sycl::range<dimensions>>(data_size)};
+    sycl::buffer<value_type, dimensions> data_buf{extent_cast<dimensions, sycl::range<dimensions>>(data_size)};
 
     submit_and_profile(_q, "copy input to device",
             [&](sycl::handler &cgh) { cgh.copy(data, data_buf.template get_access<sam::discard_write>(cgh)); });
 
-    sycl::buffer<bits_type> stream_buf(compressed_length_bound<data_type>(data_size));
+    sycl::buffer<bits_type> stream_buf(compressed_length_bound<value_type>(data_size));
     sycl::buffer<index_type> stream_length_buf(1);
 
     sycl_compressor_impl<Profile> compressor{_q, data_size};
@@ -816,15 +814,13 @@ index_type sycl_offloader<Profile>::do_compress(
 }
 
 template<typename Profile>
-index_type sycl_offloader<Profile>::do_decompress(const bits_type *raw_stream, index_type length, data_type *data,
+index_type sycl_offloader<Profile>::do_decompress(const bits_type *raw_stream, index_type length, value_type *data,
         const extent &data_size, kernel_duration *out_kernel_duration) {
     using sam = sycl::access::mode;
 
-    const detail::file<Profile> file{static_extent<dimensions>{data_size}};
-
     // TODO the range computation here is questionable at best
     sycl::buffer<bits_type> stream_buf{length};
-    sycl::buffer<data_type, dimensions> data_buf{extent_cast<dimensions, sycl::range<dimensions>>(data_size)};
+    sycl::buffer<value_type, dimensions> data_buf{extent_cast<dimensions, sycl::range<dimensions>>(data_size)};
 
     submit_and_profile(_q, "copy stream to device", [&](sycl::handler &cgh) {
         cgh.copy(static_cast<const bits_type *>(raw_stream), stream_buf.template get_access<sam::discard_write>(cgh));
@@ -854,8 +850,9 @@ index_type sycl_offloader<Profile>::do_decompress(const bits_type *raw_stream, i
 
     // TODO all this just to return the size? Maybe have a compressed-stream-size-query instead
     //  -- or a stream verification function!
-    const auto num_hypercubes = file.num_hypercubes();
-    const auto border_map = gpu::border_map<Profile>{static_extent<dimensions>{data_size}};
+    const auto static_size = static_extent<dimensions>{data_size};
+    const auto num_hypercubes = detail::num_hypercubes(static_size);
+    const auto border_map = gpu::border_map<Profile>{static_size};
     const auto num_border_words = border_map.size();
 
     detail::stream<const Profile> stream{num_hypercubes, static_cast<const bits_type *>(raw_stream)};

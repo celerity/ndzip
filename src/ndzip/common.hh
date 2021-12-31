@@ -355,20 +355,6 @@ index_type border_element_count(const static_extent<Dims> &e, dim_type side_leng
     return n_all_elems - n_cube_elems;
 }
 
-template<typename Profile, dim_type ThisDim, typename F>
-[[gnu::always_inline]] void iter_hypercubes(
-        const static_extent<Profile::dimensions> &size, static_extent<Profile::dimensions> &off, index_type &i, F &f) {
-    if constexpr (ThisDim == Profile::dimensions) {
-        invoke_for_element(f, i, off);
-        ++i;
-    } else {
-        for (off[ThisDim] = 0; off[ThisDim] + Profile::hypercube_side_length <= size[ThisDim];
-                off[ThisDim] += Profile::hypercube_side_length) {
-            iter_hypercubes<Profile, ThisDim + 1>(size, off, i, f);
-        }
-    }
-}
-
 inline dim_type get_dimensionality(const compressor_requirements &req) {
     if (req._dims == -1) { throw std::runtime_error{"Cannot construct a compressor with empty requirements"}; }
     return req._dims;
@@ -418,43 +404,72 @@ struct stream {
     NDZIP_UNIVERSAL bits_type *border() { return hypercube(num_hypercubes); }
 };
 
-template<typename Profile>
-class file {
-  public:
-    explicit file(const static_extent<Profile::dimensions> &size) : _size(size) {}
+template<dim_type Dims>
+struct hypercube_side_length_s;
 
-    index_type num_hypercubes() const {
-        index_type num = 1;
-        for (dim_type d = 0; d < Profile::dimensions; ++d) {
-            num *= _size[d] / Profile::hypercube_side_length;
-        }
-        return num;
-    }
+template<>
+struct hypercube_side_length_s<1> : public std::integral_constant<index_type, 4096> {};
 
-    template<typename Fn>
-    void for_each_hypercube(Fn &&f) const {
-        index_type i = 0;
-        static_extent<Profile::dimensions> off{};
-        iter_hypercubes<Profile, 0>(_size, off, i, f);
-    }
+template<>
+struct hypercube_side_length_s<2> : public std::integral_constant<index_type, 64> {};
 
-    const static_extent<Profile::dimensions> &size() const { return _size; };
+template<>
+struct hypercube_side_length_s<3> : public std::integral_constant<index_type, 16> {};
 
-  private:
-    static_extent<Profile::dimensions> _size;
-};
+template<dim_type Dims>
+constexpr static index_type hypercube_side_length = hypercube_side_length_s<Dims>::value;
 
 template<typename T, dim_type Dims>
 class profile {
   public:
-    using data_type = T;
+    using value_type = T;
     using bits_type = detail::bits_type<T>;
 
     constexpr static dim_type dimensions = Dims;
-    constexpr static index_type hypercube_side_length = Dims == 1 ? 4096 : Dims == 2 ? 64 : 16;
+    constexpr static index_type hypercube_side_length = detail::hypercube_side_length<dimensions>;
     constexpr static size_t compressed_block_length_bound
             = detail::ipow(hypercube_side_length, Dims) / bits_of<bits_type> * (bits_of<bits_type> + 1);
 };
+
+template<dim_type Dims>
+index_type num_hypercubes(const static_extent<Dims> &array_size) {
+    index_type num = 1;
+    for (dim_type d = 0; d < Dims; ++d) {
+        num *= array_size[d] / hypercube_side_length<Dims>;
+    }
+    return num;
+}
+
+inline index_type num_hypercubes(const extent &size) {
+    switch (size.dimensions()) {
+        // This is actually independent of data type
+        case 1: return num_hypercubes(static_extent<1>{size});
+        case 2: return num_hypercubes(static_extent<2>{size});
+        case 3: return num_hypercubes(static_extent<3>{size});
+        default: abort();
+    }
+}
+
+template<dim_type Dims, dim_type ThisDim, typename F>
+[[gnu::always_inline]] void
+iter_hypercubes(const static_extent<Dims> &size, static_extent<Dims> &off, index_type &i, F &f) {
+    if constexpr (ThisDim == Dims) {
+        invoke_for_element(f, i, off);
+        ++i;
+    } else {
+        for (off[ThisDim] = 0; off[ThisDim] + hypercube_side_length<Dims> <= size[ThisDim];
+                off[ThisDim] += hypercube_side_length<Dims>) {
+            iter_hypercubes<Dims, ThisDim + 1>(size, off, i, f);
+        }
+    }
+}
+
+template<dim_type Dims, typename Fn>
+void for_each_hypercube(const static_extent<Dims> &array_size, Fn &&f) {
+    index_type i = 0;
+    static_extent<Dims> off{};
+    iter_hypercubes<Dims, 0>(array_size, off, i, f);
+}
 
 
 template<typename T>

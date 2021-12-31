@@ -219,7 +219,7 @@ index_type get_num_hypercubes(const compressor_requirements &req);
 namespace ndzip {
 
 template<typename T>
-using compressed_type = ndzip::detail::bits_type<T>;
+using compressed_type = detail::bits_type<T>;
 
 template<typename T>
 index_type compressed_length_bound(const extent &e);

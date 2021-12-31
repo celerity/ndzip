@@ -36,7 +36,7 @@ TEMPLATE_TEST_CASE("block transform is reversible", "[profile]", ALL_PROFILES) {
 
 TEMPLATE_TEST_CASE("decode(encode(input)) reproduces the input", "[encoder][de]", ALL_PROFILES) {
     using profile = TestType;
-    using data_type = typename profile::data_type;
+    using value_type = typename profile::value_type;
     using bits_type = typename profile::bits_type;
 
     constexpr auto dims = profile::dimensions;
@@ -44,16 +44,16 @@ TEMPLATE_TEST_CASE("decode(encode(input)) reproduces the input", "[encoder][de]"
     const index_type n = side_length * 4 - 1;
     const auto size = extent::broadcast(dims, n);
 
-    auto input_data = make_random_vector<data_type>(ipow(n, dims));
+    auto input_data = make_random_vector<value_type>(ipow(n, dims));
 
     // Regression test: trigger bug in decoder optimization by ensuring first chunk = 0
-    std::fill(input_data.begin(), input_data.begin() + bits_of<data_type>, data_type{});
+    std::fill(input_data.begin(), input_data.begin() + bits_of<value_type>, value_type{});
 
     auto test_encoder_decoder_pair = [&](auto &&encoder, auto &&decoder) {
-        std::vector<bits_type> stream(ndzip::compressed_length_bound<data_type>(size));
+        std::vector<bits_type> stream(ndzip::compressed_length_bound<value_type>(size));
         stream.resize(encoder.compress(input_data.data(), size, stream.data()));
 
-        std::vector<data_type> output_data(input_data.size());
+        std::vector<value_type> output_data(input_data.size());
         auto stream_words_read = decoder.decompress(stream.data(), stream.size(), output_data.data(), size);
 
         CHECK(stream_words_read == stream.size());
@@ -61,36 +61,36 @@ TEMPLATE_TEST_CASE("decode(encode(input)) reproduces the input", "[encoder][de]"
     };
 
     SECTION("serial CPU compress => serial CPU decompress") {
-        test_encoder_decoder_pair(*make_cpu_offloader<data_type>(dims, 1), *make_cpu_offloader<data_type>(dims, 1));
+        test_encoder_decoder_pair(*make_cpu_offloader<value_type>(dims, 1), *make_cpu_offloader<value_type>(dims, 1));
     }
 
 #if NDZIP_OPENMP_SUPPORT
     SECTION("serial CPU compress => OpenMP CPU decompress", "[omp]") {
-        test_encoder_decoder_pair(*make_cpu_offloader<data_type>(dims, 1), *make_cpu_offloader<data_type>(dims));
+        test_encoder_decoder_pair(*make_cpu_offloader<value_type>(dims, 1), *make_cpu_offloader<value_type>(dims));
     }
 
     SECTION("OpenMP CPU compress => serial CPU decompress", "[omp]") {
-        test_encoder_decoder_pair(*make_cpu_offloader<data_type>(dims), *make_cpu_offloader<data_type>(dims, 1));
+        test_encoder_decoder_pair(*make_cpu_offloader<value_type>(dims), *make_cpu_offloader<value_type>(dims, 1));
     }
 #endif
 
 #if NDZIP_HIPSYCL_SUPPORT
     SECTION("serial CPU compress => SYCL decompress", "[sycl]") {
-        test_encoder_decoder_pair(*make_cpu_offloader<data_type>(dims, 1), *make_sycl_offloader<data_type>(dims));
+        test_encoder_decoder_pair(*make_cpu_offloader<value_type>(dims, 1), *make_sycl_offloader<value_type>(dims));
     }
 
     SECTION("SYCL compress => serial CPU decompress", "[sycl]") {
-        test_encoder_decoder_pair(*make_sycl_offloader<data_type>(dims), *make_cpu_offloader<data_type>(dims, 1));
+        test_encoder_decoder_pair(*make_sycl_offloader<value_type>(dims), *make_cpu_offloader<value_type>(dims, 1));
     }
 #endif
 
 #if NDZIP_CUDA_SUPPORT
     SECTION("serial CPU compress => CUDA decompress", "[cuda]") {
-        test_encoder_decoder_pair(*make_cpu_offloader<data_type>(dims, 1), *make_cuda_offloader<data_type>(dims));
+        test_encoder_decoder_pair(*make_cpu_offloader<value_type>(dims, 1), *make_cuda_offloader<value_type>(dims));
     }
 
     SECTION("CUDA compress => serial CPU decompress", "[cuda]") {
-        test_encoder_decoder_pair(*make_cuda_offloader<data_type>(dims), *make_cpu_offloader<data_type>(dims, 1));
+        test_encoder_decoder_pair(*make_cuda_offloader<value_type>(dims), *make_cpu_offloader<value_type>(dims, 1));
     }
 #endif
 }
@@ -98,42 +98,42 @@ TEMPLATE_TEST_CASE("decode(encode(input)) reproduces the input", "[encoder][de]"
 
 #if NDZIP_OPENMP_SUPPORT || NDZIP_HIPSYCL_SUPPORT || NDZIP_CUDA_SUPPORT
 TEMPLATE_TEST_CASE("file headers from different encoders are identical", "[header]", ALL_PROFILES) {
-    using data_type = typename TestType::data_type;
+    using value_type = typename TestType::value_type;
     using bits_type = typename TestType::bits_type;
-    using profile = detail::profile<data_type, TestType::dimensions>;
+    using profile = detail::profile<value_type, TestType::dimensions>;
 
     constexpr auto dims = profile::dimensions;
     constexpr auto side_length = profile::hypercube_side_length;
     constexpr index_type n = side_length * 4 - 1;
 
-    std::unique_ptr<offloader<data_type>> test_offloader;
+    std::unique_ptr<offloader<value_type>> test_offloader;
 #if NDZIP_OPENMP_SUPPORT
-    SECTION("OpenMP vs CPU") { test_offloader = make_cpu_offloader<data_type>(dims); }
+    SECTION("OpenMP vs CPU") { test_offloader = make_cpu_offloader<value_type>(dims); }
 #endif
 #if NDZIP_HIPSYCL_SUPPORT
-    SECTION("SYCL vs CPU") { test_offloader = make_sycl_offloader<data_type>(dims); }
+    SECTION("SYCL vs CPU") { test_offloader = make_sycl_offloader<value_type>(dims); }
 #endif
 #if NDZIP_CUDA_SUPPORT
-    SECTION("CUDA vs CPU") { test_offloader = make_cuda_offloader<data_type>(dims); }
+    SECTION("CUDA vs CPU") { test_offloader = make_cuda_offloader<value_type>(dims); }
 #endif
 
-    const auto input_data = make_random_vector<data_type>(ipow(n, dims));
+    const auto input_data = make_random_vector<value_type>(ipow(n, dims));
     const auto size = extent::broadcast(dims, n);
 
-    const auto file = detail::file<profile>{static_extent<dims>{size}};
+    const auto num_hypercubes = detail::num_hypercubes(size);
     const auto aligned_stream_size_bound
-            = compressed_length_bound<data_type>(size) * sizeof(bits_type) / sizeof(index_type) + 1;
+            = compressed_length_bound<value_type>(size) * sizeof(bits_type) / sizeof(index_type) + 1;
 
-    const auto reference_offloader = make_cpu_offloader<data_type>(dims, 1);
+    const auto reference_offloader = make_cpu_offloader<value_type>(dims, 1);
     std::vector<index_type> reference_stream(aligned_stream_size_bound);
     const auto reference_stream_length = reference_offloader->compress(
             input_data.data(), size, reinterpret_cast<bits_type *>(reference_stream.data()));
-    reference_stream.resize(file.num_hypercubes());
+    reference_stream.resize(num_hypercubes);
 
     std::vector<index_type> test_stream(aligned_stream_size_bound);
     const auto test_stream_length
             = test_offloader->compress(input_data.data(), size, reinterpret_cast<bits_type *>(test_stream.data()));
-    test_stream.resize(file.num_hypercubes());
+    test_stream.resize(num_hypercubes);
 
     CHECK_FOR_VECTOR_EQUALITY(reference_stream, test_stream);
     CHECK(reference_stream_length == test_stream_length);
@@ -147,37 +147,36 @@ using sycl::accessor, sycl::nd_range, sycl::buffer, sycl::nd_item, sycl::range, 
         sycl::sub_group;
 
 template<typename Profile>
-static std::vector<typename Profile::bits_type> sycl_load_and_dump_hypercube(const typename Profile::data_type *in,
+static std::vector<typename Profile::bits_type> sycl_load_and_dump_hypercube(const typename Profile::value_type *in,
         const static_extent<Profile::dimensions> &in_size, index_type hc_index, sycl::queue &q) {
-    using data_type = typename Profile::data_type;
+    using value_type = typename Profile::value_type;
     using bits_type = typename Profile::bits_type;
 
     constexpr auto hc_size = ipow(Profile::hypercube_side_length, Profile::dimensions);
 
-    buffer<data_type> load_buf{in, range<1>{num_elements(in_size)}};
+    buffer<value_type> load_buf{in, range<1>{num_elements(in_size)}};
     std::vector<bits_type> out(hc_size * 2);
-    buffer<data_type> store_buf{out.size()};
-    detail::file<Profile> file(in_size);
+    buffer<value_type> store_buf{out.size()};
 
-    q.submit([&](handler &cgh) { cgh.fill(store_buf.template get_access<sam::discard_write>(cgh), data_type{0}); });
+    q.submit([&](handler &cgh) { cgh.fill(store_buf.template get_access<sam::discard_write>(cgh), value_type{0}); });
     q.submit([&](handler &cgh) {
         auto data_acc = load_buf.template get_access<sam::read>(cgh);
         auto result_acc = store_buf.template get_access<sam::discard_write>(cgh);
         sycl::local_accessor<gpu_sycl::hypercube_allocation<Profile, gpu::forward_transform_tag>> lm{1, cgh};
         cgh.parallel_for(gpu_sycl::make_nd_range(1, gpu::hypercube_group_size<Profile>),
                 [=](gpu_sycl::hypercube_item<Profile> item) {
-                    const data_type *data = data_acc.get_pointer();
+                    const value_type *data = data_acc.get_pointer();
                     gpu_sycl::hypercube_ptr<Profile, gpu::forward_transform_tag> hc{lm[0]};
                     gpu_sycl::load_hypercube(item.get_group(), hc_index, data, in_size, hc);
                     // TODO rotate should probaly happen during CPU load_hypercube as well to hide
                     //  memory access latencies
                     distribute_for(hc_size, item.get_group(), [&](index_type item) {
-                        result_acc[item] = bit_cast<data_type>(rotate_right_1(hc.load(item)));
+                        result_acc[item] = bit_cast<value_type>(rotate_right_1(hc.load(item)));
                     });
                 });
     });
     q.submit([&](handler &cgh) {
-        cgh.copy(store_buf.template get_access<sam::read>(cgh), reinterpret_cast<data_type *>(out.data()));
+        cgh.copy(store_buf.template get_access<sam::read>(cgh), reinterpret_cast<value_type *>(out.data()));
     });
     q.wait();
     return out;
@@ -187,7 +186,7 @@ static std::vector<typename Profile::bits_type> sycl_load_and_dump_hypercube(con
 #if 0  // gpu::hypercube_ptr assumes 4096 elements per hc
 template<typename T, dim_type Dims>
 struct mock_profile {
-    using data_type = T;
+    using value_type = T;
     using bits_type = T;
     constexpr static dim_type dimensions = Dims;
     constexpr static index_type hypercube_side_length = 2;
@@ -269,7 +268,7 @@ TEMPLATE_TEST_CASE(
 
 
 TEMPLATE_TEST_CASE("SYCL store_hypercube is the inverse of load_hypercube", "[sycl][load]", ALL_PROFILES) {
-    using data_type = typename TestType::data_type;
+    using value_type = typename TestType::value_type;
     using bits_type = typename TestType::bits_type;
 
     constexpr auto dims = TestType::dimensions;
@@ -277,25 +276,25 @@ TEMPLATE_TEST_CASE("SYCL store_hypercube is the inverse of load_hypercube", "[sy
     const index_type hc_size = ipow(side_length, dims);
     const index_type n = side_length * 3;
 
-    auto input_data = make_random_vector<data_type>(ipow(n, dims));
+    auto input_data = make_random_vector<value_type>(ipow(n, dims));
     const auto size = static_extent<dims>::broadcast(n);
 
-    buffer<data_type> input_buf{input_data.data(), range<1>{num_elements(size)}};
+    buffer<value_type> input_buf{input_data.data(), range<1>{num_elements(size)}};
     // buffer needed for hypercube_ptr forward_transform_tag => inverse_transform_tag translation
     buffer<bits_type> temp_buf{input_buf.get_range()};
-    buffer<data_type> output_buf{input_buf.get_range()};
-    detail::file<TestType> file(size);
+    buffer<value_type> output_buf{input_buf.get_range()};
+    const auto num_hypercubes = detail::num_hypercubes(size);
 
     sycl::queue q{sycl::gpu_selector{}};
-    q.submit([&](handler &cgh) { cgh.fill(output_buf.template get_access<sam::discard_write>(cgh), data_type{0}); });
+    q.submit([&](handler &cgh) { cgh.fill(output_buf.template get_access<sam::discard_write>(cgh), value_type{0}); });
     q.submit([&](handler &cgh) {
         auto input_acc = input_buf.template get_access<sam::read>(cgh);
         auto temp_acc = temp_buf.template get_access<sam::discard_write>(cgh);
         sycl::local_accessor<gpu_sycl::hypercube_allocation<TestType, gpu::forward_transform_tag>> lm{1, cgh};
-        cgh.parallel_for(gpu_sycl::make_nd_range(file.num_hypercubes(), gpu::hypercube_group_size<TestType>),
+        cgh.parallel_for(gpu_sycl::make_nd_range(num_hypercubes, gpu::hypercube_group_size<TestType>),
                 [=](gpu_sycl::hypercube_item<TestType> item) {
                     auto hc_index = item.get_group_id(0);
-                    const data_type * input = input_acc.get_pointer();
+                    const value_type *input = input_acc.get_pointer();
                     gpu::hypercube_ptr<TestType, gpu::forward_transform_tag> hc{lm[0]};
                     gpu_sycl::load_hypercube(item.get_group(), hc_index, input, size, hc);
                     distribute_for(hc_size, item.get_group(),
@@ -306,17 +305,17 @@ TEMPLATE_TEST_CASE("SYCL store_hypercube is the inverse of load_hypercube", "[sy
         auto temp_acc = temp_buf.template get_access<sam::read>(cgh);
         auto output_acc = output_buf.template get_access<sam::discard_write>(cgh);
         sycl::local_accessor<gpu_sycl::hypercube_allocation<TestType, gpu::inverse_transform_tag>> lm{1, cgh};
-        cgh.parallel_for(gpu_sycl::make_nd_range(file.num_hypercubes(), gpu::hypercube_group_size<TestType>),
+        cgh.parallel_for(gpu_sycl::make_nd_range(num_hypercubes, gpu::hypercube_group_size<TestType>),
                 [=](gpu_sycl::hypercube_item<TestType> item) {
                     auto hc_index = item.get_group_id(0);
-                    data_type *output = output_acc.get_pointer();
+                    value_type *output = output_acc.get_pointer();
                     gpu::hypercube_ptr<TestType, gpu::inverse_transform_tag> hc{lm[0]};
                     distribute_for(hc_size, item.get_group(),
                             [&](index_type i) { hc.store(i, temp_acc[hc_index * hc_size + i]); });
                     gpu_sycl::store_hypercube(item.get_group(), hc_index, output, size, hc);
                 });
     });
-    std::vector<data_type> output_data(input_data.size());
+    std::vector<value_type> output_data(input_data.size());
     q.submit([&](handler &cgh) { cgh.copy(output_buf.template get_access<sam::read>(cgh), output_data.data()); });
     q.wait();
 
@@ -349,9 +348,9 @@ static void cuda_fill(T *dest, T value, index_type count) {
 }
 
 template<typename Profile>
-static __global__ void cuda_load_and_dump_kernel(const typename Profile::data_type *data,
-        static_extent<Profile::dimensions> data_size, index_type hc_index, typename Profile::data_type *result) {
-    using data_type = typename Profile::data_type;
+static __global__ void cuda_load_and_dump_kernel(const typename Profile::value_type *data,
+        static_extent<Profile::dimensions> data_size, index_type hc_index, typename Profile::value_type *result) {
+    using value_type = typename Profile::value_type;
     constexpr auto hc_size = ipow(Profile::hypercube_side_length, Profile::dimensions);
 
     __shared__ gpu_cuda::hypercube_allocation<Profile, gpu::forward_transform_tag> lm;
@@ -363,31 +362,31 @@ static __global__ void cuda_load_and_dump_kernel(const typename Profile::data_ty
     // TODO rotate should probaly happen during CPU load_hypercube as well to hide
     //  memory access latencies
     distribute_for(hc_size, block,
-            [&](index_type item) { result[item] = bit_cast<data_type>(rotate_right_1(hc.load(item))); });
+            [&](index_type item) { result[item] = bit_cast<value_type>(rotate_right_1(hc.load(item))); });
 }
 
 template<typename Profile>
-static std::vector<typename Profile::bits_type> cuda_load_and_dump_hypercube(
-        const typename Profile::data_type *in, const static_extent<Profile::dimensions> &in_size, index_type hc_index) {
-    using data_type = typename Profile::data_type;
+static std::vector<typename Profile::bits_type> cuda_load_and_dump_hypercube(const typename Profile::value_type *in,
+        const static_extent<Profile::dimensions> &in_size, index_type hc_index) {
+    using value_type = typename Profile::value_type;
     using bits_type = typename Profile::bits_type;
 
     auto hc_size = ipow(Profile::hypercube_side_length, Profile::dimensions);
-    gpu_cuda::cuda_buffer<data_type> load_buf{num_elements(in_size)};
+    gpu_cuda::cuda_buffer<value_type> load_buf{num_elements(in_size)};
     std::vector<bits_type> out(hc_size * 2);
-    gpu_cuda::cuda_buffer<data_type> store_buf(out.size());
-    const detail::file<Profile> file{in_size};
+    gpu_cuda::cuda_buffer<value_type> store_buf(out.size());
+    const auto num_hypercubes = detail::num_hypercubes(in_size);
 
-    CHECKED_CUDA_CALL(cudaMemcpy, load_buf.get(), in, load_buf.size() * sizeof(data_type), cudaMemcpyHostToDevice);
-    cuda_fill(store_buf.get(), data_type{0}, store_buf.size());
-    cuda_load_and_dump_kernel<Profile><<<file.num_hypercubes(), (gpu::hypercube_group_size<Profile>)>>>(
+    CHECKED_CUDA_CALL(cudaMemcpy, load_buf.get(), in, load_buf.size() * sizeof(value_type), cudaMemcpyHostToDevice);
+    cuda_fill(store_buf.get(), value_type{0}, store_buf.size());
+    cuda_load_and_dump_kernel<Profile><<<num_hypercubes, (gpu::hypercube_group_size<Profile>)>>>(
             load_buf.get(), in_size, hc_index, store_buf.get());
-    CHECKED_CUDA_CALL(cudaMemcpy, out.data(), store_buf.get(), out.size() * sizeof(data_type), cudaMemcpyDeviceToHost);
+    CHECKED_CUDA_CALL(cudaMemcpy, out.data(), store_buf.get(), out.size() * sizeof(value_type), cudaMemcpyDeviceToHost);
     return out;
 }
 
 template<typename Profile>
-static __global__ void cuda_load_hypercube_kernel(const typename Profile::data_type *input,
+static __global__ void cuda_load_hypercube_kernel(const typename Profile::value_type *input,
         static_extent<Profile::dimensions> input_size, typename Profile::bits_type *temp) {
     constexpr index_type hc_size = ipow(Profile::hypercube_side_length, Profile::dimensions);
     auto hc_index = static_cast<index_type>(blockIdx.x);
@@ -403,7 +402,7 @@ static __global__ void cuda_load_hypercube_kernel(const typename Profile::data_t
 
 template<typename Profile>
 static __global__ void cuda_store_hypercube_kernel(const typename Profile::bits_type *temp,
-        typename Profile::data_type *output, static_extent<Profile::dimensions> output_size) {
+        typename Profile::value_type *output, static_extent<Profile::dimensions> output_size) {
     constexpr index_type hc_size = ipow(Profile::hypercube_side_length, Profile::dimensions);
     auto hc_index = static_cast<index_type>(blockIdx.x);
 
@@ -417,35 +416,35 @@ static __global__ void cuda_store_hypercube_kernel(const typename Profile::bits_
 }
 
 TEMPLATE_TEST_CASE("CUDA store_hypercube is the inverse of load_hypercube", "[cuda][load]", ALL_PROFILES) {
-    using data_type = typename TestType::data_type;
+    using value_type = typename TestType::value_type;
     using bits_type = typename TestType::bits_type;
 
     constexpr auto dims = TestType::dimensions;
     constexpr auto side_length = TestType::hypercube_side_length;
     const index_type n = side_length * 3;
 
-    auto input_data = make_random_vector<data_type>(ipow(n, dims));
+    auto input_data = make_random_vector<value_type>(ipow(n, dims));
     const auto input = input_data.data();
     const auto size = static_extent<dims>::broadcast(n);
 
-    gpu_cuda::cuda_buffer<data_type> input_buf{num_elements(size)};
+    gpu_cuda::cuda_buffer<value_type> input_buf{num_elements(size)};
     // buffer needed for hypercube_ptr forward_transform_tag => inverse_transform_tag translation
     gpu_cuda::cuda_buffer<bits_type> temp_buf(input_buf.size());
-    gpu_cuda::cuda_buffer<data_type> output_buf(input_buf.size());
-    const detail::file<TestType> file{size};
+    gpu_cuda::cuda_buffer<value_type> output_buf(input_buf.size());
+    const auto num_hypercubes = detail::num_hypercubes(size);
 
     CHECKED_CUDA_CALL(
-            cudaMemcpy, input_buf.get(), input, input_buf.size() * sizeof(data_type), cudaMemcpyHostToDevice);
+            cudaMemcpy, input_buf.get(), input, input_buf.size() * sizeof(value_type), cudaMemcpyHostToDevice);
 
-    cuda_fill(output_buf.get(), data_type{0}, output_buf.size());
+    cuda_fill(output_buf.get(), value_type{0}, output_buf.size());
 
-    cuda_load_hypercube_kernel<TestType><<<file.num_hypercubes(), (gpu_cuda::hypercube_group_size<TestType>)>>>(
-            input_buf.get(), size, temp_buf.get());
-    cuda_store_hypercube_kernel<TestType><<<file.num_hypercubes(), (gpu_cuda::hypercube_group_size<TestType>)>>>(
-            temp_buf.get(), output_buf.get(), size);
+    cuda_load_hypercube_kernel<TestType>
+            <<<num_hypercubes, (gpu_cuda::hypercube_group_size<TestType>)>>>(input_buf.get(), size, temp_buf.get());
+    cuda_store_hypercube_kernel<TestType>
+            <<<num_hypercubes, (gpu_cuda::hypercube_group_size<TestType>)>>>(temp_buf.get(), output_buf.get(), size);
 
-    std::vector<data_type> output_data(input_data.size());
-    CHECKED_CUDA_CALL(cudaMemcpy, output_data.data(), output_buf.get(), output_buf.size() * sizeof(data_type),
+    std::vector<value_type> output_data(input_data.size());
+    CHECKED_CUDA_CALL(cudaMemcpy, output_data.data(), output_buf.get(), output_buf.size() * sizeof(value_type),
             cudaMemcpyDeviceToHost);
 
     CHECK_FOR_VECTOR_EQUALITY(input_data, output_data);
@@ -507,8 +506,8 @@ __global__ void test_gpu_transform(typename Profile::bits_type *buffer, CudaTran
 
 
 TEMPLATE_TEST_CASE("Flattening of hypercubes is identical between encoders", "[load]", ALL_PROFILES) {
-    using data_type = typename TestType::data_type;
-    using profile = detail::profile<data_type, TestType::dimensions>;
+    using value_type = typename TestType::value_type;
+    using profile = detail::profile<value_type, TestType::dimensions>;
     using bits_type = typename profile::bits_type;
 
     constexpr auto dims = profile::dimensions;
@@ -516,7 +515,7 @@ TEMPLATE_TEST_CASE("Flattening of hypercubes is identical between encoders", "[l
     const index_type hc_size = ipow(side_length, dims);
     const index_type n = side_length * 4 - 1;
 
-    const auto input_data = make_random_vector<data_type>(ipow(n, dims));
+    const auto input_data = make_random_vector<value_type>(ipow(n, dims));
     const auto input = input_data.data();
     const auto size = static_extent<dims>::broadcast(n);
 
@@ -940,23 +939,23 @@ TEMPLATE_TEST_CASE("CPU and GPU inverse block transforms are identical", "[trans
 }
 
 TEMPLATE_TEST_CASE("Single block compresses identically on all encoders", "[omp][sycl][cuda][compress]", ALL_PROFILES) {
-    using data_type = typename TestType::data_type;
+    using value_type = typename TestType::value_type;
     using bits_type = typename TestType::bits_type;
     constexpr auto dimensions = TestType::dimensions;
 
     const auto size = extent::broadcast(dimensions, TestType::hypercube_side_length);
-    const auto input = make_random_vector<data_type>(num_elements(size));
-    const auto output_length_bound = compressed_length_bound<data_type>(size);
+    const auto input = make_random_vector<value_type>(num_elements(size));
+    const auto output_length_bound = compressed_length_bound<value_type>(size);
 
     std::vector<bits_type> serial_output(output_length_bound);
-    const auto serial_offloader = make_cpu_offloader<data_type>(dimensions, 1);
+    const auto serial_offloader = make_cpu_offloader<value_type>(dimensions, 1);
     const auto serial_output_length = serial_offloader->compress(input.data(), size, serial_output.data());
     serial_output.resize(serial_output_length);
 
 #if NDZIP_OPENMP_SUPPORT
     SECTION("Multi-threaded vs single-threaded CPU", "[omp]") {
         std::vector<bits_type> openmp_output(output_length_bound);
-        const auto openmp_offloader = make_cpu_offloader<data_type>(dimensions);
+        const auto openmp_offloader = make_cpu_offloader<value_type>(dimensions);
         const auto openmp_output_length = openmp_offloader->compress(input.data(), size, openmp_output.data());
         openmp_output.resize(openmp_output_length);
         CHECK_FOR_VECTOR_EQUALITY(openmp_output, serial_output);
@@ -966,7 +965,7 @@ TEMPLATE_TEST_CASE("Single block compresses identically on all encoders", "[omp]
 #if NDZIP_HIPSYCL_SUPPORT
     SECTION("SYCL vs CPU", "[sycl]") {
         std::vector<bits_type> sycl_output(output_length_bound);
-        const auto sycl_offloader = make_sycl_offloader<data_type>(dimensions);
+        const auto sycl_offloader = make_sycl_offloader<value_type>(dimensions);
         const auto sycl_output_length = sycl_offloader->compress(input.data(), size, sycl_output.data());
         sycl_output.resize(sycl_output_length);
         CHECK_FOR_VECTOR_EQUALITY(sycl_output, serial_output);
@@ -976,7 +975,7 @@ TEMPLATE_TEST_CASE("Single block compresses identically on all encoders", "[omp]
 #if NDZIP_CUDA_SUPPORT
     SECTION("CUDA vs CPU", "[cuda]") {
         std::vector<bits_type> cuda_output(output_length_bound);
-        const auto cuda_offloader = make_cuda_offloader<data_type>(dimensions);
+        const auto cuda_offloader = make_cuda_offloader<value_type>(dimensions);
         const auto cuda_output_length = cuda_offloader->compress(input.data(), size, cuda_output.data());
         cuda_output.resize(cuda_output_length);
         CHECK_FOR_VECTOR_EQUALITY(cuda_output, serial_output);
@@ -985,29 +984,29 @@ TEMPLATE_TEST_CASE("Single block compresses identically on all encoders", "[omp]
 }
 
 TEMPLATE_TEST_CASE("Single block decompresses correctly on all encoders", "[decompress]", ALL_PROFILES) {
-    using data_type = typename TestType::data_type;
+    using value_type = typename TestType::value_type;
     using bits_type = typename TestType::bits_type;
     constexpr auto dimensions = TestType::dimensions;
 
     const auto size = extent::broadcast(dimensions, TestType::hypercube_side_length);
-    const auto input = make_random_vector<data_type>(num_elements(size));
-    const auto max_output_words = compressed_length_bound<data_type>(size);
+    const auto input = make_random_vector<value_type>(num_elements(size));
+    const auto max_output_words = compressed_length_bound<value_type>(size);
 
     std::vector<bits_type> compressed(max_output_words);
-    const auto serial_offloader = make_cpu_offloader<data_type>(dimensions, 1);
+    const auto serial_offloader = make_cpu_offloader<value_type>(dimensions, 1);
     const auto compressed_length = serial_offloader->compress(input.data(), size, compressed.data());
     compressed.resize(compressed_length);
 
     SECTION("On single-threaded CPU") {
-        std::vector<data_type> cpu_output(num_elements(size));
+        std::vector<value_type> cpu_output(num_elements(size));
         serial_offloader->decompress(compressed.data(), compressed_length, cpu_output.data(), size);
         CHECK_FOR_VECTOR_EQUALITY(cpu_output, input);
     }
 
 #if NDZIP_OPENMP_SUPPORT
     SECTION("On multi-threaded CPU", "[omp]") {
-        std::vector<data_type> openmp_output(num_elements(size));
-        const auto openmp_offloader = make_cpu_offloader<data_type>(dimensions);
+        std::vector<value_type> openmp_output(num_elements(size));
+        const auto openmp_offloader = make_cpu_offloader<value_type>(dimensions);
         openmp_offloader->decompress(compressed.data(), compressed_length, openmp_output.data(), size);
         CHECK_FOR_VECTOR_EQUALITY(openmp_output, input);
     }
@@ -1015,8 +1014,8 @@ TEMPLATE_TEST_CASE("Single block decompresses correctly on all encoders", "[deco
 
 #if NDZIP_HIPSYCL_SUPPORT
     SECTION("On SYCL", "[sycl]") {
-        std::vector<data_type> sycl_output(num_elements(size));
-        const auto sycl_offloader = make_sycl_offloader<data_type>(dimensions);
+        std::vector<value_type> sycl_output(num_elements(size));
+        const auto sycl_offloader = make_sycl_offloader<value_type>(dimensions);
         sycl_offloader->decompress(compressed.data(), compressed_length, sycl_output.data(), size);
         CHECK_FOR_VECTOR_EQUALITY(sycl_output, input);
     }
@@ -1024,8 +1023,8 @@ TEMPLATE_TEST_CASE("Single block decompresses correctly on all encoders", "[deco
 
 #if NDZIP_CUDA_SUPPORT
     SECTION("On CUDA", "[cuda]") {
-        std::vector<data_type> cuda_output(num_elements(size));
-        const auto cuda_offloader = make_cuda_offloader<data_type>(dimensions);
+        std::vector<value_type> cuda_output(num_elements(size));
+        const auto cuda_offloader = make_cuda_offloader<value_type>(dimensions);
         cuda_offloader->decompress(compressed.data(), compressed_length, cuda_output.data(), size);
         CHECK_FOR_VECTOR_EQUALITY(cuda_output, input);
     }

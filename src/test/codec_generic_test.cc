@@ -127,10 +127,9 @@ TEMPLATE_TEST_CASE("file produces a sane hypercube / header layout", "[file]", (
     std::vector<std::vector<static_extent<dims>>> superblocks;
     std::vector<bool> visited(ipow(n_hypercubes_per_dim, dims));
 
-    file<profile> f(size);
     std::vector<static_extent<dims>> blocks;
     index_type hypercube_index = 0;
-    f.for_each_hypercube([&](auto hc_offset, auto hc_index) {
+    for_each_hypercube(size, [&](auto hc_offset, auto hc_index) {
         CHECK(hc_index == hypercube_index);
 
         auto off = hc_offset;
@@ -149,10 +148,10 @@ TEMPLATE_TEST_CASE("file produces a sane hypercube / header layout", "[file]", (
         blocks.push_back(off);
         ++hypercube_index;
     });
-    CHECK(blocks.size() == f.num_hypercubes());
+    CHECK(blocks.size() == num_hypercubes(size));
 
     CHECK(std::all_of(visited.begin(), visited.end(), [](auto b) { return b; }));
 
     // CHECK(f.file_header_length() == f.num_hypercubes() * sizeof(index_type));
-    CHECK(f.num_hypercubes() == ipow(n_hypercubes_per_dim, dims));
+    CHECK(num_hypercubes(size) == ipow(n_hypercubes_per_dim, dims));
 }
