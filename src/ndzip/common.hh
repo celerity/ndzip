@@ -12,26 +12,6 @@
 #include <ndzip/ndzip.hh>
 
 
-#define NDZIP_BIG_ENDIAN 0
-#define NDZIP_LITTLE_ENDIAN 1
-
-#if defined(__BYTE_ORDER)
-#if __BYTE_ORDER == __BIG_ENDIAN
-#define NDZIP_ENDIAN NDZIP_BIG_ENDIAN
-#else
-#define NDZIP_ENDIAN NDZIP_LITTLE_ENDIAN
-#endif
-#elif defined(__BIG_ENDIAN__) || defined(__ARMEB__) || defined(__THUMBEB__) || defined(__AARCH64EB__) \
-        || defined(_MIBSEB) || defined(__MIBSEB) || defined(__MIBSEB__)
-#define NDZIP_ENDIAN NDZIP_BIG_ENDIAN
-#elif defined(__LITTLE_ENDIAN__) || defined(__ARMEL__) || defined(__THUMBEL__) || defined(__AARCH64EL__) \
-        || defined(_MIPSEL) || defined(__MIPSEL) || defined(__MIPSEL__)
-#define NDZIP_ENDIAN NDZIP_LITTLE_ENDIAN
-#else
-#error "Unknown endianess"
-#endif
-
-
 namespace ndzip::detail {
 
 template<dim_type Dims>
@@ -211,27 +191,6 @@ template<typename Fn, typename Index, typename T>
         fn(std::forward<T>(value), index);
     } else {
         fn(std::forward<T>(value));
-    }
-}
-
-template<typename Integer>
-Integer endian_transform(Integer value) {
-    // TODO endian correction is inactive until we figure out
-    //  - how compressed chunks must be transformed
-    //  - how to unit-test big-endian on a little-endian machine
-    if constexpr (false && NDZIP_ENDIAN == NDZIP_LITTLE_ENDIAN) {
-        if constexpr (std::is_same_v<Integer, uint64_t>) {
-            return __builtin_bswap64(value);
-        } else if constexpr (std::is_same_v<Integer, uint32_t>) {
-            return __builtin_bswap32(value);
-        } else if constexpr (std::is_same_v<Integer, uint16_t>) {
-            return __builtin_bswap16(value);
-        } else {
-            static_assert(std::is_same_v<Integer, uint8_t>);
-            return value;
-        }
-    } else {
-        return value;
     }
 }
 
