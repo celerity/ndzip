@@ -34,7 +34,7 @@ __device__ void for_hypercube_indices(hypercube_block<Profile> block, index_type
     const auto hc_size = ipow(side_length, Profile::dimensions);
     const auto hc_offset = detail::extent_from_linear_id(hc_index, data_size / side_length) * side_length;
 
-    index_type initial_offset = linear_offset(hc_offset, data_size);
+    index_type initial_offset = linear_index(data_size, hc_offset);
     distribute_for(hc_size, block, [&](index_type local_idx) {
         index_type global_idx = initial_offset + global_offset<Profile>(local_idx, data_size);
         f(global_idx, local_idx);

@@ -169,18 +169,14 @@ NDZIP_UNIVERSAL index_type num_elements(const Extent &size) {
     return n;
 }
 
-// TODO what is the difference between linear_offset and linear_index?
 template<typename Extent>
-NDZIP_UNIVERSAL index_type linear_offset(const Extent &position, const Extent &space) {
-    assert(position.dimensions() == space.dimensions());
-    index_type offset = 0;
-    index_type stride = 1;
-    for (dim_type nd = 0; nd < position.dimensions(); ++nd) {
-        auto d = position.dimensions() - 1 - nd;
-        offset += stride * position[d];
-        stride *= space[d];
+NDZIP_UNIVERSAL index_type linear_index(const Extent &space, const Extent &pos) {
+    assert(space.dimensions() == pos.dimensions());
+    index_type l = pos[0];
+    for (dim_type d = 1; d < space.dimensions(); ++d) {
+        l = l * space[d] + pos[d];
     }
-    return offset;
+    return l;
 }
 
 class compressor_requirements;
@@ -188,16 +184,6 @@ class compressor_requirements;
 }  // namespace ndzip
 
 namespace ndzip::detail {
-
-template<typename Extent>
-NDZIP_UNIVERSAL index_type linear_index(const Extent &size, const Extent &pos) {
-    assert(size.dimensions() == pos.dimensions());
-    index_type l = pos[0];
-    for (dim_type d = 1; d < size.dimensions(); ++d) {
-        l = l * size[d] + pos[d];
-    }
-    return l;
-}
 
 template<size_t Size>
 struct bits_type_s;
