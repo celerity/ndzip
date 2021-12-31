@@ -114,6 +114,7 @@ add_library(ndzip SHARED
     src/ndzip/common.hh
     src/ndzip/common.cc
     src/ndzip/cpu_codec.inl
+        src/ndzip/cpu_factory.cc
 )
 target_split_configured_sources(ndzip PRIVATE
     GENERATE cpu_encoder.cc FROM src/ndzip/cpu_codec.inl
@@ -136,7 +137,8 @@ if (NDZIP_USE_HIPSYCL)
     add_library(ndzip-sycl SHARED
         include/ndzip/sycl.hh
         src/ndzip/sycl_bits.hh
-        src/ndzip/sycl_codec.inl
+            src/ndzip/sycl_codec.inl
+            src/ndzip/sycl_factory.cc
     )
     target_split_configured_sources(ndzip-sycl PRIVATE
         GENERATE sycl_encoder.cc FROM src/ndzip/sycl_codec.inl
@@ -152,7 +154,8 @@ if (NDZIP_USE_CUDA)
     add_library(ndzip-cuda SHARED
         include/ndzip/cuda.hh
         src/ndzip/cuda_bits.cuh
-        src/ndzip/cuda_codec.inl
+            src/ndzip/cuda_codec.inl
+            src/ndzip/cuda_factory.cu
     )
     target_split_configured_sources(ndzip-cuda PRIVATE
         GENERATE cuda_encoder.cu FROM src/ndzip/cuda_codec.inl
