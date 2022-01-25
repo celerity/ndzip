@@ -73,7 +73,7 @@ constexpr inline index_type bytes_of = static_cast<index_type>(sizeof(T));
 template<typename Integer>
 NDZIP_UNIVERSAL constexpr Integer floor_power_of_two(Integer x) {
     for (index_type s = 1; s < bits_of<Integer>; ++s) {
-        x &= ~(x >> s);
+        x |= x >> s;
     }
     return (x + 1) / 2;
 }

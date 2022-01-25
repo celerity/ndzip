@@ -10,6 +10,21 @@ using namespace ndzip;
 using namespace ndzip::detail;
 
 
+TEST_CASE("floor_power_of_two works as advertised") {
+    CHECK(floor_power_of_two(0) == 0);
+    CHECK(floor_power_of_two(1) == 1);
+    CHECK(floor_power_of_two(2) == 2);
+    CHECK(floor_power_of_two(3) == 2);
+    CHECK(floor_power_of_two(4) == 4);
+    CHECK(floor_power_of_two(63) == 32);
+    CHECK(floor_power_of_two(64) == 64);
+    CHECK(floor_power_of_two(65) == 64);
+    CHECK(floor_power_of_two(1023) == 512);
+    CHECK(floor_power_of_two(1024) == 1024);
+    CHECK(floor_power_of_two(1025) == 1024);
+}
+
+
 template<typename Bits>
 Bits zero_map_from_transposed(const Bits *transposed) {
     Bits zero_map = 0;
