@@ -735,3 +735,27 @@ template class cuda_encoder<DATA_TYPE, DIMENSIONS>;
 #endif
 
 }  // namespace ndzip
+
+namespace ndzip::cuda{
+    extern template std::unique_ptr<ndzip::cuda::compressor_scratch_memory<float, 1>> allocate_compressor_scratch_memory(extent<1> data_size);
+    extern template std::unique_ptr<ndzip::cuda::compressor_scratch_memory<float, 2>> allocate_compressor_scratch_memory(extent<2> data_size);
+    extern template std::unique_ptr<ndzip::cuda::compressor_scratch_memory<float, 3>> allocate_compressor_scratch_memory(extent<3> data_size);
+    extern template std::unique_ptr<ndzip::cuda::compressor_scratch_memory<double, 1>> allocate_compressor_scratch_memory(extent<1> data_size);
+    extern template std::unique_ptr<ndzip::cuda::compressor_scratch_memory<double, 2>> allocate_compressor_scratch_memory(extent<2> data_size);
+    extern template std::unique_ptr<ndzip::cuda::compressor_scratch_memory<double, 3>> allocate_compressor_scratch_memory(extent<3> data_size);
+    #ifdef SPLIT_CONFIGURATION_cuda_encoder
+        template std::unique_ptr<ndzip::cuda::compressor_scratch_memory<DATA_TYPE, DIMENSIONS>> allocate_compressor_scratch_memory(extent<DIMENSIONS> data_size);
+    #endif
+}
+
+namespace std{
+    extern template struct default_delete<ndzip::cuda::compressor_scratch_memory<float, 1>> ;
+    extern template struct default_delete<ndzip::cuda::compressor_scratch_memory<float, 2>> ;
+    extern template struct default_delete<ndzip::cuda::compressor_scratch_memory<float, 3>> ;
+    extern template struct default_delete<ndzip::cuda::compressor_scratch_memory<double, 1>> ;
+    extern template struct default_delete<ndzip::cuda::compressor_scratch_memory<double, 2>> ;
+    extern template struct default_delete<ndzip::cuda::compressor_scratch_memory<double, 3>> ;
+    #ifdef SPLIT_CONFIGURATION_cuda_encoder
+        template  struct default_delete<ndzip::cuda::compressor_scratch_memory<DATA_TYPE, DIMENSIONS>> ;
+    #endif
+}
