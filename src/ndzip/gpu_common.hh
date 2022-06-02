@@ -187,7 +187,9 @@ struct hypercube_layout<profile<T, 3>, Transform> {
 
     NDZIP_UNIVERSAL constexpr static index_type pad(index_type i) {
         auto padded = value_width * i + value_width * i / warp_size;
-        if (value_width == 2) { padded -= i / (value_width * num_lanes); }
+        if (value_width == 2) {
+            padded -= i / (value_width * num_lanes);
+        }
         return padded;
     }
 };

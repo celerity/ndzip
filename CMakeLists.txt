@@ -114,7 +114,7 @@ add_library(ndzip SHARED
     src/ndzip/common.hh
     src/ndzip/common.cc
     src/ndzip/cpu_codec.inl
-        src/ndzip/cpu_factory.cc
+    src/ndzip/cpu_factory.cc
 )
 target_split_configured_sources(ndzip PRIVATE
     GENERATE cpu_encoder.cc FROM src/ndzip/cpu_codec.inl
@@ -154,9 +154,9 @@ if (NDZIP_USE_CUDA)
     add_library(ndzip-cuda SHARED
         include/ndzip/cuda.hh
         src/ndzip/cuda_bits.cuh
-            src/ndzip/cuda_codec.inl
-            src/ndzip/cuda_factory.cu
-    )
+        src/ndzip/cuda_codec.inl
+        src/ndzip/cuda_factory.cu
+        )
     target_split_configured_sources(ndzip-cuda PRIVATE
         GENERATE cuda_encoder.cu FROM src/ndzip/cuda_codec.inl
         ${NDZIP_PROFILE_CONFIGURATIONS}
@@ -192,16 +192,16 @@ endif ()
 
 if (NDZIP_BUILD_TEST AND Catch2_FOUND)
     add_executable(encoder_test
-            src/test/test_utils.hh
-            src/test/test_main.cc
-            src/test/codec_generic_test.cc
-            src/test/codec_profile_test.inl
-            )
+        src/test/test_utils.hh
+        src/test/test_main.cc
+        src/test/codec_generic_test.cc
+        src/test/codec_profile_test.inl
+        )
 
     target_split_configured_sources(encoder_test PRIVATE
-            GENERATE codec_profile_test.cc FROM src/test/codec_profile_test.inl
-            ${NDZIP_PROFILE_CONFIGURATIONS}
-            )
+        GENERATE codec_profile_test.cc FROM src/test/codec_profile_test.inl
+        ${NDZIP_PROFILE_CONFIGURATIONS}
+        )
 
     if (NDZIP_USE_CUDA AND NOT NDZIP_USE_HIPSYCL)
         # TODO hack: SYCL / CUDA versions of encoder_test must be compiled separately

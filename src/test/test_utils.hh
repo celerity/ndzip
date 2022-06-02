@@ -1,5 +1,7 @@
 #pragma once
 
+#include <ndzip/cuda_workaround.hh>
+
 // We don't use <complex>, but a Clang/glibcxx bug causes the build to fail when <random> is
 // included before <complex> (__host__/__device__ mismatch for glibcxx internal __failed_assertion()
 // prototype)

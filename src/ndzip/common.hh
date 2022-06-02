@@ -1,5 +1,7 @@
 #pragma once
 
+#include "cuda_workaround.hh"
+
 #include <algorithm>
 #include <cassert>
 #include <climits>
