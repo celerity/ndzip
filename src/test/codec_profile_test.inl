@@ -1030,3 +1030,42 @@ TEMPLATE_TEST_CASE("Single block decompresses correctly on all encoders", "[deco
     }
 #endif
 }
+
+TEMPLATE_TEST_CASE("Encoders compress and decompress files with 0 hypercubes", "[compress][decompress]", ALL_PROFILES) {
+    using value_type = typename TestType::value_type;
+    using bits_type = typename TestType::bits_type;
+    constexpr static auto dimensions = TestType::dimensions;
+
+    const auto size = extent::broadcast(dimensions, GENERATE(0, 1));
+    CAPTURE(size);
+
+    const size_t input_bound = 1;
+    std::vector<value_type> input(input_bound, value_type{42});  // dummy input
+    const auto compressed_bound = std::max(index_type{1}, compressed_length_bound<value_type>(size));
+
+    using offloader_constructor = std::unique_ptr<offloader<value_type>> (*)();
+    const auto [offloader_name, make_offloader] = GENERATE(values<std::pair<const char *, offloader_constructor>>({
+        std::pair{"single-threaded CPU", [] { return make_cpu_offloader<value_type>(dimensions, 1); }},
+#if NDZIP_OPENMP_SUPPORT
+                std::pair{"multi-threaded CPU", [] { return make_cpu_offloader<value_type>(dimensions); }},
+#endif
+#if NDZIP_HIPSYCL_SUPPORT
+                std::pair{"SYCL", [] { return make_sycl_offloader<value_type>(dimensions); }},
+#endif
+#if NDZIP_CUDA_SUPPORT
+                std::pair{"CUDA", [] { return make_cuda_offloader<value_type>(dimensions); }},
+#endif
+    }));
+
+    CAPTURE(offloader_name);
+    const auto offloader = make_offloader();
+
+    std::vector<bits_type> compressed(compressed_bound);
+    const auto compressed_length = offloader->compress(input.data(), size, compressed.data());
+    std::vector<value_type> output(1);
+    offloader->decompress(compressed.data(), compressed_length, output.data(), size);
+
+    if (num_elements(size) > 0) {
+        CHECK_FOR_VECTOR_EQUALITY(input, output);
+    }
+}

@@ -195,7 +195,9 @@ write_transposed_chunks(hypercube_block<Profile> block, hypercube_ptr<Profile, f
 
     static_assert(col_chunk_size % warp_size == 0);
 
-    if (threadIdx.x == 0) { out_lengths[0] = header_chunk_size; }
+    if (threadIdx.x == 0) {
+        out_lengths[0] = header_chunk_size;
+    }
 
     const auto out_header_chunk = out_chunks;
 
@@ -256,7 +258,9 @@ write_transposed_chunks(hypercube_block<Profile> block, hypercube_ptr<Profile, f
                 auto column_bits = bit_cast<bits_type>(columns[w]);
                 auto pos_in_out_col_chunk = compact_warp_offset[w]
                         + warp_exclusive_scan(index_type{column_bits != 0}, index_type{0}, plus<index_type>{});
-                if (column_bits != 0) { out_col_chunk[pos_in_out_col_chunk] = column_bits; }
+                if (column_bits != 0) {
+                    out_col_chunk[pos_in_out_col_chunk] = column_bits;
+                }
             }
         }
 
@@ -284,7 +288,9 @@ __device__ void read_transposed_chunks(hypercube_block<Profile> block, hypercube
     constexpr index_type words_per_col = sizeof(bits_type) / sizeof(word_type);
 
     __shared__ index_type chunk_offsets[1 + num_col_chunks];
-    if (threadIdx.x == 0) { chunk_offsets[0] = num_col_chunks; }
+    if (threadIdx.x == 0) {
+        chunk_offsets[0] = num_col_chunks;
+    }
     distribute_for(num_col_chunks, block, [&](index_type item) { chunk_offsets[1 + item] = popcount(stream[item]); });
     __syncthreads();
 
@@ -385,7 +391,9 @@ __device__ void compact_chunks(hypercube_block<Profile> block, const typename Pr
             chunk_rel_item = (item - header_chunk_size) % col_chunk_size;
         }
         auto stream_offset = hc_offsets[chunk_index] + chunk_rel_item;
-        if (stream_offset < hc_offsets[chunk_index + 1]) { stream_hc[stream_offset] = chunks[item]; }
+        if (stream_offset < hc_offsets[chunk_index + 1]) {
+            stream_hc[stream_offset] = chunks[item];
+        }
     });
 }
 
@@ -414,7 +422,9 @@ __global__ void compress_block(const typename Profile::value_type *data, static_
     write_transposed_chunks(
             block, hc, chunks + hc_index * hc_total_chunks_size, chunk_lengths + 1 + hc_index * chunks_per_hc);
     // hack
-    if (blockIdx.x == 0 && threadIdx.x == 0) { chunk_lengths[0] = 0; }
+    if (blockIdx.x == 0 && threadIdx.x == 0) {
+        chunk_lengths[0] = 0;
+    }
 }
 
 
@@ -437,7 +447,9 @@ __global__ void compact_all_chunks(index_type num_hypercubes, const typename Pro
         // For 64-bit data types and an odd number of hypercubes, we insert a padding word in the
         // header to guarantee correct alignment. To keep the compressed stream deterministic we
         // round gridDim.x up to the next multiple of 2 and initialize the padding to zero.
-        if (threadIdx.x == 0) { stream.header()[num_hypercubes] = 0; }
+        if (threadIdx.x == 0) {
+            stream.header()[num_hypercubes] = 0;
+        }
     } else {
         compact_chunks<Profile>(block, chunks + hc_index * hc_total_chunks_size, offsets + hc_index * chunks_per_hc,
                 stream.header() + hc_index, stream.hypercube(0));
@@ -454,7 +466,7 @@ __global__ void compact_border(const typename Profile::value_type *data, static_
         border_map<Profile> border_map) {
     using bits_type = typename Profile::bits_type;
 
-    auto border_offset = num_header_words + *num_compressed_words;
+    auto border_offset = num_header_words + (num_compressed_words ? *num_compressed_words : 0);
     auto i = static_cast<index_type>(blockIdx.x * border_threads_per_block + threadIdx.x);
     if (i < border_map.size()) {
         stream_buf[border_offset + i] = bit_cast<bits_type>(data[linear_index(data_size, border_map[i])]);
@@ -495,7 +507,7 @@ __global__ void expand_border(const typename Profile::bits_type *stream_buf, typ
 template<typename>  // Does not need to be a template, but inline does not work on kernels
 __global__ void store_stream_length(
         index_type *stream_length, const index_type *num_compressed_words, index_type num_header_and_border_words) {
-    *stream_length = num_header_and_border_words + *num_compressed_words;
+    *stream_length = num_header_and_border_words + (num_compressed_words ? *num_compressed_words : 0);
 }
 
 
@@ -550,20 +562,22 @@ void cuda_compressor_impl<Profile>::compress(const value_type *in_device_data, c
 
     const auto static_size = detail::static_extent<dimensions>{data_size};
     const auto num_hypercubes = detail::num_hypercubes(static_size);
-    if (verbose()) { printf("Have %u hypercubes\n", num_hypercubes); }
-
-    compress_block<Profile><<<num_hypercubes, (hypercube_group_size<Profile>), 0, _stream>>>(
-            in_device_data, static_size, chunks_buf.get(), chunk_lengths_buf.get());
-
-    hierarchical_inclusive_scan(
-            chunk_lengths_buf.get(), intermediate_bufs, chunk_lengths_buf.size(), plus<index_type>{}, _stream);
+    if (verbose()) {
+        printf("Have %u hypercubes\n", num_hypercubes);
+    }
 
     const auto num_compressed_words_offset = num_hypercubes * chunks_per_hc;
-
     const auto num_header_fields
             = detail::ceil(num_hypercubes, static_cast<uint32_t>(sizeof(bits_type) / sizeof(index_type)));
-    compact_all_chunks<Profile><<<num_header_fields, (hypercube_group_size<Profile>), 0, _stream>>>(
-            num_hypercubes, chunks_buf.get(), chunk_lengths_buf.get(), static_cast<bits_type *>(out_device_stream));
+
+    if (num_hypercubes > 0) {
+        compress_block<Profile><<<num_hypercubes, (hypercube_group_size<Profile>), 0, _stream>>>(
+                in_device_data, static_size, chunks_buf.get(), chunk_lengths_buf.get());
+        hierarchical_inclusive_scan(
+                chunk_lengths_buf.get(), intermediate_bufs, chunk_lengths_buf.size(), plus<index_type>{}, _stream);
+        compact_all_chunks<Profile><<<num_header_fields, (hypercube_group_size<Profile>), 0, _stream>>>(
+                num_hypercubes, chunks_buf.get(), chunk_lengths_buf.get(), static_cast<bits_type *>(out_device_stream));
+    }
 
     const auto border_map = gpu::border_map<Profile>{static_size};
     const auto num_border_words = border_map.size();
@@ -572,16 +586,19 @@ void cuda_compressor_impl<Profile>::compress(const value_type *in_device_data, c
     const auto num_header_words = stream.hypercube(0) - stream.buffer;
     // TODO num_header_words == num_header_fields ??
 
+    // if num_hypercubes is 0, no header words are written - signal this condition to kernels as a nullptr here
+    const auto num_compressed_words
+            = num_hypercubes > 0 ? chunk_lengths_buf.get() + num_compressed_words_offset : nullptr;
+
     if (num_border_words > 0) {
         const index_type border_blocks = div_ceil(num_border_words, border_threads_per_block);
         compact_border<Profile><<<border_blocks, border_threads_per_block, 0, _stream>>>(in_device_data, static_size,
-                chunk_lengths_buf.get() + num_compressed_words_offset, static_cast<bits_type *>(out_device_stream),
-                num_header_words, border_map);
+                num_compressed_words, static_cast<bits_type *>(out_device_stream), num_header_words, border_map);
     }
 
     if (out_device_stream_length) {
-        store_stream_length<Profile><<<1, 1, 0, _stream>>>(out_device_stream_length,
-                chunk_lengths_buf.get() + num_compressed_words_offset, num_header_words + num_border_words);
+        store_stream_length<Profile><<<1, 1, 0, _stream>>>(
+                out_device_stream_length, num_compressed_words, num_header_words + num_border_words);
     }
 }
 
@@ -618,8 +635,10 @@ void cuda_decompressor_impl<Profile>::decompress(
     const auto static_size = detail::static_extent<dimensions>{data_size};
     const auto num_hypercubes = detail::num_hypercubes(static_size);
 
-    decompress_block<Profile><<<num_hypercubes, (hypercube_group_size<Profile>), 0, _stream>>>(
-            static_cast<const bits_type *>(in_device_stream), out_device_data, static_size);
+    if (num_hypercubes > 0) {
+        decompress_block<Profile><<<num_hypercubes, (hypercube_group_size<Profile>), 0, _stream>>>(
+                static_cast<const bits_type *>(in_device_stream), out_device_data, static_size);
+    }
 
     const auto border_map = gpu::border_map<Profile>{static_size};
     const auto num_border_words = border_map.size();
@@ -653,7 +672,9 @@ index_type cuda_offloader<Profile>::do_compress(
     // TODO edge case w/ 0 hypercubes
 
     const auto num_hypercubes = detail::num_hypercubes(data_size);
-    if (verbose()) { printf("Have %u hypercubes\n", num_hypercubes); }
+    if (verbose()) {
+        printf("Have %u hypercubes\n", num_hypercubes);
+    }
 
     cuda_buffer<value_type> data_buffer{num_elements(data_size)};
     CHECKED_CUDA_CALL(
@@ -665,15 +686,21 @@ index_type cuda_offloader<Profile>::do_compress(
 
     cuda_event start, stop;
     bool record_events = out_kernel_duration || verbose();
-    if (record_events) { start.record(); }
+    if (record_events) {
+        start.record();
+    }
 
     compressor.compress(data_buffer.get(), data_size, stream_buf.get(), stream_length_buf.get());
 
     if (record_events) {
         stop.record();
         auto duration = stop - start;
-        if (out_kernel_duration) { *out_kernel_duration = duration; }
-        if (verbose()) { printf("[profile] total kernel time %.3fms\n", duration.count() * 1e-6); }
+        if (out_kernel_duration) {
+            *out_kernel_duration = duration;
+        }
+        if (verbose()) {
+            printf("[profile] total kernel time %.3fms\n", duration.count() * 1e-6);
+        }
     }
 
     index_type stream_length;
@@ -704,7 +731,9 @@ index_type cuda_offloader<Profile>::do_decompress(const bits_type *raw_stream, i
 
     cuda_event start, stop;
     bool record_events = out_kernel_duration || verbose();
-    if (record_events) { start.record(); }
+    if (record_events) {
+        start.record();
+    }
 
     cuda_decompressor_impl<Profile>{nullptr /* stream */}.decompress(stream_buf.get(), data_buf.get(), data_size);
 
@@ -718,8 +747,12 @@ index_type cuda_offloader<Profile>::do_decompress(const bits_type *raw_stream, i
     if (record_events) {
         stop.record();
         auto duration = stop - start;
-        if (out_kernel_duration) { *out_kernel_duration = duration; }
-        if (verbose()) { printf("[profile] total kernel time %.3fms\n", duration.count() * 1e-6); }
+        if (out_kernel_duration) {
+            *out_kernel_duration = duration;
+        }
+        if (verbose()) {
+            printf("[profile] total kernel time %.3fms\n", duration.count() * 1e-6);
+        }
     }
 
     CHECKED_CUDA_CALL(cudaMemcpy, data, data_buf.get(), data_buf.size() * sizeof(value_type), cudaMemcpyDeviceToHost);
