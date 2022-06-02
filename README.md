@@ -6,7 +6,7 @@ floating-point data. We implement
 - a single-threaded CPU compressor
 - an OpenMP-backed multi-threaded compressor
 - a SYCL-based GPU compressor (currently hipSYCL + NVIDIA only)
-- a CUDA-based GPU compressor (experimental)
+- a CUDA-based GPU compressor
 
 All variants generate and decode bit-identical compressed stream.
 

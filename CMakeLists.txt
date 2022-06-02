@@ -42,7 +42,7 @@ if (NDZIP_BUILD_BENCHMARK AND NDZIP_WITH_3RDPARTY_BENCHMARKS)
     pkg_check_modules(ZSTD libzstd>=1.0.0 QUIET IMPORTED_TARGET)
 
     find_package(CUDAToolkit)
-    if (CUDAToolkit_FOUND)
+    if (NDZIP_WITH_CUDA AND CUDAToolkit_FOUND)
         enable_language(CUDA)
     endif ()
 
@@ -52,20 +52,22 @@ if (NDZIP_BUILD_BENCHMARK AND NDZIP_WITH_3RDPARTY_BENCHMARKS)
         message(WARNING "Building without fpzip benchmark, perform git submodule step to enable")
     endif ()
 
-    if (NOT EXISTS "${CMAKE_SOURCE_DIR}/contrib/cudpp/CMakeLists.txt")
-        message(WARNING "Building without cudpp benchmark, perform git submodule step to enable")
-    elseif (CMAKE_CUDA_COMPILER_ID STREQUAL Clang)
-        message(WARNING "Building without cudpp which does not currently support Clang")
-    else ()
-        set(CUDPP_FOUND TRUE)
-    endif ()
+    if (NDZIP_WITH_CUDA AND CUDAToolkit_FOUND)
+        if (NOT EXISTS "${CMAKE_SOURCE_DIR}/contrib/cudpp/CMakeLists.txt")
+            message(WARNING "Building without cudpp benchmark, perform git submodule step to enable")
+        elseif (CMAKE_CUDA_COMPILER_ID STREQUAL Clang)
+            message(WARNING "Building without cudpp which does not currently support Clang")
+        else ()
+            set(CUDPP_FOUND TRUE)
+        endif ()
 
-    if (NOT EXISTS "${CMAKE_SOURCE_DIR}/contrib/nvcomp/CMakeLists.txt")
-        message(WARNING "Building without NVCOMP benchmark, perform git submodule step to enable")
-    elseif (CMAKE_CUDA_COMPILER_ID STREQUAL Clang)
-        message(WARNING "Building without NVCOMP which does not currently support Clang")
-    else ()
-        set(NVCOMP_FOUND TRUE)
+        if (NOT EXISTS "${CMAKE_SOURCE_DIR}/contrib/nvcomp/CMakeLists.txt")
+            message(WARNING "Building without NVCOMP benchmark, perform git submodule step to enable")
+        elseif (CMAKE_CUDA_COMPILER_ID STREQUAL Clang)
+            message(WARNING "Building without NVCOMP which does not currently support Clang")
+        else ()
+            set(NVCOMP_FOUND TRUE)
+        endif ()
     endif ()
 
     if (EXISTS "${CMAKE_SOURCE_DIR}/contrib/zfp/CMakeLists.txt")
@@ -137,9 +139,9 @@ if (NDZIP_USE_HIPSYCL)
     add_library(ndzip-sycl SHARED
         include/ndzip/sycl.hh
         src/ndzip/sycl_bits.hh
-            src/ndzip/sycl_codec.inl
-            src/ndzip/sycl_factory.cc
-    )
+        src/ndzip/sycl_codec.inl
+        src/ndzip/sycl_factory.cc
+        )
     target_split_configured_sources(ndzip-sycl PRIVATE
         GENERATE sycl_encoder.cc FROM src/ndzip/sycl_codec.inl
         ${NDZIP_PROFILE_CONFIGURATIONS}
@@ -285,11 +287,11 @@ if (NDZIP_BUILD_BENCHMARK AND NDZIP_WITH_3RDPARTY_BENCHMARKS)
         include_directories(contrib/cudpp/include)
     endif ()
 
-    if (CUDAToolkit_FOUND)
+    if (NDZIP_WITH_CUDA AND CUDAToolkit_FOUND)
+        set(GFC_FOUND TRUE)
+        set(MPC_FOUND TRUE)
         add_subdirectory(contrib/gfc EXCLUDE_FROM_ALL)
         add_subdirectory(contrib/mpc EXCLUDE_FROM_ALL)
-    else ()
-        message(WARNING "CUDA not found, omitting some algorithms in benchmark")
     endif ()
 
     if (NVCOMP_FOUND)
@@ -309,17 +311,17 @@ if (NDZIP_BUILD_BENCHMARK)
         target_link_libraries(benchmark PRIVATE ${STD_CPP_FS})
     endif ()
     target_compile_definitions(benchmark PRIVATE
-            "-DNDZIP_BENCHMARK_HAVE_3RDPARTY=$<BOOL:${NDZIP_WITH_3RDPARTY_BENCHMARKS}>"
-            "-DNDZIP_BENCHMARK_HAVE_ZLIB=$<BOOL:${ZLIB_FOUND}>"
-            "-DNDZIP_BENCHMARK_HAVE_LZ4=$<BOOL:${LZ4_FOUND}>"
-            "-DNDZIP_BENCHMARK_HAVE_LZMA=$<BOOL:${LZMA_FOUND}>"
-            "-DNDZIP_BENCHMARK_HAVE_FPZIP=$<BOOL:${FPZIP_FOUND}>"
-            "-DNDZIP_BENCHMARK_HAVE_CUDPP=$<BOOL:${CUDPP_FOUND}>"
-            "-DNDZIP_BENCHMARK_HAVE_NVCOMP=$<BOOL:${NVCOMP_FOUND}>"
-            "-DNDZIP_BENCHMARK_HAVE_ZFP=$<BOOL:${ZFP_FOUND}>"
-            "-DNDZIP_BENCHMARK_HAVE_GFC=$<BOOL:${CUDAToolkit_FOUND}>"
-            "-DNDZIP_BENCHMARK_HAVE_MPC=$<BOOL:${CUDAToolkit_FOUND}>"
-            "-DNDZIP_BENCHMARK_HAVE_ZSTD=$<BOOL:${ZSTD_FOUND}>")
+        "-DNDZIP_BENCHMARK_HAVE_3RDPARTY=$<BOOL:${NDZIP_WITH_3RDPARTY_BENCHMARKS}>"
+        "-DNDZIP_BENCHMARK_HAVE_ZLIB=$<BOOL:${ZLIB_FOUND}>"
+        "-DNDZIP_BENCHMARK_HAVE_LZ4=$<BOOL:${LZ4_FOUND}>"
+        "-DNDZIP_BENCHMARK_HAVE_LZMA=$<BOOL:${LZMA_FOUND}>"
+        "-DNDZIP_BENCHMARK_HAVE_FPZIP=$<BOOL:${FPZIP_FOUND}>"
+        "-DNDZIP_BENCHMARK_HAVE_CUDPP=$<BOOL:${CUDPP_FOUND}>"
+        "-DNDZIP_BENCHMARK_HAVE_NVCOMP=$<BOOL:${NVCOMP_FOUND}>"
+        "-DNDZIP_BENCHMARK_HAVE_ZFP=$<BOOL:${ZFP_FOUND}>"
+        "-DNDZIP_BENCHMARK_HAVE_GFC=$<BOOL:${GFC_FOUND}>"
+        "-DNDZIP_BENCHMARK_HAVE_MPC=$<BOOL:${MPC_FOUND}>"
+        "-DNDZIP_BENCHMARK_HAVE_ZSTD=$<BOOL:${ZSTD_FOUND}>")
     if (NDZIP_USE_OPENMP)
         target_link_libraries(benchmark PRIVATE OpenMP::OpenMP_CXX Boost::thread)
     endif ()
@@ -348,8 +350,10 @@ if (NDZIP_BUILD_BENCHMARK AND NDZIP_WITH_3RDPARTY_BENCHMARKS)
     if (CUDPP_FOUND)
         target_link_libraries(benchmark PRIVATE cudpp)
     endif ()
-    if (CUDAToolkit_FOUND)
+    if (GFC_FOUND)
         target_link_libraries(benchmark PRIVATE gfc)
+    endif ()
+    if (MPC_FOUND)
         target_link_libraries(benchmark PRIVATE mpc)
     endif ()
     if (ZSTD_FOUND)

@@ -338,7 +338,9 @@ class sycl_transform_test_kernel;
 template<typename T>
 static __global__ void cuda_fill_kernel(T *dest, T value, index_type count) {
     const auto i = static_cast<index_type>(blockIdx.x * blockDim.x + threadIdx.x);
-    if (i < count) { dest[i] = value; }
+    if (i < count) {
+        dest[i] = value;
+    }
 }
 
 template<typename T>
@@ -463,7 +465,9 @@ __global__ void encode_hypercube_kernel(
     __syncthreads();
     write_transposed_chunks(block, hc, chunks, chunk_lengths + 1);
     // hack
-    if (blockIdx.x == 0 && threadIdx.x == 0) { chunk_lengths[0] = 0; }
+    if (blockIdx.x == 0 && threadIdx.x == 0) {
+        chunk_lengths[0] = 0;
+    }
 }
 
 template<typename Profile>
@@ -504,6 +508,8 @@ __global__ void test_gpu_transform(typename Profile::bits_type *buffer, CudaTran
 
 #endif
 
+
+#if NDZIP_HIPSYCL_SUPPORT || NDZIP_CUDA_SUPPORT
 
 TEMPLATE_TEST_CASE("Flattening of hypercubes is identical between encoders", "[load]", ALL_PROFILES) {
     using value_type = typename TestType::value_type;
@@ -608,7 +614,9 @@ TEMPLATE_TEST_CASE("Residual encodings from different encoders are equivalent", 
                         gpu_sycl::write_transposed_chunks(
                                 item, hc, &columns_acc[0], &chunk_lengths_acc[1], lm[0].writer);
                         // hack
-                        if (item.get_global_linear_id() == 0) { chunk_lengths_acc[0] = 0; }
+                        if (item.get_global_linear_id() == 0) {
+                            chunk_lengths_acc[0] = 0;
+                        }
                     });
         });
 
@@ -937,6 +945,9 @@ TEMPLATE_TEST_CASE("CPU and GPU inverse block transforms are identical", "[trans
             });
 #endif
 }
+
+#endif  // NDZIP_HIPSYCL_SUPPORT || NDZIP_CUDA_SUPPORT
+
 
 TEMPLATE_TEST_CASE("Single block compresses identically on all encoders", "[omp][sycl][cuda][compress]", ALL_PROFILES) {
     using value_type = typename TestType::value_type;
