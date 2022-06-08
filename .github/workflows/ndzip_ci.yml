@@ -1,0 +1,82 @@
+name: ndzip CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build-and-test:
+    runs-on: nvidia
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - cuda-toolchain: "clang"
+            build-type: "Debug"
+          - cuda-toolchain: "clang"
+            build-type: "Release"
+          - cuda-toolchain: "nvcc"
+            build-type: "Debug"
+          - cuda-toolchain: "nvcc"
+            build-type: "Release"
+
+    env:
+      # older CUDA versions would be interesting, but we need Ubuntu 22.04 to get CMake >= 3.18
+      # and nvidia offers no images <= CUDA 11.7 for Ubuntu 22.04
+      build-name: ${{ matrix.cuda-toolchain }}-${{ matrix.build-type }}
+      container-workspace: /__w/${{ github.event.repository.name }}/${{ github.event.repository.name }}
+      build-dir: /root/build
+    container:
+      image: ndzip-build/hipsycl:ubuntu22.04-HEAD
+      volumes:
+        - ccache:/ccache
+    steps:
+      - name: Print exact SYCL revision used for this CI run
+        run: cat /VERSION
+      - uses: actions/checkout@v2
+        with:
+          submodules: recursive
+      - name: Build ndzip
+        run: bash -o pipefail -c "bash /root/build-ndzip.sh ${{ env.container-workspace }} --cuda-toolchain ${{ matrix.cuda-toolchain }} --build-type ${{ matrix.build-type }} 2>&1 | tee ${{ env.build-name }}.log"
+      # Upload build log for report step
+      - name: Upload build logs
+        if: always()
+        uses: actions/upload-artifact@v2
+        with:
+          name: ${{ env.build-name }}
+          path: ${{ env.build-name }}.log
+      - name: Run unit tests
+        timeout-minutes: 5
+        working-directory: ${{ env.build-dir }}
+        run: ${{ env.container-workspace }}/ci/run-unit-tests.sh
+      - name: Upload stack traces (if any)
+        if: always()
+        uses: actions/upload-artifact@v2
+        with:
+          name: ${{ env.build-name }}
+          path: |
+            ${{ env.build-dir }}/*.trace
+          if-no-files-found: ignore
+
+  report:
+    needs: [build-and-test]
+    runs-on: self-hosted
+    env:
+      container-workspace: /__w/${{ github.event.repository.name }}/${{ github.event.repository.name }}
+    container:
+      image: celerity-lint
+    steps:
+      - uses: actions/checkout@v2
+      - name: Check code formatting
+        id: formatting
+        working-directory: ${{ env.container-workspace }}
+        shell: bash
+        run: |
+          unformatted=$("./ci/find-unformatted-files.sh")
+          unformatted=${unformatted//$'\n'/'%0A'}
+          echo "::set-output name=unformatted-files::$unformatted"
+      - uses: "celerity/ci-report-action@v6"
+        with:
+          gh-token: ${{ secrets.GITHUB_TOKEN }}
+          unformatted-files: ${{ steps.formatting.outputs.unformatted-files }}
