@@ -42,7 +42,7 @@ jobs:
           unsanitized: ${{ env.build-name }}
       - uses: actions/checkout@v2
         with:
-          submodules: true
+          submodules: recursive
       - name: Build ndzip
         run: bash -o pipefail -c "bash /root/build-ndzip.sh ${{ env.container-workspace }} --build-type ${{ matrix.build-type }} 2>&1 | tee ${{ env.build-name }}.log"
       # Upload build log for report step
