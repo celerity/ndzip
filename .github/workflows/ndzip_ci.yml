@@ -1,0 +1,88 @@
+name: ndzip CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build-and-test:
+    runs-on: ${{ matrix.platform }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - sycl-version: "hipsycl:HEAD"
+            platform: "nvidia"
+            build-type: "Debug"
+          - sycl-version: "hipsycl:HEAD"
+            platform: "nvidia"
+            build-type: "Release"
+          - sycl-version: "hipsycl:7b00e2ef"
+            platform: "nvidia"
+            build-type: "Debug"
+
+    env:
+      build-name: ${{ matrix.platform }}-${{ matrix.sycl-version }}-${{ matrix.build-type }}
+      container-workspace: /__w/${{ github.event.repository.name }}/${{ github.event.repository.name }}
+      build-dir: /root/build
+    container:
+      image: build/celerity/${{ matrix.sycl-version }}
+      volumes:
+        - ccache:/ccache
+    steps:
+      - name: Print exact SYCL revision used for this CI run
+        run: cat /VERSION
+      # The build name may not contain colons (this is not allowed for artifacts)
+      # Since GitHub does not provide a built-in string replacement function, we use a bashism
+      - name: Sanitize build name
+        shell: bash
+        run: echo "build-name=${unsanitized/:/-}" >> $GITHUB_ENV
+        env:
+          unsanitized: ${{ env.build-name }}
+      - uses: actions/checkout@v2
+        with:
+          submodules: true
+      - name: Build ndzip
+        run: bash -o pipefail -c "bash /root/build-ndzip.sh ${{ env.container-workspace }} --build-type ${{ matrix.build-type }} 2>&1 | tee ${{ env.build-name }}.log"
+      # Upload build log for report step
+      - name: Upload build logs
+        if: always()
+        uses: actions/upload-artifact@v2
+        with:
+          name: ${{ env.build-name }}
+          path: ${{ env.build-name }}.log
+      - name: Run unit tests
+        timeout-minutes: 5
+        working-directory: ${{ env.build-dir }}
+        run: ${{ env.container-workspace }}/ci/run-unit-tests.sh
+      - name: Upload stack traces (if any)
+        if: always()
+        uses: actions/upload-artifact@v2
+        with:
+          name: ${{ env.build-name }}
+          path: |
+            ${{ env.build-dir }}/*.trace
+          if-no-files-found: ignore
+
+  report:
+    needs: [build-and-test]
+    runs-on: self-hosted
+    env:
+      container-workspace: /__w/${{ github.event.repository.name }}/${{ github.event.repository.name }}
+    container:
+      image: celerity-lint
+    steps:
+      - uses: actions/checkout@v2
+      - name: Check code formatting
+        id: formatting
+        working-directory: ${{ env.container-workspace }}
+        shell: bash
+        run: |
+          unformatted=$("./ci/find-unformatted-files.sh")
+          unformatted=${unformatted//$'\n'/'%0A'}
+          echo "::set-output name=unformatted-files::$unformatted"
+      - uses: "celerity/ci-report-action@v6"
+        with:
+          gh-token: ${{ secrets.GITHUB_TOKEN }}
+          unformatted-files: ${{ steps.formatting.outputs.unformatted-files }}
