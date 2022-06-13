@@ -14,6 +14,6 @@ fi
 # Running "make test" is slow because CTest will spawn one process per test case, adding significant start-up costs.
 # We just call the all_tests executable manually to get around this.
 for test in cuda_bits_test sycl_bits_test encoder_test; do
-    bash /root/capture-backtrace.sh $test
+    bash /root/capture-backtrace.sh ./$test
 done
 
