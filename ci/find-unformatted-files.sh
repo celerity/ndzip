@@ -1,0 +1,16 @@
+#!/bin/bash
+
+if [[ ! -d src ]]; then
+    echo "Warning: This script should be run from within the repository root directory" >&2
+fi
+
+SOURCES=$(find include src -name "*.hh" -o -name "*.cc" -o -name "*.cu" -o -name "*.inl")
+
+for s in $SOURCES; do
+    # Since clang-format does not provide an option to check whether formatting is required,
+    # we use the XML replacements output together with grep as a workaround.
+    NUM_REPLACEMENTS=$(clang-format -output-replacements-xml "$s" | grep -v -c -E "<(/?replacements|\?xml)")
+    if [[ $NUM_REPLACEMENTS -ne 0 ]]; then
+        echo $s
+    fi
+done
