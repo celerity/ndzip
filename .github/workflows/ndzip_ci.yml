@@ -34,13 +34,6 @@ jobs:
     steps:
       - name: Print exact SYCL revision used for this CI run
         run: cat /VERSION
-      # The build name may not contain colons (this is not allowed for artifacts)
-      # Since GitHub does not provide a built-in string replacement function, we use a bashism
-      - name: Sanitize build name
-        shell: bash
-        run: echo "build-name=${unsanitized/:/-}" >> $GITHUB_ENV
-        env:
-          unsanitized: ${{ env.build-name }}
       - uses: actions/checkout@v2
         with:
           submodules: recursive
