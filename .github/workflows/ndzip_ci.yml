@@ -12,22 +12,25 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - sycl-version: "hipsycl:HEAD"
+          # older CUDA versions would be interesting, but we need Ubuntu 22.04 to get CMake >= 3.18
+          # and nvidia offers no images <= CUDA 11.7 for Ubuntu 22.04
+          - sycl: "hipsycl"
+            sycl-version: "HEAD"
+            ubuntu-version: "22.04"
             platform: "nvidia"
             build-type: "Debug"
-          - sycl-version: "hipsycl:HEAD"
+          - sycl: "hipsycl"
+            sycl-version: "HEAD"
+            ubuntu-version: "22.04"
             platform: "nvidia"
             build-type: "Release"
-          - sycl-version: "hipsycl:7b00e2ef"
-            platform: "nvidia"
-            build-type: "Debug"
 
     env:
-      build-name: ${{ matrix.platform }}-${{ matrix.sycl-version }}-${{ matrix.build-type }}
+      build-name: ${{ matrix.platform }}-ubuntu${{ matrix.ubuntu-version }}-${{ matrix.sycl }}-${{ matrix.sycl-version }}-${{ matrix.build-type }}
       container-workspace: /__w/${{ github.event.repository.name }}/${{ github.event.repository.name }}
       build-dir: /root/build
     container:
-      image: build/celerity/${{ matrix.sycl-version }}
+      image: ndzip-build/${{ matrix.sycl }}:ubuntu${{ matrix.ubuntu-version }}-${{ matrix.sycl-version }}
       volumes:
         - ccache:/ccache
     steps:
