@@ -7,30 +7,28 @@ on:
 
 jobs:
   build-and-test:
-    runs-on: ${{ matrix.platform }}
+    runs-on: nvidia
     strategy:
       fail-fast: false
       matrix:
         include:
-          # older CUDA versions would be interesting, but we need Ubuntu 22.04 to get CMake >= 3.18
-          # and nvidia offers no images <= CUDA 11.7 for Ubuntu 22.04
-          - sycl: "hipsycl"
-            sycl-version: "HEAD"
-            ubuntu-version: "22.04"
-            platform: "nvidia"
+          - cuda-toolchain: "clang"
             build-type: "Debug"
-          - sycl: "hipsycl"
-            sycl-version: "HEAD"
-            ubuntu-version: "22.04"
-            platform: "nvidia"
+          - cuda-toolchain: "clang"
+            build-type: "Release"
+          - cuda-toolchain: "nvcc"
+            build-type: "Debug"
+          - cuda-toolchain: "nvcc"
             build-type: "Release"
 
     env:
-      build-name: ${{ matrix.platform }}-ubuntu${{ matrix.ubuntu-version }}-${{ matrix.sycl }}-${{ matrix.sycl-version }}-${{ matrix.build-type }}
+      # older CUDA versions would be interesting, but we need Ubuntu 22.04 to get CMake >= 3.18
+      # and nvidia offers no images <= CUDA 11.7 for Ubuntu 22.04
+      build-name: ${{ matrix.cuda-toolchain }}-${{ matrix.build-type }}
       container-workspace: /__w/${{ github.event.repository.name }}/${{ github.event.repository.name }}
       build-dir: /root/build
     container:
-      image: ndzip-build/${{ matrix.sycl }}:ubuntu${{ matrix.ubuntu-version }}-${{ matrix.sycl-version }}
+      image: ndzip-build/hipsycl:ubuntu22.04-HEAD
       volumes:
         - ccache:/ccache
     steps:
@@ -47,7 +45,7 @@ jobs:
         with:
           submodules: recursive
       - name: Build ndzip
-        run: bash -o pipefail -c "bash /root/build-ndzip.sh ${{ env.container-workspace }} --build-type ${{ matrix.build-type }} 2>&1 | tee ${{ env.build-name }}.log"
+        run: bash -o pipefail -c "bash /root/build-ndzip.sh ${{ env.container-workspace }} --cuda-toolchain ${{ matrix.cuda-toolchain }} --build-type ${{ matrix.build-type }} 2>&1 | tee ${{ env.build-name }}.log"
       # Upload build log for report step
       - name: Upload build logs
         if: always()
