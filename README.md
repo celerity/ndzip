@@ -41,6 +41,13 @@ If unit tests and microbenchmarks should also be built, add
 -DNDZIP_BUILD_TEST=YES
 ```
 
+Depending on your system, you might have to configure the correct C/C++ compilers to use (Clang >= 10.0 and
+GCC >= 8.2 have been known to work in the past):
+
+```sh
+-DCMAKE_C_COMPILER=/path/to/cc -DCMAKE_CXX_COMPILER=/path/to/c++
+```
+
 ### For GPU support with SYCL
 
 1. Build and install hipSYCL
@@ -72,6 +79,12 @@ cmake --build build -j
 ```
 
 Replace `sm_75` and `75` with the string matching your GPU's Compute Capability.
+
+If `CMAKE_CXX_COMPILER` was redefined above, you also need to specify the CUDA host compiler:
+
+```sh
+-DCMAKE_CUDA_HOST_COMPILER=/path/to/c++
+```
 
 b) ... or with CUDA + Clang
 
