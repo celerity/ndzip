@@ -590,6 +590,8 @@ NDZIP_UNIVERSAL inline unsigned popcount(unsigned int x) {
 #ifdef __CUDA_ARCH__
     // NVCC regards __builtin_popcount as a __host__ function
     return __popc(static_cast<int>(x));
+#elif defined(_MSC_VER)
+    return __popcnt(x);
 #else
     return __builtin_popcount(x);
 #endif
@@ -604,6 +606,8 @@ NDZIP_UNIVERSAL inline unsigned popcount(unsigned long x) {
         static_assert(sizeof(unsigned long) == sizeof(unsigned long long));
         return __popcll(static_cast<long long>(x));
     }
+#elif defined(_MSC_VER)
+    return __popcnt64(x);
 #else
     return __builtin_popcountl(x);
 #endif
@@ -613,6 +617,8 @@ NDZIP_UNIVERSAL inline unsigned popcount(unsigned long long x) {
 #ifdef __CUDA_ARCH__
     // NVCC regards __builtin_popcountll as a __host__ function
     return __popcll(static_cast<long long>(x));
+#elif defined(_MSC_VER)
+    return __popcnt64(x);
 #else
     return __builtin_popcountll(x);
 #endif
