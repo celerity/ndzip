@@ -75,11 +75,18 @@ if (NDZIP_BUILD_BENCHMARK AND NDZIP_WITH_3RDPARTY_BENCHMARKS)
 endif ()
 
 
-set(CMAKE_CXX_STANDARD 17)
+if (NOT MSVC)
+    set(CMAKE_CXX_STANDARD 17)
+else ()
+    set(CMAKE_CXX_STANDARD 20) # to_string under MSVC needs C++20
+endif ()
+
 set(CMAKE_CUDA_STANDARD 17)
 
-set(NDZIP_COMPILE_FLAGS -Wall -Wextra -Wno-attributes -Wimplicit-fallthrough)
-set(NDZIP_CXX_FLAGS ${NDZIP_COMPILE_FLAGS} -Werror=return-type -Werror=init-self -Werror=undef)
+if (NOT MSVC)
+    set(NDZIP_COMPILE_FLAGS -Wall -Wextra -Wno-attributes -Wimplicit-fallthrough)
+    set(NDZIP_CXX_FLAGS ${NDZIP_COMPILE_FLAGS} -Werror=return-type -Werror=init-self -Werror=undef)
+endif()
 
 if (NDZIP_USE_HIPSYCL)
     # Aggressive inlining avoids GPU call stack allocation == global memory access bottleneck
@@ -107,7 +114,7 @@ set(NDZIP_PROFILE_CONFIGURATIONS
     VARIABLE DIMENSIONS VALUES 1 2 3
 )
 
-add_library(ndzip SHARED
+set(NDZIP_LIB_SOURCES
     include/ndzip/ndzip.hh
     include/ndzip/offload.hh
     src/ndzip/common.hh
@@ -115,6 +122,13 @@ add_library(ndzip SHARED
     src/ndzip/cpu_codec.inl
     src/ndzip/cpu_factory.cc
 )
+
+if (MSVC)
+    # on windows, build as static library since symbol exports are not setup there
+    add_library(ndzip STATIC ${NDZIP_LIB_SOURCES})
+else ()
+    add_library(ndzip SHARED ${NDZIP_LIB_SOURCES})
+endif ()
 target_split_configured_sources(ndzip PRIVATE
     GENERATE cpu_encoder.cc FROM src/ndzip/cpu_codec.inl
     ${NDZIP_PROFILE_CONFIGURATIONS}

@@ -12,7 +12,7 @@
 #include <immintrin.h>
 #endif
 
-#ifdef NDZIP_OPENMP_SUPPORT
+#if NDZIP_OPENMP_SUPPORT
 #include <atomic>
 #include <omp.h>
 #include <queue>
@@ -42,20 +42,20 @@ class simd_aligned_buffer {
 
     explicit simd_aligned_buffer(size_t size) {
         assert(size % simd_width_bytes == 0);
-        _memory = std::aligned_alloc(simd_width_bytes, size * sizeof(T));
+        _memory = aligned_alloc(size);
         if (!_memory) { throw std::bad_alloc(); }
     }
 
     simd_aligned_buffer(simd_aligned_buffer &&other) noexcept { *this = std::move(other); }
 
     simd_aligned_buffer &operator=(simd_aligned_buffer &&other) noexcept {
-        std::free(_memory);
+        aligned_free(_memory);
         _memory = other._memory;
         other._memory = nullptr;
         return *this;
     }
 
-    ~simd_aligned_buffer() { std::free(_memory); }
+    ~simd_aligned_buffer() { aligned_free(_memory); }
 
     explicit operator bool() const { return _memory != nullptr; }
 
@@ -67,6 +67,23 @@ class simd_aligned_buffer {
 
     const T &operator[](size_t i) const { return data()[i]; };
 
+  private:
+    static void *aligned_alloc(size_t size)
+    {
+        #ifdef _MSC_VER
+        return _aligned_malloc(size * sizeof(T), simd_width_bytes);
+        #else
+        return std::aligned_alloc(simd_width_bytes, size * sizeof(T));
+        #endif
+    }
+    static void aligned_free(void *mem)
+    {
+        #ifdef _MSC_VER
+        return _aligned_free(mem);
+        #else
+        return std::free(mem);
+        #endif
+    }
   private:
     void *_memory = nullptr;
 };
